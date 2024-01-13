@@ -100,3 +100,4 @@ jobs:
         with:
           args: --target ${{matrix.platform.rust_target}}
           releaseId: ${{ needs.create-release.outputs.RELEASE_UPLOAD_ID }}
+          prerelease: true
