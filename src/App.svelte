@@ -29,18 +29,20 @@
 
   async function getDevices() {
     devices = (<RustDeviceInfo[]>await invoke("get_hid_devices"))
-      .map((item) => ({
-        ...item,
-        product_id: item.product_id
-          .toString(16)
-          .padStart(4, "0")
-          .toLocaleUpperCase(),
-        vendor_id: item.vendor_id
-          .toString(16)
-          .padStart(4, "0")
-          .toLocaleUpperCase(),
-      }))
-      .sort((a, b) => a.path.localeCompare(b.path));
+      .sort((a, b) => {
+        if (a.vendor_id === b.vendor_id) {
+          return a.product_id - b.product_id;
+        } else {
+          return a.vendor_id - b.vendor_id;
+        }
+      })
+      .map(
+        (item): DeviceInfo => ({
+          ...item,
+          vendor_id: item.vendor_id.toString(16).padStart(4, "0"),
+          product_id: item.product_id.toString(16).padStart(4, "0"),
+        })
+      );
 
     if (baseList.length > 0) {
       getAddlist();
@@ -73,26 +75,8 @@
     removeList = addList = baseList = devices = [];
   }
 
-  function copyItem(row: DeviceInfo) {
-    writeText(JSON.stringify(row))
-      .then(() => {
-        message(`${row.vendor_id}:${row.product_id} 复制成功`);
-      })
-      .catch(() => {
-        message("复制失败");
-      });
-  }
-  function copyCurrentList() {
-    writeText(JSON.stringify(devices))
-      .then(() => {
-        message("复制当前设备列表，成功！");
-      })
-      .catch(() => {
-        message("复制当前设备列表，失败");
-      });
-  }
   function copy(target: DeviceInfo | DeviceInfo[], name?: string) {
-    writeText(JSON.stringify(target))
+    writeText(formatText(target))
       .then(() => {
         if (Array.isArray(target)) {
           message(`${name}，复制成功`);
@@ -123,6 +107,26 @@
 
   function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function formatText(target: DeviceInfo | DeviceInfo[]) {
+    let text = "";
+    if (Array.isArray(target)) {
+      const map = new Map();
+      target.forEach((item) => {
+        if (map.has(item.path)) return;
+        map.set(item.path, item);
+        text += formatText(item);
+      });
+    } else {
+      text += `------------------------------------
+${target.vendor_name} | ${target.product_name}
+vid:pid 0x${target.vendor_id}:0x${target.product_id} 
+------------------------------------
+
+`;
+    }
+    return text;
   }
 </script>
 
@@ -209,7 +213,7 @@
   <div class="box3">
     <button on:click={getDevices}>刷新</button>
     <button on:click={saveBaseList}> 设为基准</button>
-    <button on:click={copyCurrentList}>复制当前</button>
+    <button on:click={() => copy(devices, "当前设备列表")}>复制当前</button>
     <button on:click={clean}>清空</button>
     <button on:click={close}>退出</button>
   </div>
