@@ -91,6 +91,19 @@
         message("复制当前设备列表，失败");
       });
   }
+  function copy(target: DeviceInfo | DeviceInfo[], name?: string) {
+    writeText(JSON.stringify(target))
+      .then(() => {
+        if (Array.isArray(target)) {
+          message(`${name}，复制成功`);
+        } else {
+          message(`${target.vendor_id}:${target.product_id} 复制成功`);
+        }
+      })
+      .catch(() => {
+        message("复制失败");
+      });
+  }
   function close() {
     exit();
   }
@@ -115,7 +128,9 @@
 
 <main class="container">
   <div class="box1">
-    <h3 class="lsit-title">当前设备列表</h3>
+    <h3 class="lsit-title" on:click={() => copy(devices, "当前设备列表")}>
+      当前设备列表
+    </h3>
     <div class="list-outer">
       <table>
         <thead>
@@ -127,7 +142,7 @@
         </thead>
         <tbody>
           {#each devices as item}
-            <tr on:click={() => copyItem(item)}>
+            <tr on:click={() => copy(item)}>
               <td>{item.product_name}</td>
               <td>{item.vendor_id}</td>
               <td>{item.product_id}</td>
@@ -138,7 +153,14 @@
     </div>
   </div>
   <div class="box2">
-    <h3 class="lsit-title">新增的设备</h3>
+    <h3
+      class="lsit-title"
+      on:click={() => {
+        copy(addList, "新增的设备");
+      }}
+    >
+      新增的设备
+    </h3>
     <div class="list-outer">
       <table>
         <thead>
@@ -150,7 +172,7 @@
         </thead>
         <tbody>
           {#each addList as item}
-            <tr on:click={() => copyItem(item)}>
+            <tr on:click={() => copy(item)}>
               <td>{item.product_name}</td>
               <td>{item.vendor_id}</td>
               <td>{item.product_id}</td>
@@ -159,7 +181,9 @@
         </tbody>
       </table>
     </div>
-    <h3 class="lsit-title">移除的设备</h3>
+    <h3 class="lsit-title" on:click={() => copy(removeList, "移除的设备")}>
+      移除的设备
+    </h3>
     <div class="list-outer">
       <table>
         <thead>
@@ -171,7 +195,7 @@
         </thead>
         <tbody>
           {#each removeList as item}
-            <tr on:click={() => copyItem(item)}>
+            <tr on:click={() => copy(item)}>
               <td>{item.product_name}</td>
               <td>{item.vendor_id}</td>
               <td>{item.product_id}</td>
@@ -219,6 +243,7 @@
   }
   .list-outer {
     height: 100%;
+    padding: 1vh 0;
     overflow-y: auto;
     border-radius: 8px;
     box-shadow:
