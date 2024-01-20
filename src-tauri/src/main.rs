@@ -3,8 +3,10 @@
 
 use hidapi::HidApi;
 use serde::Serialize;
+use specta::*;
+use tauri_specta::*;
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize, Type)]
 pub struct DeviceInfo {
     product_name: String,
     path: String,
@@ -14,6 +16,7 @@ pub struct DeviceInfo {
 }
 
 #[tauri::command]
+#[specta::specta]
 fn get_hid_devices() -> Result<Vec<DeviceInfo>, String> {
     let api = HidApi::new().map_err(|err| format!("HID API error: {}", err))?;
     let devices = api.device_list();
@@ -32,6 +35,13 @@ fn get_hid_devices() -> Result<Vec<DeviceInfo>, String> {
 }
 
 fn main() {
+    #[cfg(debug_assertions)]
+    tauri_specta::ts::builder()
+        .commands(collect_commands![get_hid_devices])
+        .path("../src/bindings.ts")
+        .export()
+        .unwrap();
+
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![get_hid_devices])
         .run(tauri::generate_context!())
