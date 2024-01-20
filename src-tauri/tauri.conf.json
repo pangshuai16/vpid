@@ -1,20 +1,18 @@
 {
   "build": {
-    "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build",
+    "beforeDevCommand": "npm run dev",
     "devPath": "http://localhost:1420",
     "distDir": "../dist"
   },
   "package": {
     "productName": "vpid",
-    "version": "1.0.0"
+    "version": "1.1.1"
   },
   "tauri": {
     "allowlist": {
       "all": false,
       "clipboard": {
         "all": false,
-        "readText": false,
         "writeText": true
       },
       "process": {
@@ -49,7 +47,7 @@
       {
         "fullscreen": false,
         "resizable": true,
-        "title": "vpid",
+        "title": "USB设备 vpi pid 查看器",
         "width": 1000,
         "height": 700
       }
