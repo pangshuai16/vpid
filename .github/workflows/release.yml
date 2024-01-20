@@ -11,31 +11,31 @@ on:
 # 需要运行的作业组合
 jobs:
   # 任务：创建 release 版本
-  # create-release:
-  #   runs-on: ubuntu-latest
-  #   outputs:
-  #     RELEASE_UPLOAD_ID: ${{ steps.create_release.outputs.id }}
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      RELEASE_UPLOAD_ID: ${{ steps.create_release.outputs.id }}
 
-  #   steps:
-  #     - uses: actions/checkout@v2
-  #     # 查询版本号（tag）
-  #     - name: Query version number
-  #       id: get_version
-  #       shell: bash
-  #       run: |
-  #         echo "using version tag ${GITHUB_REF:10}"
-  #         echo ::set-output name=version::"${GITHUB_REF:10}"
+    steps:
+      - uses: actions/checkout@v2
+      # 查询版本号（tag）
+      - name: Query version number
+        id: get_version
+        shell: bash
+        run: |
+          echo "using version tag ${GITHUB_REF:10}"
+          echo "VERSION=${GITHUB_REF:10}" >> "$GITHUB_OUTPUT"
 
-  #     # 根据查询到的版本号创建 release
-  #     - name: Create Release
-  #       id: create_release
-  #       uses: actions/create-release@v1
-  #       env:
-  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #       with:
-  #         tag_name: "${{ steps.get_version.outputs.VERSION }}"
-  #         release_name: "app ${{ steps.get_version.outputs.VERSION }}"
-  #         body: "See the assets to download this version and install."
+      # 根据查询到的版本号创建 release
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: "${{ steps.get_version.outputs.VERSION }}"
+          release_name: "app ${{ steps.get_version.outputs.VERSION }}"
+          body: "See the assets to download this version and install."
 
   # 编译 Tauri
   build-tauri:
@@ -102,7 +102,7 @@ jobs:
 
       # 使用 pnpm 安装依赖
       - name: install frontend dependencies
-        run: pnpm i && pnpm build
+        run: pnpm i
 
       # 构建应用
       - uses: tauri-apps/tauri-action@v0
@@ -110,8 +110,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: --target ${{matrix.platform.rust_target}}
-          tagName: app-v__VERSION__ # the action automatically replaces \_\_VERSION\_\_ with the app version
-          releaseName: "App v__VERSION__"
-          releaseBody: "See the assets to download this version and install."
+          releaseId: ${{ needs.create-release.outputs.RELEASE_UPLOAD_ID }}
           releaseDraft: true
           prerelease: true
