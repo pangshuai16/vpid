@@ -17,26 +17,12 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       RELEASE_UPLOAD_ID: ${{ steps.create_release.outputs.id }}
-
     steps:
       - uses: actions/checkout@v2
-      # 查询版本号（tag）
-      - name: Query version number
-        id: get_version
-        shell: bash
-        run: |
-          echo "using version tag ${GITHUB_REF:10}"
-          echo "VERSION=${GITHUB_REF:10}" >> "$GITHUB_OUTPUT"
-      # 根据查询到的版本号创建 release
       - name: Create Release
         id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: "${{ steps.get_version.outputs.VERSION }}"
-          release_name: "app ${{ steps.get_version.outputs.VERSION }}"
-          body: "See the assets to download this version and install."
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
   # 编译 Tauri
   build-tauri:
     needs: create-release
