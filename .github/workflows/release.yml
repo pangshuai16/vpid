@@ -12,6 +12,8 @@ on:
 jobs:
   # 任务：创建 release 版本
   create-release:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     outputs:
       RELEASE_UPLOAD_ID: ${{ steps.create_release.outputs.id }}
@@ -39,7 +41,7 @@ jobs:
 
   # 编译 Tauri
   build-tauri:
-    permissions: write-all
+    needs: create-release
     # needs: create-release
     strategy:
       fail-fast: false
