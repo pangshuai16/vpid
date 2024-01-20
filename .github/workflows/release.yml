@@ -39,8 +39,7 @@ jobs:
 
   # 编译 Tauri
   build-tauri:
-    permissions:
-      contents: write
+    permissions: write-all
     # needs: create-release
     strategy:
       fail-fast: false
@@ -88,16 +87,15 @@ jobs:
 
       # 获取 pnpm 缓存
       - name: Get pnpm store directory
-        id: pnpm-cache
+        id: pnpm_cache
         shell: bash
-        run: |
-          echo "::set-output name=STORE_PATH::$(pnpm store path --silent)"
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
       # 使用 pnpm 缓存
       - uses: actions/cache@v3
         name: Setup pnpm cache
         with:
-          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          path: ${{ steps.pnpm_cache.outputs.STORE_PATH }}
           key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
@@ -116,4 +114,4 @@ jobs:
           releaseName: "App v__VERSION__"
           releaseBody: "See the assets to download this version and install."
           releaseDraft: true
-          prerelease: false
+          prerelease: true
