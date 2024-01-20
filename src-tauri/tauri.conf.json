@@ -24,7 +24,7 @@
     },
     "bundle": {
       "active": true,
-      "targets": ["deb", "appimage", "nsis", "msi", "app"],
+      "targets": ["deb", "appimage", "nsis", "dmg", "updater"],
       "identifier": "com.tu.vpid",
       "icon": [
         "icons/32x32.png",
