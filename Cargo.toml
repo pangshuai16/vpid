@@ -1,0 +1,19 @@
+[package]
+name = "vpid"
+version = "2.0.0"
+description = "USB设备查看器 (Qt6 + qmetaobject-rs)"
+edition = "2021"
+
+[dependencies]
+qmetaobject = "0.2"
+nusb = "0.2"
+futures-lite = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
