@@ -28,10 +28,13 @@ ColumnLayout {
             anchors.fill: parent
             anchors.margins: theme.spacingSmall
 
-            Text { Layout.preferredWidth: 200; text: "设备"; font.bold: true; color: theme.textPrimary; elide: Text.ElideRight }
-            Text { Layout.preferredWidth: 200; text: "厂商"; font.bold: true; color: theme.textPrimary; elide: Text.ElideRight }
-            Text { Layout.preferredWidth: 80; text: "VID"; font.bold: true; color: theme.textPrimary }
-            Text { Layout.preferredWidth: 80; text: "PID"; font.bold: true; color: theme.textPrimary }
+            Text { Layout.preferredWidth: theme.colWidthProduct; text: "设备"; font.bold: true; color: theme.textPrimary; elide: Text.ElideRight }
+            Text { Layout.preferredWidth: theme.colWidthVendor; text: "厂商"; font.bold: true; color: theme.textPrimary; elide: Text.ElideRight }
+            Text { Layout.preferredWidth: theme.colWidthId; text: "VID"; font.bold: true; color: theme.textPrimary }
+            Text { Layout.preferredWidth: theme.colWidthId; text: "PID"; font.bold: true; color: theme.textPrimary }
+            Text { Layout.preferredWidth: theme.colWidthClass; text: "类别"; font.bold: true; color: theme.textPrimary }
+            Text { Layout.preferredWidth: theme.colWidthSpeed; text: "速度"; font.bold: true; color: theme.textPrimary }
+            Text { Layout.preferredWidth: theme.colWidthSerial; text: "序列号"; font.bold: true; color: theme.textPrimary; elide: Text.ElideRight }
         }
     }
 
@@ -58,41 +61,66 @@ ColumnLayout {
                 anchors.margins: theme.spacingSmall
 
                 Text {
-                    Layout.preferredWidth: 200
+                    Layout.preferredWidth: theme.colWidthProduct
                     text: row.modelData.product || "Unknown"
                     elide: Text.ElideRight
                     maximumLineCount: 1
                     color: row.hovered ? theme.primaryColor : theme.textPrimary
                 }
                 Text {
-                    Layout.preferredWidth: 200
+                    Layout.preferredWidth: theme.colWidthVendor
                     text: row.modelData.manufacturer || ""
                     elide: Text.ElideRight
                     maximumLineCount: 1
                     color: theme.textSecondary
                 }
                 Text {
-                    Layout.preferredWidth: 80
+                    Layout.preferredWidth: theme.colWidthId
                     text: theme.formatHex(row.modelData.vendor_id, 4)
                     color: theme.textSecondary
                     font.family: "monospace"
                 }
                 Text {
-                    Layout.preferredWidth: 80
+                    Layout.preferredWidth: theme.colWidthId
                     text: theme.formatHex(row.modelData.product_id, 4)
                     color: theme.textSecondary
                     font.family: "monospace"
+                }
+                Text {
+                    Layout.preferredWidth: theme.colWidthClass
+                    text: row.modelData.device_class_name || ""
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
+                    color: theme.textSecondary
+                }
+                Text {
+                    Layout.preferredWidth: theme.colWidthSpeed
+                    text: row.modelData.device_speed || ""
+                    color: theme.textSecondary
+                }
+                Text {
+                    Layout.preferredWidth: theme.colWidthSerial
+                    text: row.modelData.serial_number || ""
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
+                    color: theme.textSecondary
                 }
             }
 
             TapHandler {
                 id: rowMouse
                 onTapped: {
+                    var d = row.modelData;
+                    var info = "VID:PID " + theme.formatHex(d.vendor_id, 4) + ":" + theme.formatHex(d.product_id, 4);
+                    if (d.product) info += "\n" + d.product;
+                    if (d.manufacturer) info += "\n" + d.manufacturer;
+                    if (d.serial_number) info += "\nS/N: " + d.serial_number;
+                    if (d.device_class_name) info += "\n" + d.device_class_name;
+                    if (d.device_speed) info += "\nSpeed: " + d.device_speed;
                     var clip = Qt.application.clipboard;
                     if (clip) {
-                        clip.text = theme.formatHex(row.modelData.vendor_id, 4) + ":" +
-                                    theme.formatHex(row.modelData.product_id, 4);
-                        console.log("Copied:", clip.text);
+                        clip.text = info;
+                        console.log("Copied device info");
                     }
                 }
                 gesturePolicy: TapHandler.ReleaseWithinBounds

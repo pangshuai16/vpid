@@ -20,9 +20,12 @@ QtObject {
     readonly property int fontSizeBody: 14
 
     // 表格列宽
-    readonly property int colWidthProduct: 200
-    readonly property int colWidthVendor: 200
+    readonly property int colWidthProduct: 160
+    readonly property int colWidthVendor: 140
     readonly property int colWidthId: 80
+    readonly property int colWidthClass: 140
+    readonly property int colWidthSpeed: 80
+    readonly property int colWidthSerial: 160
     readonly property int rowHeight: 32
     readonly property int headerHeight: 36
 

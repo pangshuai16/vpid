@@ -16,12 +16,60 @@ Page {
         currentDevices = theme.parseDevices(usbManager.getDevicesJson());
         addedDevices = theme.parseDevices(usbManager.getAddedDevicesJson());
         removedDevices = theme.parseDevices(usbManager.getRemovedDevicesJson());
+
+        // 检查错误状态
+        var err = usbManager.get_error();
+        if (err) {
+            errorLabel.text = err;
+            errorBanner.visible = true;
+            errorTimer.restart();
+        }
     }
 
     Component.onCompleted: {
+        // 连接 UsbManager 信号（QML 会自动将 Rust devices_changed 映射为 devicesChanged）
+        usbManager.devicesChanged.connect(loadDevices);
         // 初始化时加载一次
         if (usbManager) {
             loadDevices();
+        }
+    }
+
+    // 自动刷新 Timer（每 3 秒轮询，作为热插拔的兜底方案）
+    Timer {
+        interval: 3000
+        running: true
+        repeat: true
+        onTriggered: {
+            if (usbManager) {
+                usbManager.refresh();
+                // loadDevices 由 devicesChanged 信号触发
+            }
+        }
+    }
+
+    // 错误提示条（5 秒后自动消失）
+    Timer {
+        id: errorTimer
+        interval: 5000
+        onTriggered: errorBanner.visible = false
+    }
+
+    Rectangle {
+        id: errorBanner
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: 32
+        visible: false
+        color: "#f8d7da"
+        z: 10
+
+        Label {
+            id: errorLabel
+            anchors.centerIn: parent
+            color: "#721c24"
+            font.pixelSize: theme.fontSizeBody
         }
     }
 
@@ -42,8 +90,8 @@ Page {
             ToolButton {
                 text: "刷新"
                 onClicked: {
+                    if (!usbManager) return;
                     usbManager.refresh();
-                    root.loadDevices();
                 }
             }
 

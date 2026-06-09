@@ -6,8 +6,10 @@ use crate::usb::models::{self, UsbDeviceInfo};
 pub enum HotplugEvent {
     /// 设备连接
     Connected(UsbDeviceInfo),
-    /// 设备断开
+    /// 设备断开（可能缺少详细信息）
     Disconnected { vendor_id: u16, product_id: u16 },
+    /// 设备变化（通用通知，nusb 某些平台只发送这个）
+    Change,
 }
 
 /// 热插拔监听器
@@ -39,20 +41,23 @@ impl HotplugWatcher {
                                 manufacturer: info.manufacturer_string().map(|s| s.to_string()),
                                 product: info.product_string().map(|s| s.to_string()),
                                 serial_number: info.serial_number().map(|s| s.to_string()),
+                                device_class_name: crate::usb::class_codes::usb_class_name(info.class()).to_string(),
                             };
                             let _ = tx.send(HotplugEvent::Connected(device_info));
                         }
                         nusb::hotplug::HotplugEvent::Disconnected(_device_id) => {
-                            let _ = tx.send(HotplugEvent::Disconnected {
-                                vendor_id: 0,
-                                product_id: 0,
-                            });
+                            // nusb 的 Disconnected 可能带或不带详细信息
+                            // DeviceId 没有 vendor_id/product_id 方法，发送通用信号
+                            let _ = tx.send(HotplugEvent::Change);
                         }
                     }
                 }
+            } else {
+                // 热插播 API 不可用，发送初始 Change 信号兜底
+                let _ = tx.send(HotplugEvent::Change);
             }
         });
-        
+
         HotplugWatcher { _thread }
     }
 }
