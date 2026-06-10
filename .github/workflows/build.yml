@@ -48,9 +48,9 @@ jobs:
           name: vpid-linux-x86_64
           path: target/release/vpid
 
-  # ── Windows x86_64 ────────────────────────────────────────────
+  # ── Windows x86 (XP 兼容版 Qt) ─────────────────────────────────
   build-windows:
-    name: Windows x86_64
+    name: Windows x86 (XP)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,22 +59,47 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: i686-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.5.0'
+      # 下载社区 XP 兼容版 Qt 6.5 预构建二进制 (x86)
+      # 来源: https://github.com/cxxzhang/qt6_5_for_xp/releases/download/v1.0.0.0/qt6_5_for_xp.zip
+      - name: Download Qt 6.5 XP (x86)
+        run: |
+          $qtUrl = "https://github.com/cxxzhang/qt6_5_for_xp/releases/download/v1.0.0.0/qt6_5_for_xp.zip"
+          $outDir = "$env:GITHUB_WORKSPACE\Qt"
+          $zipPath = "$env:GITHUB_WORKSPACE\qt_xp.zip"
+          Invoke-WebRequest -Uri $qtUrl -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath $outDir
+          Remove-Item $zipPath
+          # 查找解压后的 Qt 目录并设置环境变量
+          $qtRoot = Get-ChildItem -Path $outDir -Directory -Recurse -Filter "Qt6Config.cmake" | Select-Object -First 1 | ForEach-Object { $_.FullName.Replace("\lib\cmake\Qt6", "") }
+          if (-not $qtRoot) {
+            # 如果找不到 cmake 目录，列出结构
+            Get-ChildItem -Path $outDir -Recurse -Depth 2 | ForEach-Object { $_.FullName }
+            exit 1
+          }
+          Write-Output "Qt root: $qtRoot"
+          echo "Qt6_DIR=$qtRoot\lib\cmake\Qt6" >> $env:GITHUB_ENV
+          echo "QT_PLUGIN_PATH=$qtRoot\plugins" >> $env:GITHUB_ENV
+
+      - name: Configure Cargo for x86
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << 'EOF'
+          [target.i686-pc-windows-msvc]
+          linker = "rust-lld"
+          EOF
 
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --target i686-pc-windows-msvc
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vpid-windows-x86_64
-          path: target/release/vpid.exe
+          name: vpid-windows-x86
+          path: target/i686-pc-windows-msvc/release/vpid.exe
 
   # ── macOS (x86_64 + arm64) ───────────────────────────────────
   build-macos:
