@@ -44,12 +44,10 @@ ColumnLayout {
         Layout.fillHeight: true
         clip: true
         model: root.model
-        implicitHeight: contentHeight
 
         delegate: Rectangle {
             id: row
             required property var modelData
-            required property int index
             readonly property bool hovered: rowMouse.containsMouse
 
             width: ListView.view ? ListView.view.width : 0

@@ -1,4 +1,3 @@
-use nusb;
 use crate::usb::models::*;
 use crate::usb::class_codes;
 

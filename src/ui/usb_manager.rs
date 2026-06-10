@@ -19,6 +19,11 @@ static STATE: LazyLock<Mutex<DeviceState>> = LazyLock::new(|| {
     })
 });
 
+/// 获取全局状态，处理 Mutex 中毒
+fn get_state() -> std::sync::MutexGuard<'static, DeviceState> {
+    STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// 热插拔监听器（全局单例启动）
 static HOTPLUG: LazyLock<Mutex<Option<hotplug::HotplugWatcher>>> = LazyLock::new(|| {
     let (tx, rx) = std::sync::mpsc::channel::<hotplug::HotplugEvent>();
@@ -26,12 +31,22 @@ static HOTPLUG: LazyLock<Mutex<Option<hotplug::HotplugWatcher>>> = LazyLock::new
     // 启动热插拔监听线程
     let watcher = hotplug::HotplugWatcher::new(tx);
 
-    // 后台线程接收事件并触发刷新
+    // 后台线程接收事件，立即触发枚举并更新全局状态
+    // UI 更新由 QML Timer 通过 poll_changes() 在主线程中触发
     std::thread::spawn(move || {
         while let Ok(event) = rx.recv() {
             ::log::info!("hotplug event: {:?}", std::mem::discriminant(&event));
-            // 标记需要刷新，UsbManager 的 refresh 会被 QML 的 Timer
-            // 轮询触发实际刷新。这里不直接调 Qt 跨线程 API
+            match futures_lite::future::block_on(enumerator::list_usb_devices()) {
+                Ok(devs) => {
+                    let mut state = get_state();
+                    state.devices = devs;
+                    state.error = None;
+                }
+                Err(e) => {
+                    ::log::error!("USB enumeration after hotplug failed: {}", e);
+                    get_state().error = Some(e);
+                }
+            }
         }
     });
 
@@ -43,12 +58,11 @@ static HOTPLUG: LazyLock<Mutex<Option<hotplug::HotplugWatcher>>> = LazyLock::new
 pub struct UsbManager {
     base: qt_base_class!(trait QObject),
 
-    /// 设备数据变更信号
+    /// 设备数据变更信号（包含错误状态变更）
     devices_changed: qt_signal!(),
-    /// 错误消息变更信号
-    error_changed: qt_signal!(),
 
     refresh: qt_method!(fn(&self)),
+    poll_changes: qt_method!(fn(&self)),
     set_baseline: qt_method!(fn(&self)),
     get_devices_json: qt_method!(fn(&self) -> QString),
     get_added_devices_json: qt_method!(fn(&self) -> QString),
@@ -64,32 +78,42 @@ impl UsbManager {
 
         match futures_lite::future::block_on(enumerator::list_usb_devices()) {
             Ok(devs) => {
-                let mut state = STATE.lock().unwrap();
+                let mut state = get_state();
                 state.devices = devs;
                 state.error = None;
             }
             Err(e) => {
                 ::log::error!("USB enumeration failed: {}", e);
-                STATE.lock().unwrap().error = Some(e);
+                let mut state = get_state();
+                state.error = Some(e);
             }
         }
         self.devices_changed();
     }
 
+    /// 检查热插拔后台线程是否更新了数据，若是则通知 UI
+    /// 此方法不执行 USB 枚举（由热插拔线程完成），仅发射信号
+    fn poll_changes(&self) {
+        // 确保热插拔线程已启动
+        let _ = &*HOTPLUG;
+        // 直接发射信号，让 QML 读取最新数据
+        self.devices_changed();
+    }
+
     fn set_baseline(&self) {
-        let mut state = STATE.lock().unwrap();
+        let mut state = get_state();
         state.baseline = state.devices.clone();
     }
 
     fn get_devices_json(&self) -> QString {
-        let state = STATE.lock().unwrap();
+        let state = get_state();
         serde_json::to_string(&state.devices)
             .unwrap_or_else(|_| "[]".to_string())
             .into()
     }
 
     fn get_added_devices_json(&self) -> QString {
-        let state = STATE.lock().unwrap();
+        let state = get_state();
         let added: Vec<_> = state
             .devices
             .iter()
@@ -102,7 +126,7 @@ impl UsbManager {
     }
 
     fn get_removed_devices_json(&self) -> QString {
-        let state = STATE.lock().unwrap();
+        let state = get_state();
         let removed: Vec<_> = state
             .baseline
             .iter()
@@ -115,7 +139,7 @@ impl UsbManager {
     }
 
     fn get_error(&self) -> QString {
-        let state = STATE.lock().unwrap();
+        let state = get_state();
         match &state.error {
             Some(e) => QString::from(e.as_str()),
             None => QString::default(),

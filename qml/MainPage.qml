@@ -36,14 +36,14 @@ Page {
     }
 
     // 自动刷新 Timer（每 3 秒轮询，作为热插拔的兜底方案）
+    // poll_changes 仅发射信号，不阻塞主线程
     Timer {
         interval: 3000
         running: true
         repeat: true
         onTriggered: {
             if (usbManager) {
-                usbManager.refresh();
-                // loadDevices 由 devicesChanged 信号触发
+                usbManager.pollChanges();
             }
         }
     }
@@ -52,7 +52,10 @@ Page {
     Timer {
         id: errorTimer
         interval: 5000
-        onTriggered: errorBanner.visible = false
+        onTriggered: {
+            errorBanner.visible = false
+            errorLabel.text = ""
+        }
     }
 
     Rectangle {
