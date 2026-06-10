@@ -84,6 +84,7 @@ jobs:
           Write-Output "Qt root: $qtRoot"
           echo "Qt6_DIR=$qtRoot\lib\cmake\Qt6" >> $env:GITHUB_ENV
           echo "QT_PLUGIN_PATH=$qtRoot\plugins" >> $env:GITHUB_ENV
+          echo "$qtRoot\bin" >> $env:GITHUB_PATH
 
       - name: Configure Cargo for x86
         shell: bash
