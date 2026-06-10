@@ -57,7 +57,12 @@ jobs:
         with:
           targets: i686-pc-windows-msvc
 
+      - name: Verify target installed
+        run: rustup target list --installed | grep i686-pc-windows-msvc || (rustup target add i686-pc-windows-msvc)
+
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-x86
 
       # 下载社区 XP 兼容版 Qt 6.5 预构建二进制 (x86)
       - name: Download Qt 6.5 XP (x86)
