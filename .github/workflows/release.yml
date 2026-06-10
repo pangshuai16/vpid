@@ -32,7 +32,6 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.0'
-          modules: 'qtdeclarative'
 
       - name: Build
         run: cargo build --release
@@ -66,7 +65,6 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.0'
-          modules: 'qtdeclarative'
 
       - name: Build
         run: cargo build --release
@@ -101,7 +99,6 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.0'
-          modules: 'qtdeclarative'
 
       - name: Build
         run: cargo build --release --target x86_64-apple-darwin
@@ -136,7 +133,6 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.0'
-          modules: 'qtdeclarative'
 
       - name: Build
         run: cargo build --release --target aarch64-apple-darwin
@@ -232,7 +228,7 @@ jobs:
 
             ### 使用说明
             - **Linux**: 直接运行二进制，确保已安装 Qt 6.5+
-            - **Windows**: 运行 `vpid-windows-x86_64.exe`，确保已安装 Qt 6.5+
+            - **Windows**: 运行 `vpid-windows-x86_64.exe`，需 Qt 6.5+ (XP 兼容构建需使用 [qt6_5_for_xp](https://github.com/cxxzhang/qt6_5_for_xp) 自行编译)
             - **macOS**: `chmod +x vpid-macos-* && ./vpid-macos-*`，确保已 `brew install qt@6`
           draft: true
           prerelease: false

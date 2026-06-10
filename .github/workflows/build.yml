@@ -29,7 +29,7 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.0'
-          modules: 'qtdeclarative'
+          # install-qt-action 默认包含 qtbase+qtdeclarative+qttools 等桌面必需组件
 
       - name: Install build dependencies
         run: |
@@ -66,7 +66,6 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.0'
-          modules: 'qtdeclarative'
 
       - name: Build
         run: cargo build --release
@@ -103,7 +102,6 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.0'
-          modules: 'qtdeclarative'
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
@@ -170,7 +168,6 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.0'
-          modules: 'qtdeclarative'
 
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings
