@@ -127,7 +127,7 @@ nusb::watch_devices()
 ```rust
 // src/usb/models.rs
 
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceSpeed {
     Low,    // 1.5 Mbps
     Full,   // 12 Mbps
@@ -135,6 +135,9 @@ pub enum DeviceSpeed {
     Super,  // 5 Gbps
     Unknown,
 }
+
+// 自定义 Serialize：输出 "Low (1.5 Mbps)" 等可读字符串
+impl Serialize for DeviceSpeed { ... }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct UsbDeviceInfo {
@@ -150,6 +153,8 @@ pub struct UsbDeviceInfo {
     pub device_class_name: String,  // 从 class_codes 映射
 }
 ```
+
+**关键**：`DeviceSpeed` 自定义序列化输出可读字符串，QML 可直接展示。
 
 ### 4.2 USB 类代码映射
 

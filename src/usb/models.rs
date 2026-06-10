@@ -1,13 +1,38 @@
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 /// USB 设备速度
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceSpeed {
+    /// Low (1.5 Mbps)
     Low,
+    /// Full (12 Mbps)
     Full,
+    /// High (480 Mbps)
     High,
+    /// Super (5 Gbps)
     Super,
+    /// Unknown speed
     Unknown,
+}
+
+impl DeviceSpeed {
+    /// 返回人类可读的速度描述
+    pub fn display_text(&self) -> &'static str {
+        match self {
+            DeviceSpeed::Low => "Low (1.5 Mbps)",
+            DeviceSpeed::Full => "Full (12 Mbps)",
+            DeviceSpeed::High => "High (480 Mbps)",
+            DeviceSpeed::Super => "Super (5 Gbps)",
+            DeviceSpeed::Unknown => "Unknown",
+        }
+    }
+}
+
+/// 自定义序列化，输出字符串而非 `{"Variant": null}`
+impl Serialize for DeviceSpeed {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.display_text())
+    }
 }
 
 /// USB Descriptors

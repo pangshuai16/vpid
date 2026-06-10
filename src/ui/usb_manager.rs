@@ -48,8 +48,8 @@ pub struct UsbManager {
     /// 错误消息变更信号
     error_changed: qt_signal!(),
 
-    refresh: qt_method!(fn(&mut self)),
-    set_baseline: qt_method!(fn(&mut self)),
+    refresh: qt_method!(fn(&self)),
+    set_baseline: qt_method!(fn(&self)),
     get_devices_json: qt_method!(fn(&self) -> QString),
     get_added_devices_json: qt_method!(fn(&self) -> QString),
     get_removed_devices_json: qt_method!(fn(&self) -> QString),
@@ -58,7 +58,7 @@ pub struct UsbManager {
 }
 
 impl UsbManager {
-    fn refresh(&mut self) {
+    fn refresh(&self) {
         // 确保热插拔线程已启动（LazyLock 在首次 deref 时初始化）
         let _ = &*HOTPLUG;
 
@@ -67,19 +67,16 @@ impl UsbManager {
                 let mut state = STATE.lock().unwrap();
                 state.devices = devs;
                 state.error = None;
-                self.set_last_error(QString::default());
             }
             Err(e) => {
                 ::log::error!("USB enumeration failed: {}", e);
-                let msg = QString::from(e.as_str());
-                self.set_last_error(msg);
                 STATE.lock().unwrap().error = Some(e);
             }
         }
         self.devices_changed();
     }
 
-    fn set_baseline(&mut self) {
+    fn set_baseline(&self) {
         let mut state = STATE.lock().unwrap();
         state.baseline = state.devices.clone();
     }
@@ -123,10 +120,5 @@ impl UsbManager {
             Some(e) => QString::from(e.as_str()),
             None => QString::default(),
         }
-    }
-
-    fn set_last_error(&mut self, _val: QString) {
-        // 存储错误到自身字段（qmetaobject 要求属性字段存在）
-        self.error_changed();
     }
 }
