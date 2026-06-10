@@ -1,143 +1,243 @@
-# 可选，将显示在 GitHub 存储库的“操作”选项卡中的工作流名称
-name: Release CI
+# Release CI — 推送 v* 标签时自动构建并发布
+name: Release
 
-# 指定此工作流的触发器
 on:
   push:
-    # 匹配特定标签 (refs/tags)
     tags:
-      - "v*" # 推送事件匹配 v*, 例如 v1.0，v20.15.10 等来触发工作流
+      - 'v*'
 
-# 需要运行的作业组合
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: write
+
 jobs:
-  # 任务：创建 release 版本
-  create-release:
-    permissions:
-      contents: write
+  # ── Linux x86_64 ──────────────────────────────────────────────
+  build-linux:
+    name: Linux x86_64
     runs-on: ubuntu-latest
-    outputs:
-      RELEASE_UPLOAD_ID: ${{ steps.create_release.outputs.id }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
-  # 编译 Tauri
-  build-tauri:
-    needs: create-release
-    # needs: create-release
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - os: ubuntu-latest
-            rust_target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
-            rust_target: aarch64-unknown-linux-gnu
-          - os: macos-latest
-            rust_target: x86_64-apple-darwin
-          - os: windows-latest
-            rust_target: i686-pc-windows-msvc
-
-    runs-on: ${{ matrix.platform.os }}
     steps:
       - uses: actions/checkout@v4
 
-      # ubuntu 安装依赖
-      - name: install dependencies (ubuntu only)
-        if: matrix.platform.rust_target == 'x86_64-unknown-linux-gnu' &&  matrix.platform.rust_target != 'aarch64-unknown-linux-gnu'
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.5.0'
+          modules: 'qtdeclarative'
+
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev libudev-dev
-      # 安装 Rust
-      - name: Install Rust stable
+          sudo apt-get install -y build-essential cmake
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/vpid dist/vpid-linux-x86_64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpid-linux-x86_64
+          path: dist/vpid-linux-x86_64
+
+  # ── Windows x86_64 ────────────────────────────────────────────
+  build-windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        if: matrix.platform.rust_target != 'aarch64-unknown-linux-gnu'
         with:
-          toolchain: stable
+          components: rustfmt, clippy
 
-      # 使用 Rust 缓存，加快安装速度
-      - uses: Swatinem/rust-cache@v1
-        if: matrix.platform.rust_target != 'aarch64-unknown-linux-gnu'
-
-      # 安装 Node.js
-      - name: Setup node
-        uses: actions/setup-node@v4
-        if: matrix.platform.rust_target != 'aarch64-unknown-linux-gnu'
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
         with:
-          node-version: 20
+          version: '6.5.0'
+          modules: 'qtdeclarative'
 
-      # 安装 pnpm
-      - uses: pnpm/action-setup@v2
-        if: matrix.platform.rust_target != 'aarch64-unknown-linux-gnu'
-        name: Install pnpm
+      - name: Build
+        run: cargo build --release
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          copy target/release/vpid.exe dist/vpid-windows-x86_64.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          version: 8
-          run_install: false
+          name: vpid-windows-x86_64
+          path: dist/vpid-windows-x86_64.exe
 
-      # 获取 pnpm 缓存
-      - name: Get pnpm store directory
-        if: matrix.platform.rust_target != 'aarch64-unknown-linux-gnu'
-        id: pnpm_cache
-        shell: bash
-        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+  # ── macOS x86_64 ──────────────────────────────────────────────
+  build-macos-x86_64:
+    name: macOS x86_64
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
 
-      # 使用 pnpm 缓存
-      - uses: actions/cache@v3
-        name: Setup pnpm cache
-        if: matrix.platform.rust_target != 'aarch64-unknown-linux-gnu'
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          path: ${{ steps.pnpm_cache.outputs.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
+          components: rustfmt, clippy
+          targets: x86_64-apple-darwin
 
-      # 前端构建
-      - name: install frontend dependencies
-        if: matrix.platform.rust_target != 'aarch64-unknown-linux-gnu'
-        run: pnpm i && pnpm build
-
-      # arm构建
-      - uses: pguyot/arm-runner-action@v2
-        name: install dependencies (arm only)
-        if: matrix.platform.rust_target == 'aarch64-unknown-linux-gnu'
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
         with:
-          base_image: dietpi:rpi_armv8_bullseye
-          cpu: cortex-a53
-          bind_mount_repository: true
-          image_additional_mb: 10240
-          optimize_image: false
-          commands: |
-            # Rust complains (rightly) that $HOME doesn't match eid home
-            export HOME=/root
-            # Workaround to CI worker being stuck on Updating crates.io index
-            export CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
-            # Install setup prerequisites
-            apt-get update -y --allow-releaseinfo-change
-            apt-get upgrade -y
-            apt-get autoremove -y
-            apt-get install curl
-            curl https://sh.rustup.rs -sSf | sh -s -- -y
-            . "$HOME/.cargo/env"
-            curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash
-            # Install framework specific packages
-            apt-get install -y nodejs
-            npm install next@latest react@latest react-dom@latest eslint-config-next@latest
-            # Install build tools and tauri-cli requirements
-            apt-get install -y libwebkit2gtk-4.0-dev build-essential wget libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-            cargo install tauri-cli
-            # Install frontend dependencies
-            npm install
-            # Build the application
-            cargo tauri build
+          version: '6.5.0'
+          modules: 'qtdeclarative'
 
-      # 构建应用
-      - uses: tauri-apps/tauri-action@v0
+      - name: Build
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/x86_64-apple-darwin/release/vpid dist/vpid-macos-x86_64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpid-macos-x86_64
+          path: dist/vpid-macos-x86_64
+
+  # ── macOS Apple Silicon ───────────────────────────────────────
+  build-macos-arm64:
+    name: macOS arm64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: aarch64-apple-darwin
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.5.0'
+          modules: 'qtdeclarative'
+
+      - name: Build
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/aarch64-apple-darwin/release/vpid dist/vpid-macos-arm64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpid-macos-arm64
+          path: dist/vpid-macos-arm64
+
+  # ── Linux ARM64 (交叉编译) ────────────────────────────────────
+  build-linux-arm64:
+    name: Linux ARM64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Configure Cargo for cross-compilation
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << 'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          EOF
+
+      - name: Build
+        run: cargo build --release --target aarch64-unknown-linux-gnu
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/aarch64-unknown-linux-gnu/release/vpid dist/vpid-linux-arm64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpid-linux-arm64
+          path: dist/vpid-linux-arm64
+
+  # ── Create Release & Upload Assets ────────────────────────────
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs:
+      - build-linux
+      - build-windows
+      - build-macos-x86_64
+      - build-macos-arm64
+      - build-linux-arm64
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: vpid ${{ github.ref_name }}
+          body: |
+            ## vpid ${{ github.ref_name }} — USB 设备查看器
+
+            ### 平台
+            - **Linux x86_64**: `vpid-linux-x86_64`
+            - **Linux ARM64**: `vpid-linux-arm64`
+            - **Windows x86_64**: `vpid-windows-x86_64.exe`
+            - **macOS x86_64**: `vpid-macos-x86_64`
+            - **macOS ARM64 (Apple Silicon)**: `vpid-macos-arm64`
+
+            ### 技术栈
+            - Rust 2021 + nusb (纯 Rust USB 枚举)
+            - Qt6 Quick (QML) + qmetaobject-rs
+            - 纯 Cargo 构建，无需 CMake
+
+            ### 使用说明
+            - **Linux**: 直接运行二进制，确保已安装 Qt 6.5+
+            - **Windows**: 运行 `vpid-windows-x86_64.exe`，确保已安装 Qt 6.5+
+            - **macOS**: `chmod +x vpid-macos-* && ./vpid-macos-*`，确保已 `brew install qt@6`
+          draft: true
+          prerelease: false
+          files: artifacts/**/*.tar.gz
+          fail_on_unmatched_files: false
+
+      - name: Upload release assets
+        run: |
+          for file in artifacts/*/*; do
+            gh release upload ${{ github.ref_name }} "$file" --clobber
+          done
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: --target ${{matrix.platform.rust_target}}
-          releaseId: ${{ needs.create-release.outputs.RELEASE_UPLOAD_ID }}
-          releaseDraft: true
-          prerelease: true
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
