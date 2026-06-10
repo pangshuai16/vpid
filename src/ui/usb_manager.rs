@@ -1,14 +1,18 @@
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 use qmetaobject::*;
 
-use crate::usb::{enumerator, hotplug, models::UsbDeviceInfo};
+use crate::usb::{enumerator::{self, EnumerationError}, hotplug, models::UsbDeviceInfo};
 
 /// 全局 USB 设备状态
 struct DeviceState {
     devices: Vec<UsbDeviceInfo>,
     baseline: Vec<UsbDeviceInfo>,
     error: Option<String>,
+    /// 数据版本号，用于 QML 判断是否需要重绘
+    version: u64,
 }
 
 static STATE: LazyLock<Mutex<DeviceState>> = LazyLock::new(|| {
@@ -16,8 +20,12 @@ static STATE: LazyLock<Mutex<DeviceState>> = LazyLock::new(|| {
         devices: Vec::new(),
         baseline: Vec::new(),
         error: None,
+        version: 0,
     })
 });
+
+/// 数据版本号原子计数器，QML 通过比较版本号决定是否重绘
+static LAST_SEEN_VERSION: AtomicU64 = AtomicU64::new(0);
 
 /// 获取全局状态，处理 Mutex 中毒
 fn get_state() -> std::sync::MutexGuard<'static, DeviceState> {
@@ -28,11 +36,9 @@ fn get_state() -> std::sync::MutexGuard<'static, DeviceState> {
 static HOTPLUG: LazyLock<Mutex<Option<hotplug::HotplugWatcher>>> = LazyLock::new(|| {
     let (tx, rx) = std::sync::mpsc::channel::<hotplug::HotplugEvent>();
 
-    // 启动热插拔监听线程
     let watcher = hotplug::HotplugWatcher::new(tx);
 
     // 后台线程接收事件，立即触发枚举并更新全局状态
-    // UI 更新由 QML Timer 通过 poll_changes() 在主线程中触发
     std::thread::spawn(move || {
         while let Ok(event) = rx.recv() {
             ::log::info!("hotplug event: {:?}", std::mem::discriminant(&event));
@@ -41,10 +47,13 @@ static HOTPLUG: LazyLock<Mutex<Option<hotplug::HotplugWatcher>>> = LazyLock::new
                     let mut state = get_state();
                     state.devices = devs;
                     state.error = None;
+                    state.version += 1;
                 }
-                Err(e) => {
+                Err(EnumerationError::Nusb(e)) => {
                     ::log::error!("USB enumeration after hotplug failed: {}", e);
-                    get_state().error = Some(e);
+                    let mut state = get_state();
+                    state.error = Some(e);
+                    state.version += 1;
                 }
             }
         }
@@ -67,13 +76,11 @@ pub struct UsbManager {
     get_devices_json: qt_method!(fn(&self) -> QString),
     get_added_devices_json: qt_method!(fn(&self) -> QString),
     get_removed_devices_json: qt_method!(fn(&self) -> QString),
-    /// 获取错误消息，如果无错误返回空字符串
     get_error: qt_method!(fn(&self) -> QString),
 }
 
 impl UsbManager {
     fn refresh(&self) {
-        // 确保热插拔线程已启动（LazyLock 在首次 deref 时初始化）
         let _ = &*HOTPLUG;
 
         match futures_lite::future::block_on(enumerator::list_usb_devices()) {
@@ -81,23 +88,30 @@ impl UsbManager {
                 let mut state = get_state();
                 state.devices = devs;
                 state.error = None;
+                state.version += 1;
             }
-            Err(e) => {
+            Err(EnumerationError::Nusb(e)) => {
                 ::log::error!("USB enumeration failed: {}", e);
                 let mut state = get_state();
                 state.error = Some(e);
+                state.version += 1;
             }
         }
         self.devices_changed();
     }
 
-    /// 检查热插拔后台线程是否更新了数据，若是则通知 UI
-    /// 此方法不执行 USB 枚举（由热插拔线程完成），仅发射信号
+    /// 检查数据是否有变更，有则发射信号
     fn poll_changes(&self) {
-        // 确保热插拔线程已启动
         let _ = &*HOTPLUG;
-        // 直接发射信号，让 QML 读取最新数据
-        self.devices_changed();
+        let state = get_state();
+        let current = state.version;
+        drop(state);
+
+        let last = LAST_SEEN_VERSION.load(Ordering::Relaxed);
+        if current != last {
+            LAST_SEEN_VERSION.store(current, Ordering::Relaxed);
+            self.devices_changed();
+        }
     }
 
     fn set_baseline(&self) {
@@ -114,10 +128,11 @@ impl UsbManager {
 
     fn get_added_devices_json(&self) -> QString {
         let state = get_state();
+        let baseline_set: HashSet<_> = state.baseline.iter().collect();
         let added: Vec<_> = state
             .devices
             .iter()
-            .filter(|d| !state.baseline.contains(d))
+            .filter(|d| !baseline_set.contains(d))
             .cloned()
             .collect();
         serde_json::to_string(&added)
@@ -127,10 +142,11 @@ impl UsbManager {
 
     fn get_removed_devices_json(&self) -> QString {
         let state = get_state();
+        let current_set: HashSet<_> = state.devices.iter().collect();
         let removed: Vec<_> = state
             .baseline
             .iter()
-            .filter(|d| !state.devices.contains(d))
+            .filter(|d| !current_set.contains(d))
             .cloned()
             .collect();
         serde_json::to_string(&removed)
@@ -144,5 +160,22 @@ impl UsbManager {
             Some(e) => QString::from(e.as_str()),
             None => QString::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_version_increments() {
+        let state = get_state();
+        let v = state.version;
+        drop(state);
+
+        // refresh 应该增加版本
+        let mgr = UsbManager::default();
+        mgr.refresh();
+        assert!(get_state().version > v);
     }
 }

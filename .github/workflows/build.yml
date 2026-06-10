@@ -11,191 +11,181 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # Linux (x86_64)
+  # ── Linux x86_64 ──────────────────────────────────────────────
   build-linux:
     name: Linux x86_64
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.0'
-          modules: 'qtdeclarative qtquickcontrols2'
-      
+          modules: 'qtdeclarative'
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake
-      
+          sudo apt-get install -y build-essential
+
       - name: Check
         run: cargo check --all-targets
-      
+
       - name: Build
         run: cargo build --release
-      
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vpid-linux-x64
+          name: vpid-linux-x86_64
           path: target/release/vpid
 
-  # Windows (x86_64) - Windows 10+
+  # ── Windows x86_64 ────────────────────────────────────────────
   build-windows:
     name: Windows x86_64
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.0'
-          modules: 'qtdeclarative qtquickcontrols2'
-      
+          modules: 'qtdeclarative'
+
       - name: Build
         run: cargo build --release
-      
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vpid-windows-x64
+          name: vpid-windows-x86_64
           path: target/release/vpid.exe
 
-  # Windows XP (x86_64) - 使用第三方 Qt
-  build-windows-xp:
-    name: Windows XP x86_64
-    runs-on: windows-2019  # 更老的 Windows 环境
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      
-      - name: Download Qt for XP
-        run: |
-          # 从第三方源下载 Qt6.5 for XP
-          # https://github.com/pangshuai16/qt6_5_for_xp
-          # 需要预先准备或从 artifact 下载
-          echo "Qt for XP needs to be provided manually"
-      
-      - name: Build with XP features
-        run: cargo build --release --features windows_xp
-      
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: vpid-windows-xp
-          path: target/release/vpid.exe
-
-  # macOS (x86_64 + arm64)
+  # ── macOS (x86_64 + arm64) ───────────────────────────────────
   build-macos:
-    name: macOS ${{ matrix.arch }}
+    name: macOS ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
+          - os: macos-13
+            target: x86_64-apple-darwin
           - os: macos-latest
-            arch: x86_64
-          - os: macos-latest
-            arch: arm64
+            target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: ${{ matrix.arch == 'arm64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
-      
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.0'
-          modules: 'qtdeclarative qtquickcontrols2'
-      
+          modules: 'qtdeclarative'
+
       - name: Build
-        run: cargo build --release --target ${{ matrix.arch == 'arm64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
-      
+        run: cargo build --release --target ${{ matrix.target }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vpid-macos-${{ matrix.arch }}
-          path: target/${{ matrix.arch == 'arm64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}/release/vpid
+          name: vpid-macos-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/vpid
 
-  # Linux ARM64 (交叉编译)
+  # ── Linux ARM64 (交叉编译) ───────────────────────────────────
   build-linux-arm64:
     name: Linux ARM64
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
           targets: aarch64-unknown-linux-gnu
-      
+
       - name: Install cross-compilation tools
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-      
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: Configure Cargo for cross-compilation
         run: |
           mkdir -p .cargo
-          echo '[target.aarch64-unknown-linux-gnu]' >> .cargo/config.toml
-          echo 'linker = "aarch64-linux-gnu-gcc"' >> .cargo/config.toml
-          echo 'rustflags = ["-C", "link-arg=-fuse-ld=lld"]' >> .cargo/config.toml
-      
+          cat >> .cargo/config.toml << 'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+          EOF
+
       - name: Build
         run: cargo build --release --target aarch64-unknown-linux-gnu
-      
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid-linux-arm64
           path: target/aarch64-unknown-linux-gnu/release/vpid
 
-  # Clippy lint check
+  # ── Clippy ───────────────────────────────────────────────────
   lint:
-    name: Clippy Lint
+    name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-      
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.5.0'
+          modules: 'qtdeclarative'
+
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-  # Format check
+  # ── Format ───────────────────────────────────────────────────
   format:
-    name: Rustfmt Check
+    name: Rustfmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      
+
       - name: Check format
         run: cargo fmt -- --check

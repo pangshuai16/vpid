@@ -8,6 +8,10 @@ ColumnLayout {
     property var model: []
     required property QtObject theme
 
+    // Toast 提示
+    property bool showToast: false
+    signal copyToast(string text)
+
     spacing: theme.spacingSmall
 
     Label {
@@ -110,18 +114,28 @@ ColumnLayout {
                 onTapped: {
                     var d = row.modelData;
                     var info = "VID:PID " + theme.formatHex(d.vendor_id, 4) + ":" + theme.formatHex(d.product_id, 4);
-                    if (d.product) info += "\n" + d.product;
-                    if (d.manufacturer) info += "\n" + d.manufacturer;
-                    if (d.serial_number) info += "\nS/N: " + d.serial_number;
-                    if (d.device_class_name) info += "\n" + d.device_class_name;
-                    if (d.device_speed) info += "\nSpeed: " + d.device_speed;
+                    if (d.product) info += " " + d.product;
+                    if (d.manufacturer) info += " (" + d.manufacturer + ")";
                     var clip = Qt.application.clipboard;
                     if (clip) {
                         clip.text = info;
-                        console.log("Copied device info");
+                        root.copyToast(info);
                     }
                 }
                 gesturePolicy: TapHandler.ReleaseWithinBounds
+            }
+        }
+
+        // 空状态提示
+        Rectangle {
+            anchors.fill: parent
+            visible: root.model.length === 0
+            color: theme.backgroundColor
+            Label {
+                anchors.centerIn: parent
+                text: root.title === "新增设备" || root.title === "移除设备" ? "无变化" : "未检测到设备"
+                color: theme.textSecondary
+                font.pixelSize: theme.fontSizeBody
             }
         }
     }

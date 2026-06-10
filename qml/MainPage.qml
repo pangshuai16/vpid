@@ -11,7 +11,6 @@ Page {
     property var addedDevices: []
     property var removedDevices: []
 
-    /// 从 UsbManager 同步加载数据
     function loadDevices() {
         currentDevices = theme.parseDevices(usbManager.getDevicesJson());
         addedDevices = theme.parseDevices(usbManager.getAddedDevicesJson());
@@ -27,16 +26,13 @@ Page {
     }
 
     Component.onCompleted: {
-        // 连接 UsbManager 信号（QML 会自动将 Rust devices_changed 映射为 devicesChanged）
         usbManager.devicesChanged.connect(loadDevices);
-        // 初始化时加载一次
         if (usbManager) {
             loadDevices();
         }
     }
 
-    // 自动刷新 Timer（每 3 秒轮询，作为热插拔的兜底方案）
-    // poll_changes 仅发射信号，不阻塞主线程
+    // 自动刷新 Timer — pollChanges 仅检查版本号并发射信号，不阻塞主线程
     Timer {
         interval: 3000
         running: true
@@ -48,7 +44,7 @@ Page {
         }
     }
 
-    // 错误提示条（5 秒后自动消失）
+    // 错误提示条（5 秒后自动消失并清除文本）
     Timer {
         id: errorTimer
         interval: 5000
@@ -58,6 +54,41 @@ Page {
         }
     }
 
+    // Toast 通知 — 复制设备信息时短暂显示
+    Timer {
+        id: toastTimer
+        interval: 1500
+        onTriggered: toastBanner.visible = false
+    }
+
+    // 复制 Toast
+    Rectangle {
+        id: toastBanner
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: theme.spacingMedium
+        height: 36
+        width: toastLabel.implicitWidth + theme.spacingLarge * 2
+        visible: false
+        color: theme.primaryColor
+        radius: theme.radiusSmall
+        opacity: 0.9
+
+        Label {
+            id: toastLabel
+            anchors.centerIn: parent
+            text: "已复制到剪贴板"
+            color: "#fff"
+            font.pixelSize: theme.fontSizeBody
+        }
+
+        function show() {
+            visible = true;
+            toastTimer.restart();
+        }
+    }
+
+    // 错误提示条
     Rectangle {
         id: errorBanner
         anchors.left: parent.left
@@ -127,6 +158,7 @@ Page {
             Layout.fillHeight: true
             Layout.preferredHeight: root.height / 2 - theme.spacingMedium
             theme: root.theme
+            onCopyToast: toastBanner.show()
         }
 
         RowLayout {
