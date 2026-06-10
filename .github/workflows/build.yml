@@ -20,8 +20,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
 
@@ -58,7 +56,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
           targets: i686-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
@@ -85,6 +82,7 @@ jobs:
           echo "QT_PLUGIN_PATH=$qtRoot\plugins" >> $env:GITHUB_ENV
 
       - name: Configure Cargo for x86
+        shell: bash
         run: |
           mkdir -p .cargo
           cat >> .cargo/config.toml << 'EOF'
@@ -101,7 +99,7 @@ jobs:
           name: vpid-windows-x86
           path: target/i686-pc-windows-msvc/release/vpid.exe
 
-  # ── macOS (x86_64 + arm64) ───────────────────────────────────
+  # ─ macOS (x86_64 + arm64) ───────────────────────────────────
   build-macos:
     name: macOS ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -118,7 +116,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
@@ -147,7 +144,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
           targets: aarch64-unknown-linux-gnu
 
       - name: Install cross-compilation tools
