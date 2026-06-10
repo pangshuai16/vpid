@@ -68,9 +68,10 @@ jobs:
           Invoke-WebRequest -Uri $qtUrl -OutFile $zipPath
           Expand-Archive -Path $zipPath -DestinationPath $outDir
           Remove-Item $zipPath
-          $qtRoot = Get-ChildItem -Path $outDir -Directory -Recurse -Filter "Qt6Config.cmake" | Select-Object -First 1 | ForEach-Object { $_.FullName.Replace("\lib\cmake\Qt6", "") }
-          if (-not $qtRoot) {
-            Get-ChildItem -Path $outDir -Recurse -Depth 2 | ForEach-Object { $_.FullName }
+          # 解压后结构为 Qt/x86/，直接使用该路径
+          $qtRoot = "$outDir\x86"
+          if (-not (Test-Path "$qtRoot\lib")) {
+            Get-ChildItem -Path $outDir -Directory | ForEach-Object { $_.FullName }
             exit 1
           }
           Write-Output "Qt root: $qtRoot"
