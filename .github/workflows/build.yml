@@ -210,6 +210,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Verify target installed
+        run: rustup target list --installed | grep aarch64-unknown-linux-gnu || rustup target add aarch64-unknown-linux-gnu
+
       - name: Configure Cargo for cross-compilation
         run: |
           mkdir -p .cargo
