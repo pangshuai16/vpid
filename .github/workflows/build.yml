@@ -9,6 +9,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  QT_VERSION: "5.15.17"
+  QT_BASE_URL: "https://github.com/cxxzhang/qt5.15.17/releases/download/qt5.15.17-21280744304"
 
 jobs:
   # ── Linux x86_64 ──────────────────────────────────────────────
@@ -23,41 +25,48 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Qt 5.15
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '5.15.2'
-          archives: 'qtbase qtdeclarative qttools icu'
+      - name: Download Qt 5.15.17 (Linux x64)
+        run: |
+          curl -L -o qt5.15.17_linux_x64.tar.xz \
+            "${{ env.QT_BASE_URL }}/qt5.15.17_linux_x64.tar.xz"
+          mkdir -p "$HOME/Qt/5.15.17"
+          tar -xf qt5.15.17_linux_x64.tar.xz -C "$HOME/Qt/5.15.17" --strip-components=1
+          rm qt5.15.17_linux_x64.tar.xz
+
+      - name: Verify Qt version
+        run: |
+          export PATH="$HOME/Qt/5.15.17/bin:$PATH"
+          qmake --version
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential mold
+          sudo apt-get install -y build-essential libfreetype6 libfontconfig1
 
       - name: Check
         run: cargo check --all-targets
+        env:
+          QTDIR: ${{ github.workspace }}/Qt/5.15.17
+          PATH: ${{ github.workspace }}/Qt/5.15.17/bin:${{ env.PATH }}
 
       - name: Build
         run: cargo build --release
+        env:
+          QTDIR: ${{ github.workspace }}/Qt/5.15.17
+          PATH: ${{ github.workspace }}/Qt/5.15.17/bin:${{ env.PATH }}
 
       - name: Package
         run: |
           mkdir -p dist/vpid-linux-x86_64/lib dist/vpid-linux-x86_64/plugins/platforms
           cp target/release/vpid dist/vpid-linux-x86_64/
           # 复制 Qt 运行时库
-          QT_LIB_DIR=$(find /home/runner/work -path '*/Qt/5*/gcc_64/lib' -type d 2>/dev/null | head -1)
-          if [ -z "$QT_LIB_DIR" ]; then
-            QT_LIB_DIR=$(find /opt -path '*/Qt/5*/gcc_64/lib' -type d 2>/dev/null | head -1)
-          fi
-          if [ -n "$QT_LIB_DIR" ]; then
+          QT_LIB_DIR="$HOME/Qt/5.15.17/lib"
+          if [ -d "$QT_LIB_DIR" ]; then
             cp "$QT_LIB_DIR"/libQt5{Core,Gui,Widgets,Qml,Quick,Network,DBus}* dist/vpid-linux-x86_64/lib/ 2>/dev/null || true
           fi
           # 复制 Qt platform plugins
-          QT_PLUGINS_DIR=$(find /home/runner/work -path '*/Qt/5*/gcc_64/plugins' -type d 2>/dev/null | head -1)
-          if [ -z "$QT_PLUGINS_DIR" ]; then
-            QT_PLUGINS_DIR=$(find /opt -path '*/Qt/5*/gcc_64/plugins' -type d 2>/dev/null | head -1)
-          fi
-          if [ -n "$QT_PLUGINS_DIR" ]; then
+          QT_PLUGINS_DIR="$HOME/Qt/5.15.17/plugins"
+          if [ -d "$QT_PLUGINS_DIR" ]; then
             cp "$QT_PLUGINS_DIR"/platforms/libqxcb* dist/vpid-linux-x86_64/plugins/platforms/ 2>/dev/null || true
           fi
           # 创建启动脚本
@@ -77,7 +86,7 @@ jobs:
           name: vpid-linux-x86_64
           path: dist/vpid-linux-x86_64.tar.gz
 
-  # ── Windows x86 (XP 兼容版 Qt 5.15) ───────────────────────────
+  # ── Windows x86 (XP 兼容) ────────────────────────────────────
   build-windows:
     name: Windows x86 (XP)
     runs-on: windows-latest
@@ -96,47 +105,37 @@ jobs:
         with:
           key: windows-x86
 
-      # 下载社区 XP 兼容版 Qt 5.15 预构建二进制 (x86)
-      # 来源: https://github.com/Fsu0413/QtCompileProject
-      - name: Download Qt 5.15 XP (x86)
+      - name: Download Qt 5.15.17 (Windows x86)
         run: |
-          $qtUrl = "https://github.com/Fsu0413/QtCompileProject/releases/download/5.15.17-Windows-x86_64-MinGW8.1.0-staticFull/5.15.17-Windows-x86_64-MinGW8.1.0-staticFull.7z"
-          $outDir = "$env:GITHUB_WORKSPACE\Qt"
-          $zipPath = "$env:GITHUB_WORKSPACE\qt_xp.7z"
+          $qtUrl = "${{ env.QT_BASE_URL }}/qt5.15.17_windows_x86.zip"
+          $outDir = "$env:USERPROFILE\Qt\5.15.17"
+          $zipPath = "$env:USERPROFILE\qt5.15.17_windows_x86.zip"
           Invoke-WebRequest -Uri $qtUrl -OutFile $zipPath
-          # 使用 7z 解压
-          & "C:\Program Files\7-Zip\7z.exe" x $zipPath -o"$outDir" -y
+          Expand-Archive -Path $zipPath -DestinationPath "$outDir" -Force
           Remove-Item $zipPath
-          $qtRoot = "$outDir\5.15.17-Windows-x86_64-MinGW8.1.0-staticFull"
-          if (-not (Test-Path "$qtRoot\lib")) {
-            Get-ChildItem -Path $outDir -Directory | ForEach-Object { $_.FullName }
-            exit 1
-          }
-          Write-Output "Qt root: $qtRoot"
-          echo "Qt5_DIR=$qtRoot\lib\cmake\Qt5" >> $env:GITHUB_ENV
-          echo "QT_PLUGIN_PATH=$qtRoot\plugins" >> $env:GITHUB_ENV
-          echo "$qtRoot\bin" >> $env:GITHUB_PATH
+          Write-Output "Qt installed to: $outDir"
+          Get-ChildItem -Path $outDir -Recurse -Filter "qmake.exe" | ForEach-Object { $_.FullName }
 
-      - name: Configure Cargo for x86
-        shell: bash
+      - name: Verify Qt version
         run: |
-          mkdir -p .cargo
-          cat >> .cargo/config.toml << 'EOF'
-          [target.i686-pc-windows-msvc]
-          linker = "rust-lld"
-          EOF
+          $qtRoot = "$env:USERPROFILE\Qt\5.15.17"
+          & "$qtRoot\bin\qmake.exe" --version
 
       - name: Build
         run: cargo build --release --target i686-pc-windows-msvc
+        env:
+          QTDIR: ${{ github.workspace }}\Qt\5.15.17
+          Qt5_DIR: ${{ github.workspace }}\Qt\5.15.17\lib\cmake\Qt5
 
       - name: Deploy Qt
         run: |
+          $qtRoot = "$env:USERPROFILE\Qt\5.15.17"
           $binPath = "target/i686-pc-windows-msvc/release/vpid.exe"
           $deployDir = "dist/vpid-windows-x86-xp"
           mkdir -p $deployDir
           Copy-Item $binPath $deployDir\vpid.exe
           # windeployqt 自动收集所需 Qt DLL、plugins、qml 等
-          windeployqt --release --no-translations --no-system-d3d-compiler $deployDir\vpid.exe
+          & "$qtRoot\bin\windeployqt.exe" --release --no-translations --no-system-d3d-compiler $deployDir\vpid.exe
 
       - name: Package
         run: |
@@ -148,7 +147,7 @@ jobs:
           name: vpid-windows-x86-xp
           path: dist/vpid-windows-x86-xp.zip
 
-  # ─ macOS (x86_64 + arm64) ───────────────────────────────────
+  # ── macOS (x86_64 + arm64) ───────────────────────────────────
   build-macos:
     name: macOS ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -157,8 +156,10 @@ jobs:
         include:
           - os: macos-13
             target: x86_64-apple-darwin
+            qt_asset: qt5.15.17_macos_x64.zip
           - os: macos-latest
             target: aarch64-apple-darwin
+            qt_asset: qt5.15.17_macos_arm64.zip
     steps:
       - uses: actions/checkout@v4
 
@@ -169,14 +170,24 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Qt 5.15
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '5.15.2'
-          archives: 'qtbase qtdeclarative qttools'
+      - name: Download Qt 5.15.17 (macOS)
+        run: |
+          curl -L -o qt5.15.17_macos.zip \
+            "${{ env.QT_BASE_URL }}/${{ matrix.qt_asset }}"
+          mkdir -p "$HOME/Qt/5.15.17"
+          unzip -q qt5.15.17_macos.zip -d "$HOME/Qt/5.15.17"
+          rm qt5.15.17_macos.zip
+
+      - name: Verify Qt version
+        run: |
+          export PATH="$HOME/Qt/5.15.17/bin:$PATH"
+          qmake --version
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
+        env:
+          QTDIR: ${{ github.workspace }}/Qt/5.15.17
+          PATH: ${{ github.workspace }}/Qt/5.15.17/bin:${{ env.PATH }}
 
       - name: Deploy Qt
         run: |
@@ -184,6 +195,7 @@ jobs:
           cp target/${{ matrix.target }}/release/vpid dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS/vpid
           chmod +x dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS/vpid
           # macdeployqt 自动打包 Qt Framework 和 plugins
+          export PATH="$HOME/Qt/5.15.17/bin:$PATH"
           macdeployqt dist/vpid-macos-${{ matrix.target }}.app -dmg
 
       - name: Upload artifact
@@ -214,6 +226,19 @@ jobs:
       - name: Verify target installed
         run: rustup target list --installed | grep aarch64-unknown-linux-gnu || rustup target add aarch64-unknown-linux-gnu
 
+      - name: Download Qt 5.15.17 (Linux arm64)
+        run: |
+          curl -L -o qt5.15.17_linux_arm64.tar.xz \
+            "${{ env.QT_BASE_URL }}/qt5.15.17_linux_arm64.tar.xz"
+          mkdir -p "$HOME/Qt/5.15.17"
+          tar -xf qt5.15.17_linux_arm64.tar.xz -C "$HOME/Qt/5.15.17" --strip-components=1
+          rm qt5.15.17_linux_arm64.tar.xz
+
+      - name: Verify Qt version
+        run: |
+          export PATH="$HOME/Qt/5.15.17/bin:$PATH"
+          qmake --version
+
       - name: Configure Cargo for cross-compilation
         run: |
           mkdir -p .cargo
@@ -225,6 +250,11 @@ jobs:
 
       - name: Build
         run: cargo build --release --target aarch64-unknown-linux-gnu
+        env:
+          QTDIR: ${{ github.workspace }}/Qt/5.15.17
+          QT_INCLUDE_PATH: ${{ github.workspace }}/Qt/5.15.17/include
+          QT_LIBRARY_PATH: ${{ github.workspace }}/Qt/5.15.17/lib
+          PATH: ${{ github.workspace }}/Qt/5.15.17/bin:${{ env.PATH }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -246,19 +276,29 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Qt 5.15
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '5.15.2'
-          archives: 'qtbase qtdeclarative qttools icu'
+      - name: Download Qt 5.15.17 (Linux x64)
+        run: |
+          curl -L -o qt5.15.17_linux_x64.tar.xz \
+            "${{ env.QT_BASE_URL }}/qt5.15.17_linux_x64.tar.xz"
+          mkdir -p "$HOME/Qt/5.15.17"
+          tar -xf qt5.15.17_linux_x64.tar.xz -C "$HOME/Qt/5.15.17" --strip-components=1
+          rm qt5.15.17_linux_x64.tar.xz
 
-      - name: Install mold linker
+      - name: Verify Qt version
+        run: |
+          export PATH="$HOME/Qt/5.15.17/bin:$PATH"
+          qmake --version
+
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y mold
+          sudo apt-get install -y build-essential libfreetype6 libfontconfig1
 
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings
+        env:
+          QTDIR: ${{ github.workspace }}/Qt/5.15.17
+          PATH: ${{ github.workspace }}/Qt/5.15.17/bin:${{ env.PATH }}
 
   # ── Format ───────────────────────────────────────────────────
   format:

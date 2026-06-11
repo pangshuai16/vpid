@@ -1,6 +1,6 @@
-# vpid - USB 设备查看器 (Qt6 + qmetaobject-rs)
+# vpid - USB 设备查看器 (Qt5.15 + qmetaobject-rs)
 
-跨平台 USB 外设查看工具。基于 Rust + Qt6 Quick (QML) + qmetaobject-rs 实现，
+跨平台 USB 外设查看工具。基于 Rust + Qt5.15 Quick (QML) + qmetaobject-rs 实现，
 USB 枚举使用纯 Rust 的 `nusb` 库，无需 CMake/C++ 桥接生成环节。
 
 ## 功能
@@ -13,7 +13,7 @@ USB 枚举使用纯 Rust 的 `nusb` 库，无需 CMake/C++ 桥接生成环节。
 ## 技术栈
 
 - **Rust** (edition 2021) — 业务逻辑 + USB 枚举（`nusb`）
-- **Qt 6.5+** — Quick / QuickControls 2 / QML
+- **Qt 5.15.17** — Quick / QuickControls 2 / QML
 - **[qmetaobject-rs](https://github.com/woboq/qmetaobject-rs)** — Rust QObject → QML 绑定（纯 Rust，无 C++ 代码生成）
 - 纯 Cargo 构建，无需 CMake / Node.js / 前端打包
 
@@ -49,9 +49,9 @@ vpid/
 ### 前置条件
 
 - Rust 1.80+ （`LazyLock` 支持）
-- Qt 6.5+ 开发包
-  - **Ubuntu/Debian**: `apt install qt6-base-dev qt6-declarative-dev libqt6quickcontrols2-6`
-  - **macOS**: `brew install qt@6`
+- Qt 5.15+ 开发包
+  - **Ubuntu/Debian**: `apt install qtbase5-dev qtdeclarative5-dev qttools5-dev`
+  - **macOS**: `brew install qt@5`
   - **Windows**: 使用 MSYS2 或 Qt 在线安装器
 
 ### 构建与运行
