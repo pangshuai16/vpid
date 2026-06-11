@@ -219,7 +219,7 @@ jobs:
       - name: Install cross-compilation tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user-static
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user-static binutils-aarch64-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
 
@@ -229,11 +229,55 @@ jobs:
       - name: Build
         run: cargo build --release --target aarch64-unknown-linux-gnu
 
+      - name: Package AppImage
+        run: |
+          # 创建 AppDir 结构
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
+
+          # 复制 ARM64 二进制文件
+          cp target/aarch64-unknown-linux-gnu/release/vpid AppDir/usr/bin/
+
+          # 创建桌面文件
+          cat > AppDir/usr/share/applications/vpid.desktop << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=vpid
+          GenericName=USB Device Viewer
+          Comment=USB设备查看器
+          Exec=vpid
+          Icon=vpid
+          Categories=Development;Utility;
+          EOF
+
+          # 创建 AppRun
+          cat > AppDir/AppRun << 'EOF'
+          #!/bin/bash
+          HERE="$(dirname "$(readlink -f "${0}")")"
+          export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH:-}"
+          export QT_PLUGIN_PATH="${HERE}/usr/plugins"
+          export QML2_IMPORT_PATH="${HERE}/usr/qml"
+          exec "${HERE}/usr/bin/vpid" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+
+          # 使用项目图标（如果存在）
+          if [ -f vpid-ui.jpg ]; then
+            convert vpid-ui.jpg -resize 256x256 AppDir/usr/share/icons/hicolor/256x256/apps/vpid.png 2>/dev/null || true
+          fi
+
+          # 下载 ARM64 版 appimagetool
+          wget -qO appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage"
+          chmod +x appimagetool
+
+          # 使用 QEMU 运行 ARM64 的 appimagetool 打包
+          export ARCH=arm64
+          qemu-aarch64-static ./appimagetool AppDir vpid-linux-arm64.AppImage
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid-linux-arm64
-          path: target/aarch64-unknown-linux-gnu/release/vpid
+          path: vpid-linux-arm64.AppImage
 
   # ── Clippy ───────────────────────────────────────────────────
   lint:

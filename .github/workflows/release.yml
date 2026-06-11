@@ -202,7 +202,7 @@ jobs:
           name: vpid-macos-${{ matrix.target }}
           path: dist/vpid-macos-${{ matrix.target }}.dmg
 
-  # ── Linux ARM64 ────────────────────────────────────
+  # ── Linux ARM64 (AppImage) ───────────────────────────────────
   build-linux-arm64:
     name: Linux ARM64
     runs-on: ubuntu-22.04
@@ -217,7 +217,7 @@ jobs:
       - name: Install cross-compilation tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user-static
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user-static binutils-aarch64-linux-gnu
 
       - name: Verify target installed
         run: rustup target list --installed | grep aarch64-unknown-linux-gnu || rustup target add aarch64-unknown-linux-gnu
@@ -227,11 +227,55 @@ jobs:
       - name: Build
         run: cargo build --release --target aarch64-unknown-linux-gnu
 
+      - name: Package AppImage
+        run: |
+          # 创建 AppDir 结构
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
+
+          # 复制 ARM64 二进制文件
+          cp target/aarch64-unknown-linux-gnu/release/vpid AppDir/usr/bin/
+
+          # 创建桌面文件
+          cat > AppDir/usr/share/applications/vpid.desktop << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=vpid
+          GenericName=USB Device Viewer
+          Comment=USB设备查看器
+          Exec=vpid
+          Icon=vpid
+          Categories=Development;Utility;
+          EOF
+
+          # 创建 AppRun
+          cat > AppDir/AppRun << 'EOF'
+          #!/bin/bash
+          HERE="$(dirname "$(readlink -f "${0}")")"
+          export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH:-}"
+          export QT_PLUGIN_PATH="${HERE}/usr/plugins"
+          export QML2_IMPORT_PATH="${HERE}/usr/qml"
+          exec "${HERE}/usr/bin/vpid" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+
+          # 使用项目图标（如果存在）
+          if [ -f vpid-ui.jpg ]; then
+            convert vpid-ui.jpg -resize 256x256 AppDir/usr/share/icons/hicolor/256x256/apps/vpid.png 2>/dev/null || true
+          fi
+
+          # 下载 ARM64 版 appimagetool
+          wget -qO appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage"
+          chmod +x appimagetool
+
+          # 使用 QEMU 运行 ARM64 的 appimagetool 打包
+          export ARCH=arm64
+          qemu-aarch64-static ./appimagetool AppDir vpid-linux-arm64.AppImage
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid-linux-arm64
-          path: target/aarch64-unknown-linux-gnu/release/vpid
+          path: vpid-linux-arm64.AppImage
 
   # ── Create Release & Upload Assets ────────────────────────────
   create-release:
@@ -259,7 +303,7 @@ jobs:
 
             ### 平台
             - **Linux x86_64**: `vpid-linux-x86_64.AppImage` — 单个可执行文件，包含所有 Qt 依赖，开箱即用
-            - **Linux ARM64**: `vpid-linux-arm64` — 直接运行二进制，需确保系统已安装 Qt 6.5+
+            - **Linux ARM64**: `vpid-linux-arm64.AppImage` — 单个可执行文件，包含所有 Qt 依赖，开箱即用
             - **Windows x86 (XP 兼容)**: `vpid-windows-x86-xp.zip` — 基于 [qt6_5_for_xp](https://github.com/cxxzhang/qt6_5_for_xp)，支持 Windows XP 及更高版本
             - **macOS x86_64**: `vpid-macos-x86_64-apple-darwin.dmg` — 已内置 Qt Framework
             - **macOS ARM64 (Apple Silicon)**: `vpid-macos-aarch64-apple-darwin.dmg` — 已内置 Qt Framework
@@ -271,7 +315,7 @@ jobs:
 
             ### 使用说明
             - **Linux x86_64**: 下载 `.AppImage`，赋予执行权限后直接运行：`chmod +x vpid-linux-x86_64.AppImage && ./vpid-linux-x86_64.AppImage`
-            - **Linux ARM64**: 直接运行二进制，需确保系统已安装 Qt 6.5+
+            - **Linux ARM64**: 下载 `.AppImage`，赋予执行权限后直接运行：`chmod +x vpid-linux-arm64.AppImage && ./vpid-linux-arm64.AppImage`
             - **Windows x86 (XP 兼容)**: 解压后双击 `vpid.exe`，已内置 Qt DLL，支持 Windows XP 及以上
             - **macOS**: 双击 `.dmg` 文件挂载后拖拽安装，已内置 Qt Framework
           files: artifacts/*
