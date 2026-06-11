@@ -1,0 +1,98 @@
+# Qt 6.5 静态编译 — 供 vpid 项目使用
+# 编译结果缓存到 GitHub Actions Cache，避免每次重新编译
+name: Build Qt6 Static
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 1 * *'  # 每月1号自动检查更新
+
+env:
+  QT_VERSION: '6.5.3'
+  QT_MODULES: 'qtbase qtdeclarative qtquickcontrols2 qttools qtsvg'
+
+jobs:
+  build-qt-linux-x64:
+    name: Build Qt6 Static Linux x86_64
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Restore Qt static cache
+        id: cache-qt
+        uses: actions/cache@v4
+        with:
+          path: /opt/qt6-static
+          key: qt6-static-${{ env.QT_VERSION }}-linux-x64-${{ hashFiles('.github/workflows/build-qt-static.yml') }}
+
+      - name: Install build dependencies
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build python3 perl \
+            libgl1-mesa-dev libvulkan-dev libxkbcommon-dev \
+            libfontconfig1-dev libfreetype6-dev libx11-dev \
+            libxext-dev libxfixes-dev libxi-dev libxrender-dev \
+            libxcb1-dev libxcb-glx0-dev libxcb-keysyms1-dev \
+            libxcb-image0-dev libxcb-shm0-dev libxcb-icccm4-dev \
+            libxcb-sync-dev libxcb-xfixes0-dev libxcb-shape0-dev \
+            libxcb-randr0-dev libxcb-render-util0-dev \
+            libxcb-util-dev libxcb-xinerama0-dev libxcb-xkb-dev \
+            libxkbcommon-x11-dev libatspi2.0-dev libcups2-dev \
+            libdrm-dev libegl1-mesa-dev libnss3-dev libdbus-1-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+
+      - name: Download Qt source
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/qt-src && cd ~/qt-src
+          # 使用 aqtinstall 下载源码（比 git clone 快且稳定）
+          pip install aqtinstall
+          aqt install-src linux desktop ${{ env.QT_VERSION }} --archives ${{ env.QT_MODULES }}
+
+      - name: Configure Qt static
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/qt-build && cd ~/qt-build
+          ~/qt-src/${{ env.QT_VERSION }}/src/configure \
+            -static \
+            -release \
+            -prefix /opt/qt6-static \
+            -nomake tests \
+            -nomake examples \
+            -skip qtwebengine \
+            -skip qtwebview \
+            -skip qtwayland \
+            -skip qtdoc \
+            -qt-libpng \
+            -qt-libjpeg \
+            -qt-zlib \
+            -qt-pcre \
+            -qt-harfbuzz \
+            -qt-freetype \
+            -no-feature-sql \
+            -no-feature-testlib \
+            -feature-eglfs \
+            -feature-linuxfb \
+            -bundled-xcb-xinput
+
+      - name: Build Qt static
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        run: |
+          cd ~/qt-build
+          cmake --build . --parallel $(nproc)
+
+      - name: Install Qt static
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        run: |
+          cd ~/qt-build
+          sudo cmake --install .
+          # 验证安装
+          /opt/qt6-static/bin/qmake -v
+
+      - name: Upload Qt static artifact
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qt6-static-linux-x64
+          path: /opt/qt6-static
+          retention-days: 30

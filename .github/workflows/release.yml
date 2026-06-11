@@ -9,15 +9,16 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  QT_VERSION: '6.5.3'
 
 permissions:
   contents: write
 
 jobs:
-  # ── Linux x86_64 ──────────────────────────────────────────────
+  # ── Linux x86_64 (静态链接 Qt) ──────────────────────────────────
   build-linux:
-    name: Linux x86_64
-    runs-on: ubuntu-latest
+    name: Linux x86_64 Static
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -26,54 +27,70 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
+      - name: Restore static Qt cache
+        id: cache-qt
+        uses: actions/cache@v4
         with:
-          version: '6.5.0'
+          path: /opt/qt6-static
+          key: qt6-static-${{ env.QT_VERSION }}-linux-x64
 
-      - name: Build
-        run: cargo build --release
-
-      - name: Package
+      - name: Build static Qt (if cache miss)
+        if: steps.cache-qt.outputs.cache-hit != 'true'
         run: |
-          mkdir -p dist/vpid-linux-x86_64/lib dist/vpid-linux-x86_64/plugins/platforms
-          cp target/release/vpid dist/vpid-linux-x86_64/
-          # 复制 Qt 运行时库
-          QT_LIB_DIR=$(find /home/runner/work -path '*/Qt/6*/gcc_64/lib' -type d 2>/dev/null | head -1)
-          if [ -z "$QT_LIB_DIR" ]; then
-            QT_LIB_DIR=$(find /opt -path '*/Qt/6*/gcc_64/lib' -type d 2>/dev/null | head -1)
-          fi
-          if [ -n "$QT_LIB_DIR" ]; then
-            cp "$QT_LIB_DIR"/libQt6{Core,Gui,Widgets,Qml,Quick,Network,DBus}* dist/vpid-linux-x86_64/lib/
-          fi
-          # 复制 Qt platform plugins
-          QT_PLUGINS_DIR=$(find /home/runner/work -path '*/Qt/6*/gcc_64/plugins' -type d 2>/dev/null | head -1)
-          if [ -z "$QT_PLUGINS_DIR" ]; then
-            QT_PLUGINS_DIR=$(find /opt -path '*/Qt/6*/gcc_64/plugins' -type d 2>/dev/null | head -1)
-          fi
-          if [ -n "$QT_PLUGINS_DIR" ]; then
-            cp "$QT_PLUGINS_DIR"/platforms/libqxcb* dist/vpid-linux-x86_64/plugins/platforms/
-          fi
-          # 创建启动脚本
-          cat > dist/vpid-linux-x86_64/run.sh << 'SCRIPT'
-          #!/bin/bash
-          DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          export LD_LIBRARY_PATH="$DIR/lib:${LD_LIBRARY_PATH:-}"
-          export QT_PLUGIN_PATH="$DIR/plugins"
-          exec "$DIR/vpid" "$@"
-          SCRIPT
-          chmod +x dist/vpid-linux-x86_64/run.sh
-          cd dist && tar czf vpid-linux-x86_64.tar.gz vpid-linux-x86_64
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build python3 perl \
+            libgl1-mesa-dev libvulkan-dev libxkbcommon-dev \
+            libfontconfig1-dev libfreetype6-dev libx11-dev \
+            libxext-dev libxfixes-dev libxi-dev libxrender-dev \
+            libxcb1-dev libxcb-glx0-dev libxcb-keysyms1-dev \
+            libxcb-image0-dev libxcb-shm0-dev libxcb-icccm4-dev \
+            libxcb-sync-dev libxcb-xfixes0-dev libxcb-shape0-dev \
+            libxcb-randr0-dev libxcb-render-util0-dev \
+            libxcb-util-dev libxcb-xinerama0-dev libxcb-xkb-dev \
+            libxkbcommon-x11-dev libatspi2.0-dev libcups2-dev \
+            libdrm-dev libegl1-mesa-dev libnss3-dev libdbus-1-dev
+
+          pip install aqtinstall
+          mkdir -p ~/qt-src && cd ~/qt-src
+          aqt install-src linux desktop ${{ env.QT_VERSION }} --archives qtbase qtdeclarative qtquickcontrols2 qttools qtsvg
+
+          mkdir -p ~/qt-build && cd ~/qt-build
+          ~/qt-src/${{ env.QT_VERSION }}/src/configure \
+            -static -release -prefix /opt/qt6-static \
+            -nomake tests -nomake examples \
+            -skip qtwebengine -skip qtwebview -skip qtwayland -skip qtdoc \
+            -qt-libpng -qt-libjpeg -qt-zlib -qt-pcre -qt-harfbuzz -qt-freetype \
+            -no-feature-sql -no-feature-testlib \
+            -feature-eglfs -feature-linuxfb -bundled-xcb-xinput
+
+          cmake --build . --parallel $(nproc)
+          sudo cmake --install .
+
+      - name: Build static binary
+        run: cargo build --release
+        env:
+          QMAKE: /opt/qt6-static/bin/qmake
+          QT_LIBRARY_PATH: /opt/qt6-static/lib
+          QT_INCLUDE_PATH: /opt/qt6-static/include
+          RUSTFLAGS: "-C target-feature=+crt-static"
+
+      - name: Verify static linking
+        run: |
+          echo "=== 检查动态依赖 ==="
+          ldd target/release/vpid || true
+          echo "=== 文件大小 ==="
+          ls -lh target/release/vpid
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid-linux-x86_64
-          path: dist/vpid-linux-x86_64.tar.gz
+          path: target/release/vpid
 
-  # ── Windows x86 (XP 兼容版 Qt) ─────────────────────────────────
+  # ── Windows x86 (XP 兼容版 Qt 静态链接) ────────────────────────
   build-windows:
-    name: Windows x86 (XP)
+    name: Windows x86 (XP) Static
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,9 +105,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: windows-x86
+          key: windows-x86-static
 
-      # 下载社区 XP 兼容版 Qt 6.5 预构建二进制 (x86)
       - name: Download Qt 6.5 XP (x86)
         run: |
           $qtUrl = "https://github.com/cxxzhang/qt6_5_for_xp/releases/download/v1.0.0.0/qt6_5_for_xp.zip"
@@ -99,55 +115,51 @@ jobs:
           Invoke-WebRequest -Uri $qtUrl -OutFile $zipPath
           Expand-Archive -Path $zipPath -DestinationPath $outDir
           Remove-Item $zipPath
-          # 解压后结构为 Qt/x86/，直接使用该路径
           $qtRoot = "$outDir\x86"
           if (-not (Test-Path "$qtRoot\lib")) {
             Get-ChildItem -Path $outDir -Directory | ForEach-Object { $_.FullName }
             exit 1
           }
           Write-Output "Qt root: $qtRoot"
-          echo "Qt6_DIR=$qtRoot\lib\cmake\Qt6" >> $env:GITHUB_ENV
-          echo "QT_PLUGIN_PATH=$qtRoot\plugins" >> $env:GITHUB_ENV
+          echo "QMAKE=$qtRoot\bin\qmake.exe" >> $env:GITHUB_ENV
+          echo "QT_LIBRARY_PATH=$qtRoot\lib" >> $env:GITHUB_ENV
+          echo "QT_INCLUDE_PATH=$qtRoot\include" >> $env:GITHUB_ENV
           echo "$qtRoot\bin" >> $env:GITHUB_PATH
 
-      - name: Configure Cargo for x86
+      - name: Configure Cargo for x86 static
         shell: bash
         run: |
           mkdir -p .cargo
-          cat >> .cargo/config.toml << 'EOF'
+          cat > .cargo/config.toml << 'EOF'
           [target.i686-pc-windows-msvc]
           linker = "rust-lld"
+          rustflags = ["-C", "target-feature=+crt-static"]
           EOF
 
-      - name: Build
+      - name: Build static binary
         run: cargo build --release --target i686-pc-windows-msvc
+        env:
+          QMAKE: ${{ env.QMAKE }}
+          QT_LIBRARY_PATH: ${{ env.QT_LIBRARY_PATH }}
+          QT_INCLUDE_PATH: ${{ env.QT_INCLUDE_PATH }}
 
-      - name: Deploy Qt
+      - name: Verify static linking
         run: |
           $binPath = "target/i686-pc-windows-msvc/release/vpid.exe"
-          $deployDir = "dist/vpid-windows-x86-xp"
-          mkdir -p $deployDir
-          Copy-Item $binPath $deployDir\vpid.exe
-          # windeployqt 自动收集所需 Qt DLL、plugins、qml 等
-          windeployqt --release --no-translations --no-system-d3d-compiler $deployDir\vpid.exe
-          # 复制 YY-Thunks XP 兼容 DLL（如存在）
-          if (Test-Path "$env:Qt6_DIR\..\bin\Qt6*.dll") {
-            # windeployqt 已处理，无需额外操作
-          }
-
-      - name: Package
-        run: |
-          Compress-Archive -Path dist/vpid-windows-x86-xp -DestinationPath dist/vpid-windows-x86-xp.zip
+          echo "=== 检查依赖 ==="
+          dumpbin /dependents $binPath
+          echo "=== 文件大小 ==="
+          Get-Item $binPath | Select-Object Length
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid-windows-x86-xp
-          path: dist/vpid-windows-x86-xp.zip
+          path: target/i686-pc-windows-msvc/release/vpid.exe
 
-  # ── macOS (x86_64 + arm64) ───────────────────────────────────
+  # ── macOS (x86_64 + arm64 静态链接) ────────────────────────────
   build-macos:
-    name: macOS ${{ matrix.target }}
+    name: macOS ${{ matrix.target }} Static
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -166,67 +178,127 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
+      - name: Restore static Qt cache
+        id: cache-qt
+        uses: actions/cache@v4
         with:
-          version: '6.5.0'
+          path: /opt/qt6-static
+          key: qt6-static-${{ env.QT_VERSION }}-${{ matrix.target }}
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Deploy Qt
+      - name: Build static Qt (if cache miss)
+        if: steps.cache-qt.outputs.cache-hit != 'true'
         run: |
-          mkdir -p dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS
-          cp target/${{ matrix.target }}/release/vpid dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS/vpid
-          chmod +x dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS/vpid
-          # macdeployqt 自动打包 Qt Framework 和 plugins
-          macdeployqt dist/vpid-macos-${{ matrix.target }}.app -dmg
+          brew install cmake ninja python3
+
+          pip install aqtinstall
+          mkdir -p ~/qt-src && cd ~/qt-src
+          aqt install-src mac desktop ${{ env.QT_VERSION }} --archives qtbase qtdeclarative qtquickcontrols2 qttools qtsvg
+
+          mkdir -p ~/qt-build && cd ~/qt-build
+          ~/qt-src/${{ env.QT_VERSION }}/src/configure \
+            -static -release -prefix /opt/qt6-static \
+            -nomake tests -nomake examples \
+            -skip qtwebengine -skip qtwebview -skip qtwayland -skip qtdoc \
+            -qt-libpng -qt-libjpeg -qt-zlib -qt-pcre -qt-harfbuzz -qt-freetype \
+            -no-feature-sql -no-feature-testlib \
+            -no-framework
+
+          cmake --build . --parallel $(sysctl -n hw.ncpu)
+          sudo cmake --install .
+
+      - name: Build static binary
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          QMAKE: /opt/qt6-static/bin/qmake
+          QT_LIBRARY_PATH: /opt/qt6-static/lib
+          QT_INCLUDE_PATH: /opt/qt6-static/include
+          RUSTFLAGS: "-C target-feature=+crt-static"
+
+      - name: Verify static linking
+        run: |
+          echo "=== 检查动态依赖 ==="
+          otool -L target/${{ matrix.target }}/release/vpid || true
+          echo "=== 文件大小 ==="
+          ls -lh target/${{ matrix.target }}/release/vpid
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid-macos-${{ matrix.target }}
-          path: dist/vpid-macos-${{ matrix.target }}.dmg
+          path: target/${{ matrix.target }}/release/vpid
 
-  # ── Linux ARM64 (交叉编译) ────────────────────────────────────
+  # ── Linux ARM64 (原生 ARM64 runner 静态链接) ───────────────────
   build-linux-arm64:
-    name: Linux ARM64
-    runs-on: ubuntu-latest
+    name: Linux ARM64 Static
+    runs-on: ubuntu-22.04-arm64
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-gnu
-
-      - name: Install cross-compilation tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-
-      - name: Verify target installed
-        run: rustup target list --installed | grep aarch64-unknown-linux-gnu || rustup target add aarch64-unknown-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Configure Cargo for cross-compilation
-        run: |
-          mkdir -p .cargo
-          cat >> .cargo/config.toml << 'EOF'
-          [target.aarch64-unknown-linux-gnu]
-          linker = "aarch64-linux-gnu-gcc"
-          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-          EOF
+      - name: Restore static Qt cache
+        id: cache-qt
+        uses: actions/cache@v4
+        with:
+          path: /opt/qt6-static
+          key: qt6-static-${{ env.QT_VERSION }}-linux-arm64
 
-      - name: Build
-        run: cargo build --release --target aarch64-unknown-linux-gnu
+      - name: Build static Qt (if cache miss)
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build python3 perl \
+            libgl1-mesa-dev libvulkan-dev libxkbcommon-dev \
+            libfontconfig1-dev libfreetype6-dev libx11-dev \
+            libxext-dev libxfixes-dev libxi-dev libxrender-dev \
+            libxcb1-dev libxcb-glx0-dev libxcb-keysyms1-dev \
+            libxcb-image0-dev libxcb-shm0-dev libxcb-icccm4-dev \
+            libxcb-sync-dev libxcb-xfixes0-dev libxcb-shape0-dev \
+            libxcb-randr0-dev libxcb-render-util0-dev \
+            libxcb-util-dev libxcb-xinerama0-dev libxcb-xkb-dev \
+            libxkbcommon-x11-dev libatspi2.0-dev libcups2-dev \
+            libdrm-dev libegl1-mesa-dev libnss3-dev libdbus-1-dev
+
+          pip install aqtinstall
+          mkdir -p ~/qt-src && cd ~/qt-src
+          aqt install-src linux desktop ${{ env.QT_VERSION }} --archives qtbase qtdeclarative qtquickcontrols2 qttools qtsvg
+
+          mkdir -p ~/qt-build && cd ~/qt-build
+          ~/qt-src/${{ env.QT_VERSION }}/src/configure \
+            -static -release -prefix /opt/qt6-static \
+            -nomake tests -nomake examples \
+            -skip qtwebengine -skip qtwebview -skip qtwayland -skip qtdoc \
+            -qt-libpng -qt-libjpeg -qt-zlib -qt-pcre -qt-harfbuzz -qt-freetype \
+            -no-feature-sql -no-feature-testlib \
+            -feature-eglfs -feature-linuxfb -bundled-xcb-xinput
+
+          cmake --build . --parallel $(nproc)
+          sudo cmake --install .
+
+      - name: Build static binary
+        run: cargo build --release
+        env:
+          QMAKE: /opt/qt6-static/bin/qmake
+          QT_LIBRARY_PATH: /opt/qt6-static/lib
+          QT_INCLUDE_PATH: /opt/qt6-static/include
+          RUSTFLAGS: "-C target-feature=+crt-static"
+
+      - name: Verify static linking
+        run: |
+          echo "=== 检查动态依赖 ==="
+          ldd target/release/vpid || true
+          echo "=== 文件大小 ==="
+          ls -lh target/release/vpid
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid-linux-arm64
-          path: target/aarch64-unknown-linux-gnu/release/vpid
+          path: target/release/vpid
 
   # ── Create Release & Upload Assets ────────────────────────────
   create-release:
@@ -253,22 +325,21 @@ jobs:
             ## vpid ${{ github.ref_name }} — USB 设备查看器
 
             ### 平台
-            - **Linux x86_64**: `vpid-linux-x86_64`
-            - **Linux ARM64**: `vpid-linux-arm64`
-            - **Windows x86 (XP 兼容)**: `vpid-windows-x86-xp.exe` — 基于 [qt6_5_for_xp](https://github.com/cxxzhang/qt6_5_for_xp)，支持 Windows XP 及更高版本
-            - **macOS x86_64**: `vpid-macos-x86_64-apple-darwin`
-            - **macOS ARM64 (Apple Silicon)**: `vpid-macos-aarch64-apple-darwin`
+            - **Linux x86_64**: `vpid-linux-x86_64` — 静态编译单二进制文件，无外部 Qt 依赖，开箱即用
+            - **Linux ARM64**: `vpid-linux-arm64` — 静态编译单二进制文件，无外部 Qt 依赖，开箱即用
+            - **Windows x86 (XP 兼容)**: `vpid-windows-x86-xp.exe` — 静态编译单二进制文件，基于 [qt6_5_for_xp](https://github.com/cxxzhang/qt6_5_for_xp)，支持 Windows XP 及更高版本
+            - **macOS x86_64**: `vpid-macos-x86_64-apple-darwin` — 静态编译单二进制文件，无外部 Qt 依赖
+            - **macOS ARM64 (Apple Silicon)**: `vpid-macos-aarch64-apple-darwin` — 静态编译单二进制文件，无外部 Qt 依赖
 
             ### 技术栈
             - Rust 2021 + nusb (纯 Rust USB 枚举)
             - Qt6 Quick (QML) + qmetaobject-rs
-            - 纯 Cargo 构建，无需 CMake
+            - 全平台静态编译 Qt 6.5，单文件无依赖分发
 
             ### 使用说明
-            - **Linux x86_64**: 解压后运行 `./run.sh`，已内置 Qt 依赖，开箱即用
-            - **Linux ARM64**: 直接运行二进制，需确保系统已安装 Qt 6.5+
-            - **Windows x86 (XP 兼容)**: 解压后双击 `vpid.exe`，已内置 Qt DLL，支持 Windows XP 及以上
-            - **macOS**: 双击 `.dmg` 文件挂载后拖拽安装，已内置 Qt Framework
+            - **Linux x86_64 / ARM64**: 直接运行 `./vpid`，无需安装 Qt，完全静态链接
+            - **Windows x86 (XP 兼容)**: 直接运行 `vpid.exe`，无需安装 Qt，完全静态链接，支持 Windows XP 及以上
+            - **macOS x86_64 / ARM64**: 直接运行 `./vpid`，无需安装 Qt，完全静态链接
           files: artifacts/*
           draft: true
           prerelease: false
