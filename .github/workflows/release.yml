@@ -14,10 +14,10 @@ permissions:
   contents: write
 
 jobs:
-  # ── Linux x86_64 ──────────────────────────────────────────────
+  # ── Linux x86_64 (AppImage) ──────────────────────────────────────
   build-linux:
     name: Linux x86_64
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -31,45 +31,63 @@ jobs:
         with:
           version: '6.5.0'
 
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential appstream
+
       - name: Build
         run: cargo build --release
 
-      - name: Package
+      - name: Package AppImage
         run: |
-          mkdir -p dist/vpid-linux-x86_64/lib dist/vpid-linux-x86_64/plugins/platforms
-          cp target/release/vpid dist/vpid-linux-x86_64/
-          # 复制 Qt 运行时库
-          QT_LIB_DIR=$(find /home/runner/work -path '*/Qt/6*/gcc_64/lib' -type d 2>/dev/null | head -1)
-          if [ -z "$QT_LIB_DIR" ]; then
-            QT_LIB_DIR=$(find /opt -path '*/Qt/6*/gcc_64/lib' -type d 2>/dev/null | head -1)
-          fi
-          if [ -n "$QT_LIB_DIR" ]; then
-            cp "$QT_LIB_DIR"/libQt6{Core,Gui,Widgets,Qml,Quick,Network,DBus}* dist/vpid-linux-x86_64/lib/
-          fi
-          # 复制 Qt platform plugins
-          QT_PLUGINS_DIR=$(find /home/runner/work -path '*/Qt/6*/gcc_64/plugins' -type d 2>/dev/null | head -1)
-          if [ -z "$QT_PLUGINS_DIR" ]; then
-            QT_PLUGINS_DIR=$(find /opt -path '*/Qt/6*/gcc_64/plugins' -type d 2>/dev/null | head -1)
-          fi
-          if [ -n "$QT_PLUGINS_DIR" ]; then
-            cp "$QT_PLUGINS_DIR"/platforms/libqxcb* dist/vpid-linux-x86_64/plugins/platforms/
-          fi
-          # 创建启动脚本
-          cat > dist/vpid-linux-x86_64/run.sh << 'SCRIPT'
+          # 下载 linuxdeploy 和 Qt 插件
+          wget -qO linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy
+          wget -qO qt https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x qt
+
+          # 创建 AppDir 结构
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
+
+          # 复制二进制文件
+          cp target/release/vpid AppDir/usr/bin/
+
+          # 创建桌面文件
+          cat > AppDir/usr/share/applications/vpid.desktop << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=vpid
+          GenericName=USB Device Viewer
+          Comment=USB设备查看器
+          Exec=vpid
+          Icon=vpid
+          Categories=Development;Utility;
+          EOF
+
+          # 创建 AppRun
+          cat > AppDir/AppRun << 'EOF'
           #!/bin/bash
-          DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          export LD_LIBRARY_PATH="$DIR/lib:${LD_LIBRARY_PATH:-}"
-          export QT_PLUGIN_PATH="$DIR/plugins"
-          exec "$DIR/vpid" "$@"
-          SCRIPT
-          chmod +x dist/vpid-linux-x86_64/run.sh
-          cd dist && tar czf vpid-linux-x86_64.tar.gz vpid-linux-x86_64
+          HERE="$(dirname "$(readlink -f "${0}")")"
+          exec "${HERE}/usr/bin/vpid" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+
+          # 使用项目图标（如果存在）或创建默认图标
+          if [ -f vpid-ui.jpg ]; then
+            convert vpid-ui.jpg -resize 256x256 AppDir/usr/share/icons/hicolor/256x256/apps/vpid.png 2>/dev/null || true
+          fi
+
+          # 打包 AppImage
+          export OUTPUT=vpid-linux-x86_64.AppImage
+          export QMAKE=$(find /home/runner/work -path '*/Qt/6*/gcc_64/bin/qmake' 2>/dev/null | head -1)
+          ./linuxdeploy --appdir=AppDir --plugin=qt --desktop-file=AppDir/usr/share/applications/vpid.desktop --output=appimage
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid-linux-x86_64
-          path: dist/vpid-linux-x86_64.tar.gz
+          path: vpid-linux-x86_64.AppImage
 
   # ── Windows x86 (XP 兼容版 Qt) ─────────────────────────────────
   build-windows:
@@ -130,10 +148,6 @@ jobs:
           Copy-Item $binPath $deployDir\vpid.exe
           # windeployqt 自动收集所需 Qt DLL、plugins、qml 等
           windeployqt --release --no-translations --no-system-d3d-compiler $deployDir\vpid.exe
-          # 复制 YY-Thunks XP 兼容 DLL（如存在）
-          if (Test-Path "$env:Qt6_DIR\..\bin\Qt6*.dll") {
-            # windeployqt 已处理，无需额外操作
-          }
 
       - name: Package
         run: |
@@ -188,10 +202,10 @@ jobs:
           name: vpid-macos-${{ matrix.target }}
           path: dist/vpid-macos-${{ matrix.target }}.dmg
 
-  # ── Linux ARM64 (交叉编译) ────────────────────────────────────
+  # ── Linux ARM64 ────────────────────────────────────
   build-linux-arm64:
     name: Linux ARM64
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -203,21 +217,12 @@ jobs:
       - name: Install cross-compilation tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user-static
 
       - name: Verify target installed
         run: rustup target list --installed | grep aarch64-unknown-linux-gnu || rustup target add aarch64-unknown-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: Configure Cargo for cross-compilation
-        run: |
-          mkdir -p .cargo
-          cat >> .cargo/config.toml << 'EOF'
-          [target.aarch64-unknown-linux-gnu]
-          linker = "aarch64-linux-gnu-gcc"
-          rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-          EOF
 
       - name: Build
         run: cargo build --release --target aarch64-unknown-linux-gnu
@@ -253,11 +258,11 @@ jobs:
             ## vpid ${{ github.ref_name }} — USB 设备查看器
 
             ### 平台
-            - **Linux x86_64**: `vpid-linux-x86_64`
-            - **Linux ARM64**: `vpid-linux-arm64`
-            - **Windows x86 (XP 兼容)**: `vpid-windows-x86-xp.exe` — 基于 [qt6_5_for_xp](https://github.com/cxxzhang/qt6_5_for_xp)，支持 Windows XP 及更高版本
-            - **macOS x86_64**: `vpid-macos-x86_64-apple-darwin`
-            - **macOS ARM64 (Apple Silicon)**: `vpid-macos-aarch64-apple-darwin`
+            - **Linux x86_64**: `vpid-linux-x86_64.AppImage` — 单个可执行文件，包含所有 Qt 依赖，开箱即用
+            - **Linux ARM64**: `vpid-linux-arm64` — 直接运行二进制，需确保系统已安装 Qt 6.5+
+            - **Windows x86 (XP 兼容)**: `vpid-windows-x86-xp.zip` — 基于 [qt6_5_for_xp](https://github.com/cxxzhang/qt6_5_for_xp)，支持 Windows XP 及更高版本
+            - **macOS x86_64**: `vpid-macos-x86_64-apple-darwin.dmg` — 已内置 Qt Framework
+            - **macOS ARM64 (Apple Silicon)**: `vpid-macos-aarch64-apple-darwin.dmg` — 已内置 Qt Framework
 
             ### 技术栈
             - Rust 2021 + nusb (纯 Rust USB 枚举)
@@ -265,7 +270,7 @@ jobs:
             - 纯 Cargo 构建，无需 CMake
 
             ### 使用说明
-            - **Linux x86_64**: 解压后运行 `./run.sh`，已内置 Qt 依赖，开箱即用
+            - **Linux x86_64**: 下载 `.AppImage`，赋予执行权限后直接运行：`chmod +x vpid-linux-x86_64.AppImage && ./vpid-linux-x86_64.AppImage`
             - **Linux ARM64**: 直接运行二进制，需确保系统已安装 Qt 6.5+
             - **Windows x86 (XP 兼容)**: 解压后双击 `vpid.exe`，已内置 Qt DLL，支持 Windows XP 及以上
             - **macOS**: 双击 `.dmg` 文件挂载后拖拽安装，已内置 Qt Framework
