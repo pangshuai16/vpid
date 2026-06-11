@@ -1,12 +1,12 @@
-import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
+import QtQuick 2.15
+import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
 
 ColumnLayout {
     id: root
     property string title: ""
     property var model: []
-    required property QtObject theme
+    property QtObject theme: null
 
     // Toast 提示
     property bool showToast: false
@@ -51,12 +51,12 @@ ColumnLayout {
 
         delegate: Rectangle {
             id: row
-            required property var modelData
-            readonly property bool hovered: rowMouse.containsMouse
+            property var device: model.modelData || model
+            property bool rowHovered: rowMouse.containsMouse
 
             width: ListView.view ? ListView.view.width : 0
             implicitHeight: 32
-            color: row.hovered ? theme.primaryHover : "transparent"
+            color: row.rowHovered ? theme.primaryHover : "transparent"
 
             RowLayout {
                 anchors.fill: parent
@@ -64,55 +64,57 @@ ColumnLayout {
 
                 Text {
                     Layout.preferredWidth: theme.colWidthProduct
-                    text: row.modelData.product || "Unknown"
+                    text: row.device.product || "Unknown"
                     elide: Text.ElideRight
                     maximumLineCount: 1
-                    color: row.hovered ? theme.primaryColor : theme.textPrimary
+                    color: row.rowHovered ? theme.primaryColor : theme.textPrimary
                 }
                 Text {
                     Layout.preferredWidth: theme.colWidthVendor
-                    text: row.modelData.manufacturer || ""
+                    text: row.device.manufacturer || ""
                     elide: Text.ElideRight
                     maximumLineCount: 1
                     color: theme.textSecondary
                 }
                 Text {
                     Layout.preferredWidth: theme.colWidthId
-                    text: theme.formatHex(row.modelData.vendor_id, 4)
+                    text: theme.formatHex(row.device.vendor_id, 4)
                     color: theme.textSecondary
                     font.family: "monospace"
                 }
                 Text {
                     Layout.preferredWidth: theme.colWidthId
-                    text: theme.formatHex(row.modelData.product_id, 4)
+                    text: theme.formatHex(row.device.product_id, 4)
                     color: theme.textSecondary
                     font.family: "monospace"
                 }
                 Text {
                     Layout.preferredWidth: theme.colWidthClass
-                    text: row.modelData.device_class_name || ""
+                    text: row.device.device_class_name || ""
                     elide: Text.ElideRight
                     maximumLineCount: 1
                     color: theme.textSecondary
                 }
                 Text {
                     Layout.preferredWidth: theme.colWidthSpeed
-                    text: row.modelData.device_speed || ""
+                    text: row.device.device_speed || ""
                     color: theme.textSecondary
                 }
                 Text {
                     Layout.preferredWidth: theme.colWidthSerial
-                    text: row.modelData.serial_number || ""
+                    text: row.device.serial_number || ""
                     elide: Text.ElideRight
                     maximumLineCount: 1
                     color: theme.textSecondary
                 }
             }
 
-            TapHandler {
+            MouseArea {
                 id: rowMouse
-                onTapped: {
-                    var d = row.modelData;
+                anchors.fill: parent
+                hoverEnabled: true
+                onClicked: {
+                    var d = row.device;
                     var info = "VID:PID " + theme.formatHex(d.vendor_id, 4) + ":" + theme.formatHex(d.product_id, 4);
                     if (d.product) info += " " + d.product;
                     if (d.manufacturer) info += " (" + d.manufacturer + ")";
@@ -122,7 +124,6 @@ ColumnLayout {
                         root.copyToast(info);
                     }
                 }
-                gesturePolicy: TapHandler.ReleaseWithinBounds
             }
         }
 

@@ -1,5 +1,5 @@
 # Cargo configuration for vpid
-# 使用 Mold 链接器加速 Linux 链接过程
+# 使用 Mold 链接器加速 Linux 链接过程（如可用）
 
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

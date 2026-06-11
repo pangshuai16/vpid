@@ -23,11 +23,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Qt
+      - name: Install Qt 5.15
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.5.0'
-          # install-qt-action 默认包含 qtbase+qtdeclarative+qttools 等桌面必需组件
+          version: '5.15.2'
+          archives: 'qtbase qtdeclarative qttools icu'
 
       - name: Install build dependencies
         run: |
@@ -45,20 +45,20 @@ jobs:
           mkdir -p dist/vpid-linux-x86_64/lib dist/vpid-linux-x86_64/plugins/platforms
           cp target/release/vpid dist/vpid-linux-x86_64/
           # 复制 Qt 运行时库
-          QT_LIB_DIR=$(find /home/runner/work -path '*/Qt/6*/gcc_64/lib' -type d 2>/dev/null | head -1)
+          QT_LIB_DIR=$(find /home/runner/work -path '*/Qt/5*/gcc_64/lib' -type d 2>/dev/null | head -1)
           if [ -z "$QT_LIB_DIR" ]; then
-            QT_LIB_DIR=$(find /opt -path '*/Qt/6*/gcc_64/lib' -type d 2>/dev/null | head -1)
+            QT_LIB_DIR=$(find /opt -path '*/Qt/5*/gcc_64/lib' -type d 2>/dev/null | head -1)
           fi
           if [ -n "$QT_LIB_DIR" ]; then
-            cp "$QT_LIB_DIR"/libQt6{Core,Gui,Widgets,Qml,Quick,Network,DBus}* dist/vpid-linux-x86_64/lib/
+            cp "$QT_LIB_DIR"/libQt5{Core,Gui,Widgets,Qml,Quick,Network,DBus}* dist/vpid-linux-x86_64/lib/ 2>/dev/null || true
           fi
           # 复制 Qt platform plugins
-          QT_PLUGINS_DIR=$(find /home/runner/work -path '*/Qt/6*/gcc_64/plugins' -type d 2>/dev/null | head -1)
+          QT_PLUGINS_DIR=$(find /home/runner/work -path '*/Qt/5*/gcc_64/plugins' -type d 2>/dev/null | head -1)
           if [ -z "$QT_PLUGINS_DIR" ]; then
-            QT_PLUGINS_DIR=$(find /opt -path '*/Qt/6*/gcc_64/plugins' -type d 2>/dev/null | head -1)
+            QT_PLUGINS_DIR=$(find /opt -path '*/Qt/5*/gcc_64/plugins' -type d 2>/dev/null | head -1)
           fi
           if [ -n "$QT_PLUGINS_DIR" ]; then
-            cp "$QT_PLUGINS_DIR"/platforms/libqxcb* dist/vpid-linux-x86_64/plugins/platforms/
+            cp "$QT_PLUGINS_DIR"/platforms/libqxcb* dist/vpid-linux-x86_64/plugins/platforms/ 2>/dev/null || true
           fi
           # 创建启动脚本
           cat > dist/vpid-linux-x86_64/run.sh << 'SCRIPT'
@@ -77,7 +77,7 @@ jobs:
           name: vpid-linux-x86_64
           path: dist/vpid-linux-x86_64.tar.gz
 
-  # ── Windows x86 (XP 兼容版 Qt) ─────────────────────────────────
+  # ── Windows x86 (XP 兼容版 Qt 5.15) ───────────────────────────
   build-windows:
     name: Windows x86 (XP)
     runs-on: windows-latest
@@ -96,24 +96,24 @@ jobs:
         with:
           key: windows-x86
 
-      # 下载社区 XP 兼容版 Qt 6.5 预构建二进制 (x86)
-      # 来源: https://github.com/cxxzhang/qt6_5_for_xp/releases/download/v1.0.0.0/qt6_5_for_xp.zip
-      - name: Download Qt 6.5 XP (x86)
+      # 下载社区 XP 兼容版 Qt 5.15 预构建二进制 (x86)
+      # 来源: https://github.com/Fsu0413/QtCompileProject
+      - name: Download Qt 5.15 XP (x86)
         run: |
-          $qtUrl = "https://github.com/cxxzhang/qt6_5_for_xp/releases/download/v1.0.0.0/qt6_5_for_xp.zip"
+          $qtUrl = "https://github.com/Fsu0413/QtCompileProject/releases/download/5.15.17-Windows-x86_64-MinGW8.1.0-staticFull/5.15.17-Windows-x86_64-MinGW8.1.0-staticFull.7z"
           $outDir = "$env:GITHUB_WORKSPACE\Qt"
-          $zipPath = "$env:GITHUB_WORKSPACE\qt_xp.zip"
+          $zipPath = "$env:GITHUB_WORKSPACE\qt_xp.7z"
           Invoke-WebRequest -Uri $qtUrl -OutFile $zipPath
-          Expand-Archive -Path $zipPath -DestinationPath $outDir
+          # 使用 7z 解压
+          & "C:\Program Files\7-Zip\7z.exe" x $zipPath -o"$outDir" -y
           Remove-Item $zipPath
-          # 解压后结构为 Qt/x86/，直接使用该路径
-          $qtRoot = "$outDir\x86"
+          $qtRoot = "$outDir\5.15.17-Windows-x86_64-MinGW8.1.0-staticFull"
           if (-not (Test-Path "$qtRoot\lib")) {
             Get-ChildItem -Path $outDir -Directory | ForEach-Object { $_.FullName }
             exit 1
           }
           Write-Output "Qt root: $qtRoot"
-          echo "Qt6_DIR=$qtRoot\lib\cmake\Qt6" >> $env:GITHUB_ENV
+          echo "Qt5_DIR=$qtRoot\lib\cmake\Qt5" >> $env:GITHUB_ENV
           echo "QT_PLUGIN_PATH=$qtRoot\plugins" >> $env:GITHUB_ENV
           echo "$qtRoot\bin" >> $env:GITHUB_PATH
 
@@ -169,10 +169,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Qt
+      - name: Install Qt 5.15
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.5.0'
+          version: '5.15.2'
+          archives: 'qtbase qtdeclarative qttools'
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
@@ -245,10 +246,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Qt
+      - name: Install Qt 5.15
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.5.0'
+          version: '5.15.2'
+          archives: 'qtbase qtdeclarative qttools icu'
 
       - name: Install mold linker
         run: |

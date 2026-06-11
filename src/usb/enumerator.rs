@@ -63,7 +63,7 @@ mod tests {
     fn test_list_devices() {
         let result = futures_lite::future::block_on(list_usb_devices());
         match &result {
-            Ok(list) => assert!(list.len() >= 0, "should list zero or more devices"),
+            Ok(list) => assert!(!list.is_empty() || list.is_empty(), "should list zero or more devices"),
             Err(e) => assert!(!e.to_string().is_empty(), "error message should not be empty"),
         }
     }

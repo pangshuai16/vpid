@@ -1,12 +1,12 @@
 [package]
 name = "vpid"
-version = "2.0.0"
-description = "USB设备查看器 (Qt6 + qmetaobject-rs)"
+version = "2.1.0"
+description = "USB设备查看器 (Qt5.15 + qmetaobject-rs)"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
 repository = "https://github.com/example/vpid"
-keywords = ["usb", "qt6", "qml", "device-viewer"]
+keywords = ["usb", "qt5", "qml", "device-viewer"]
 categories = ["hardware-support", "gui"]
 
 [[bin]]
@@ -18,7 +18,8 @@ name = "vpid"
 path = "src/lib.rs"
 
 [dependencies]
-qmetaobject = "0.2.3"
+qmetaobject = "0.2.10"
+cstr = "0.2"
 nusb = "0.2.0"
 futures-lite = "2.3"
 serde = { version = "1.0", features = ["derive"] }
