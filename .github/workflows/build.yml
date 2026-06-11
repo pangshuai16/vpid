@@ -9,11 +9,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  QT_VERSION: '6.5.3'
 
 jobs:
-  # ── Linux x86_64 (AppImage) ──────────────────────────────────────
+  # ── Linux x86_64 (静态链接 Qt) ──────────────────────────────────
   build-linux:
-    name: Linux x86_64
+    name: Linux x86_64 Static
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -23,72 +24,73 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
+      - name: Restore static Qt cache
+        id: cache-qt
+        uses: actions/cache@v4
         with:
-          version: '6.5.0'
-          # install-qt-action 默认包含 qtbase+qtdeclarative+qttools 等桌面必需组件
+          path: /opt/qt6-static
+          key: qt6-static-${{ env.QT_VERSION }}-linux-x64
 
-      - name: Install build dependencies
+      - name: Build static Qt (if cache miss)
+        if: steps.cache-qt.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential appstream
+          sudo apt-get install -y \
+            build-essential cmake ninja-build python3 perl \
+            libgl1-mesa-dev libvulkan-dev libxkbcommon-dev \
+            libfontconfig1-dev libfreetype6-dev libx11-dev \
+            libxext-dev libxfixes-dev libxi-dev libxrender-dev \
+            libxcb1-dev libxcb-glx0-dev libxcb-keysyms1-dev \
+            libxcb-image0-dev libxcb-shm0-dev libxcb-icccm4-dev \
+            libxcb-sync-dev libxcb-xfixes0-dev libxcb-shape0-dev \
+            libxcb-randr0-dev libxcb-render-util0-dev \
+            libxcb-util-dev libxcb-xinerama0-dev libxcb-xkb-dev \
+            libxkbcommon-x11-dev libatspi2.0-dev libcups2-dev \
+            libdrm-dev libegl1-mesa-dev libnss3-dev libdbus-1-dev
+
+          pip install aqtinstall
+          mkdir -p ~/qt-src && cd ~/qt-src
+          aqt install-src linux desktop ${{ env.QT_VERSION }} --archives qtbase qtdeclarative qtquickcontrols2 qttools qtsvg
+
+          mkdir -p ~/qt-build && cd ~/qt-build
+          ~/qt-src/${{ env.QT_VERSION }}/src/configure \
+            -static -release -prefix /opt/qt6-static \
+            -nomake tests -nomake examples \
+            -skip qtwebengine -skip qtwebview -skip qtwayland -skip qtdoc \
+            -qt-libpng -qt-libjpeg -qt-zlib -qt-pcre -qt-harfbuzz -qt-freetype \
+            -no-feature-sql -no-feature-testlib \
+            -feature-eglfs -feature-linuxfb -bundled-xcb-xinput
+
+          cmake --build . --parallel $(nproc)
+          sudo cmake --install .
 
       - name: Check
         run: cargo check --all-targets
+        env:
+          QMAKE: /opt/qt6-static/bin/qmake
+          QT_LIBRARY_PATH: /opt/qt6-static/lib
+          QT_INCLUDE_PATH: /opt/qt6-static/include
 
-      - name: Build
+      - name: Build static binary
         run: cargo build --release
+        env:
+          QMAKE: /opt/qt6-static/bin/qmake
+          QT_LIBRARY_PATH: /opt/qt6-static/lib
+          QT_INCLUDE_PATH: /opt/qt6-static/include
+          RUSTFLAGS: "-C target-feature=+crt-static"
 
-      - name: Package AppImage
+      - name: Verify static linking
         run: |
-          # 下载 linuxdeploy 和 Qt 插件
-          wget -qO linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          chmod +x linuxdeploy
-          wget -qO qt https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
-          chmod +x qt
-
-          # 创建 AppDir 结构
-          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
-
-          # 复制二进制文件
-          cp target/release/vpid AppDir/usr/bin/
-
-          # 创建桌面文件
-          cat > AppDir/usr/share/applications/vpid.desktop << 'EOF'
-          [Desktop Entry]
-          Type=Application
-          Name=vpid
-          GenericName=USB Device Viewer
-          Comment=USB设备查看器
-          Exec=vpid
-          Icon=vpid
-          Categories=Development;Utility;
-          EOF
-
-          # 创建 AppRun
-          cat > AppDir/AppRun << 'EOF'
-          #!/bin/bash
-          HERE="$(dirname "$(readlink -f "${0}")")"
-          exec "${HERE}/usr/bin/vpid" "$@"
-          EOF
-          chmod +x AppDir/AppRun
-
-          # 使用项目图标（如果存在）或创建默认图标
-          if [ -f vpid-ui.jpg ]; then
-            convert vpid-ui.jpg -resize 256x256 AppDir/usr/share/icons/hicolor/256x256/apps/vpid.png 2>/dev/null || true
-          fi
-
-          # 打包 AppImage
-          export OUTPUT=vpid-linux-x86_64.AppImage
-          export QMAKE=$(find /home/runner/work -path '*/Qt/6*/gcc_64/bin/qmake' 2>/dev/null | head -1)
-          ./linuxdeploy --appdir=AppDir --plugin=qt --desktop-file=AppDir/usr/share/applications/vpid.desktop --output=appimage
+          echo "=== 检查动态依赖 ==="
+          ldd target/release/vpid || true
+          echo "=== 文件大小 ==="
+          ls -lh target/release/vpid
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid-linux-x86_64
-          path: vpid-linux-x86_64.AppImage
+          path: target/release/vpid
 
   # ── Windows x86 (XP 兼容版 Qt) ─────────────────────────────────
   build-windows:
@@ -109,8 +111,6 @@ jobs:
         with:
           key: windows-x86
 
-      # 下载社区 XP 兼容版 Qt 6.5 预构建二进制 (x86)
-      # 来源: https://github.com/cxxzhang/qt6_5_for_xp/releases/download/v1.0.0.0/qt6_5_for_xp.zip
       - name: Download Qt 6.5 XP (x86)
         run: |
           $qtUrl = "https://github.com/cxxzhang/qt6_5_for_xp/releases/download/v1.0.0.0/qt6_5_for_xp.zip"
@@ -119,7 +119,6 @@ jobs:
           Invoke-WebRequest -Uri $qtUrl -OutFile $zipPath
           Expand-Archive -Path $zipPath -DestinationPath $outDir
           Remove-Item $zipPath
-          # 解压后结构为 Qt/x86/，直接使用该路径
           $qtRoot = "$outDir\x86"
           if (-not (Test-Path "$qtRoot\lib")) {
             Get-ChildItem -Path $outDir -Directory | ForEach-Object { $_.FullName }
@@ -148,7 +147,6 @@ jobs:
           $deployDir = "dist/vpid-windows-x86-xp"
           mkdir -p $deployDir
           Copy-Item $binPath $deployDir\vpid.exe
-          # windeployqt 自动收集所需 Qt DLL、plugins、qml 等
           windeployqt --release --no-translations --no-system-d3d-compiler $deployDir\vpid.exe
 
       - name: Package
@@ -161,7 +159,7 @@ jobs:
           name: vpid-windows-x86-xp
           path: dist/vpid-windows-x86-xp.zip
 
-  # ─ macOS (x86_64 + arm64) ───────────────────────────────────
+  # ── macOS (x86_64 + arm64) ───────────────────────────────────
   build-macos:
     name: macOS ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -195,7 +193,6 @@ jobs:
           mkdir -p dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS
           cp target/${{ matrix.target }}/release/vpid dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS/vpid
           chmod +x dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS/vpid
-          # macdeployqt 自动打包 Qt Framework 和 plugins
           macdeployqt dist/vpid-macos-${{ matrix.target }}.app -dmg
 
       - name: Upload artifact
@@ -204,7 +201,7 @@ jobs:
           name: vpid-macos-${{ matrix.target }}
           path: dist/vpid-macos-${{ matrix.target }}.dmg
 
-  # ── Linux ARM64 (AppImage) ───────────────────────────────────
+  # ── Linux ARM64 (交叉编译) ───────────────────────────────────
   build-linux-arm64:
     name: Linux ARM64
     runs-on: ubuntu-22.04
@@ -229,55 +226,11 @@ jobs:
       - name: Build
         run: cargo build --release --target aarch64-unknown-linux-gnu
 
-      - name: Package AppImage
-        run: |
-          # 创建 AppDir 结构
-          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
-
-          # 复制 ARM64 二进制文件
-          cp target/aarch64-unknown-linux-gnu/release/vpid AppDir/usr/bin/
-
-          # 创建桌面文件
-          cat > AppDir/usr/share/applications/vpid.desktop << 'EOF'
-          [Desktop Entry]
-          Type=Application
-          Name=vpid
-          GenericName=USB Device Viewer
-          Comment=USB设备查看器
-          Exec=vpid
-          Icon=vpid
-          Categories=Development;Utility;
-          EOF
-
-          # 创建 AppRun
-          cat > AppDir/AppRun << 'EOF'
-          #!/bin/bash
-          HERE="$(dirname "$(readlink -f "${0}")")"
-          export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH:-}"
-          export QT_PLUGIN_PATH="${HERE}/usr/plugins"
-          export QML2_IMPORT_PATH="${HERE}/usr/qml"
-          exec "${HERE}/usr/bin/vpid" "$@"
-          EOF
-          chmod +x AppDir/AppRun
-
-          # 使用项目图标（如果存在）
-          if [ -f vpid-ui.jpg ]; then
-            convert vpid-ui.jpg -resize 256x256 AppDir/usr/share/icons/hicolor/256x256/apps/vpid.png 2>/dev/null || true
-          fi
-
-          # 下载 ARM64 版 appimagetool
-          wget -qO appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage"
-          chmod +x appimagetool
-
-          # 使用 QEMU 运行 ARM64 的 appimagetool 打包
-          export ARCH=arm64
-          qemu-aarch64-static ./appimagetool AppDir vpid-linux-arm64.AppImage
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid-linux-arm64
-          path: vpid-linux-arm64.AppImage
+          path: target/aarch64-unknown-linux-gnu/release/vpid
 
   # ── Clippy ───────────────────────────────────────────────────
   lint:
