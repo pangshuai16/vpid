@@ -40,11 +40,42 @@ jobs:
       - name: Build
         run: cargo build --release
 
+      - name: Package
+        run: |
+          mkdir -p dist/vpid-linux-x86_64/lib dist/vpid-linux-x86_64/plugins/platforms
+          cp target/release/vpid dist/vpid-linux-x86_64/
+          # 复制 Qt 运行时库
+          QT_LIB_DIR=$(find /home/runner/work -path '*/Qt/6*/gcc_64/lib' -type d 2>/dev/null | head -1)
+          if [ -z "$QT_LIB_DIR" ]; then
+            QT_LIB_DIR=$(find /opt -path '*/Qt/6*/gcc_64/lib' -type d 2>/dev/null | head -1)
+          fi
+          if [ -n "$QT_LIB_DIR" ]; then
+            cp "$QT_LIB_DIR"/libQt6{Core,Gui,Widgets,Qml,Quick,Network,DBus}* dist/vpid-linux-x86_64/lib/
+          fi
+          # 复制 Qt platform plugins
+          QT_PLUGINS_DIR=$(find /home/runner/work -path '*/Qt/6*/gcc_64/plugins' -type d 2>/dev/null | head -1)
+          if [ -z "$QT_PLUGINS_DIR" ]; then
+            QT_PLUGINS_DIR=$(find /opt -path '*/Qt/6*/gcc_64/plugins' -type d 2>/dev/null | head -1)
+          fi
+          if [ -n "$QT_PLUGINS_DIR" ]; then
+            cp "$QT_PLUGINS_DIR"/platforms/libqxcb* dist/vpid-linux-x86_64/plugins/platforms/
+          fi
+          # 创建启动脚本
+          cat > dist/vpid-linux-x86_64/run.sh << 'SCRIPT'
+          #!/bin/bash
+          DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export LD_LIBRARY_PATH="$DIR/lib:${LD_LIBRARY_PATH:-}"
+          export QT_PLUGIN_PATH="$DIR/plugins"
+          exec "$DIR/vpid" "$@"
+          SCRIPT
+          chmod +x dist/vpid-linux-x86_64/run.sh
+          cd dist && tar czf vpid-linux-x86_64.tar.gz vpid-linux-x86_64
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid-linux-x86_64
-          path: target/release/vpid
+          path: dist/vpid-linux-x86_64.tar.gz
 
   # ── Windows x86 (XP 兼容版 Qt) ─────────────────────────────────
   build-windows:
@@ -98,11 +129,24 @@ jobs:
       - name: Build
         run: cargo build --release --target i686-pc-windows-msvc
 
+      - name: Deploy Qt
+        run: |
+          $binPath = "target/i686-pc-windows-msvc/release/vpid.exe"
+          $deployDir = "dist/vpid-windows-x86-xp"
+          mkdir -p $deployDir
+          Copy-Item $binPath $deployDir\vpid.exe
+          # windeployqt 自动收集所需 Qt DLL、plugins、qml 等
+          windeployqt --release --no-translations --no-system-d3d-compiler $deployDir\vpid.exe
+
+      - name: Package
+        run: |
+          Compress-Archive -Path dist/vpid-windows-x86-xp -DestinationPath dist/vpid-windows-x86-xp.zip
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vpid-windows-x86
-          path: target/i686-pc-windows-msvc/release/vpid.exe
+          name: vpid-windows-x86-xp
+          path: dist/vpid-windows-x86-xp.zip
 
   # ─ macOS (x86_64 + arm64) ───────────────────────────────────
   build-macos:
@@ -133,11 +177,19 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Deploy Qt
+        run: |
+          mkdir -p dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS
+          cp target/${{ matrix.target }}/release/vpid dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS/vpid
+          chmod +x dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS/vpid
+          # macdeployqt 自动打包 Qt Framework 和 plugins
+          macdeployqt dist/vpid-macos-${{ matrix.target }}.app -dmg
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid-macos-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/vpid
+          path: dist/vpid-macos-${{ matrix.target }}.dmg
 
   # ── Linux ARM64 (交叉编译) ───────────────────────────────────
   build-linux-arm64:
