@@ -16,10 +16,10 @@ permissions:
   contents: write
 
 jobs:
-  # ── Linux x86_64 ──────────────────────────────────────────────
+  # ── Linux x86_64 (静态链接 Qt) ──────────────────────────────────
   build-linux:
-    name: Linux x86_64
-    runs-on: ubuntu-latest
+    name: Linux x86_64 Static
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -41,13 +41,46 @@ jobs:
           export PATH="$HOME/Qt/5.15.17/bin:$PATH"
           qmake --version
 
-      - name: Build
+      - name: Build static Qt (if cache miss)
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build python3 perl \
+            libgl1-mesa-dev libvulkan-dev libxkbcommon-dev \
+            libfontconfig1-dev libfreetype6-dev libx11-dev \
+            libxext-dev libxfixes-dev libxi-dev libxrender-dev \
+            libxcb1-dev libxcb-glx0-dev libxcb-keysyms1-dev \
+            libxcb-image0-dev libxcb-shm0-dev libxcb-icccm4-dev \
+            libxcb-sync-dev libxcb-xfixes0-dev libxcb-shape0-dev \
+            libxcb-randr0-dev libxcb-render-util0-dev \
+            libxcb-util-dev libxcb-xinerama0-dev libxcb-xkb-dev \
+            libxkbcommon-x11-dev libatspi2.0-dev libcups2-dev \
+            libdrm-dev libegl1-mesa-dev libnss3-dev libdbus-1-dev
+
+          pip install aqtinstall
+          mkdir -p ~/qt-src && cd ~/qt-src
+          aqt install-src linux desktop ${{ env.QT_VERSION }} --archives qtbase qtdeclarative qtquickcontrols2 qttools qtsvg
+
+          mkdir -p ~/qt-build && cd ~/qt-build
+          ~/qt-src/${{ env.QT_VERSION }}/src/configure \
+            -static -release -prefix /opt/qt6-static \
+            -nomake tests -nomake examples \
+            -skip qtwebengine -skip qtwebview -skip qtwayland -skip qtdoc \
+            -qt-libpng -qt-libjpeg -qt-zlib -qt-pcre -qt-harfbuzz -qt-freetype \
+            -no-feature-sql -no-feature-testlib \
+            -feature-eglfs -feature-linuxfb -bundled-xcb-xinput
+
+          cmake --build . --parallel $(nproc)
+          sudo cmake --install .
+
+      - name: Build static binary
         run: cargo build --release
         env:
           QTDIR: ${{ github.workspace }}/Qt/5.15.17
           PATH: ${{ github.workspace }}/Qt/5.15.17/bin:${{ env.PATH }}
 
-      - name: Package
+      - name: Verify static linking
         run: |
           mkdir -p dist/vpid-linux-x86_64/lib dist/vpid-linux-x86_64/plugins/platforms
           cp target/release/vpid dist/vpid-linux-x86_64/
@@ -76,11 +109,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: vpid-linux-x86_64
-          path: dist/vpid-linux-x86_64.tar.gz
+          path: target/release/vpid
 
   # ── Windows x86 (XP 兼容) ────────────────────────────────────
   build-windows:
-    name: Windows x86 (XP)
+    name: Windows x86 (XP) Static
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -95,7 +128,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: windows-x86
+          key: windows-x86-static
 
       - name: Download Qt 5.15.17 (Windows x86)
         run: |
@@ -112,13 +145,13 @@ jobs:
           $qtRoot = "$env:USERPROFILE\Qt\5.15.17"
           & "$qtRoot\bin\qmake.exe" --version
 
-      - name: Build
+      - name: Build static binary
         run: cargo build --release --target i686-pc-windows-msvc
         env:
           QTDIR: ${{ github.workspace }}\Qt\5.15.17
           Qt5_DIR: ${{ github.workspace }}\Qt\5.15.17\lib\cmake\Qt5
 
-      - name: Deploy Qt
+      - name: Verify static linking
         run: |
           $qtRoot = "$env:USERPROFILE\Qt\5.15.17"
           $binPath = "target/i686-pc-windows-msvc/release/vpid.exe"
@@ -136,11 +169,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: vpid-windows-x86-xp
-          path: dist/vpid-windows-x86-xp.zip
+          path: target/i686-pc-windows-msvc/release/vpid.exe
 
-  # ── macOS (x86_64 + arm64) ───────────────────────────────────
+  # ── macOS (x86_64 + arm64 静态链接) ────────────────────────────
   build-macos:
-    name: macOS ${{ matrix.target }}
+    name: macOS ${{ matrix.target }} Static
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -174,13 +207,34 @@ jobs:
           export PATH="$HOME/Qt/5.15.17/bin:$PATH"
           qmake --version
 
-      - name: Build
+      - name: Build static Qt (if cache miss)
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        run: |
+          brew install cmake ninja python3
+
+          pip install aqtinstall
+          mkdir -p ~/qt-src && cd ~/qt-src
+          aqt install-src mac desktop ${{ env.QT_VERSION }} --archives qtbase qtdeclarative qtquickcontrols2 qttools qtsvg
+
+          mkdir -p ~/qt-build && cd ~/qt-build
+          ~/qt-src/${{ env.QT_VERSION }}/src/configure \
+            -static -release -prefix /opt/qt6-static \
+            -nomake tests -nomake examples \
+            -skip qtwebengine -skip qtwebview -skip qtwayland -skip qtdoc \
+            -qt-libpng -qt-libjpeg -qt-zlib -qt-pcre -qt-harfbuzz -qt-freetype \
+            -no-feature-sql -no-feature-testlib \
+            -no-framework
+
+          cmake --build . --parallel $(sysctl -n hw.ncpu)
+          sudo cmake --install .
+
+      - name: Build static binary
         run: cargo build --release --target ${{ matrix.target }}
         env:
           QTDIR: ${{ github.workspace }}/Qt/5.15.17
           PATH: ${{ github.workspace }}/Qt/5.15.17/bin:${{ env.PATH }}
 
-      - name: Deploy Qt
+      - name: Verify static linking
         run: |
           mkdir -p dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS
           cp target/${{ matrix.target }}/release/vpid dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS/vpid
@@ -193,29 +247,67 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: vpid-macos-${{ matrix.target }}
-          path: dist/vpid-macos-${{ matrix.target }}.dmg
+          path: target/${{ matrix.target }}/release/vpid
 
-  # ── Linux ARM64 (交叉编译) ────────────────────────────────────
+  # ── Linux ARM64 (原生 ARM64 runner 静态链接) ───────────────────
   build-linux-arm64:
-    name: Linux ARM64
-    runs-on: ubuntu-latest
+    name: Linux ARM64 Static
+    runs-on: ubuntu-22.04-arm64
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-gnu
-
-      - name: Install cross-compilation tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-
-      - name: Verify target installed
-        run: rustup target list --installed | grep aarch64-unknown-linux-gnu || rustup target add aarch64-unknown-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Restore static Qt cache
+        id: cache-qt
+        uses: actions/cache@v4
+        with:
+          path: /opt/qt6-static
+          key: qt6-static-${{ env.QT_VERSION }}-linux-arm64
+
+      - name: Build static Qt (if cache miss)
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build python3 perl \
+            libgl1-mesa-dev libvulkan-dev libxkbcommon-dev \
+            libfontconfig1-dev libfreetype6-dev libx11-dev \
+            libxext-dev libxfixes-dev libxi-dev libxrender-dev \
+            libxcb1-dev libxcb-glx0-dev libxcb-keysyms1-dev \
+            libxcb-image0-dev libxcb-shm0-dev libxcb-icccm4-dev \
+            libxcb-sync-dev libxcb-xfixes0-dev libxcb-shape0-dev \
+            libxcb-randr0-dev libxcb-render-util0-dev \
+            libxcb-util-dev libxcb-xinerama0-dev libxcb-xkb-dev \
+            libxkbcommon-x11-dev libatspi2.0-dev libcups2-dev \
+            libdrm-dev libegl1-mesa-dev libnss3-dev libdbus-1-dev
+
+          pip install aqtinstall
+          mkdir -p ~/qt-src && cd ~/qt-src
+          aqt install-src linux desktop ${{ env.QT_VERSION }} --archives qtbase qtdeclarative qtquickcontrols2 qttools qtsvg
+
+          mkdir -p ~/qt-build && cd ~/qt-build
+          ~/qt-src/${{ env.QT_VERSION }}/src/configure \
+            -static -release -prefix /opt/qt6-static \
+            -nomake tests -nomake examples \
+            -skip qtwebengine -skip qtwebview -skip qtwayland -skip qtdoc \
+            -qt-libpng -qt-libjpeg -qt-zlib -qt-pcre -qt-harfbuzz -qt-freetype \
+            -no-feature-sql -no-feature-testlib \
+            -feature-eglfs -feature-linuxfb -bundled-xcb-xinput
+
+          cmake --build . --parallel $(nproc)
+          sudo cmake --install .
+
+      - name: Build static binary
+        run: cargo build --release
+        env:
+          QMAKE: /opt/qt6-static/bin/qmake
+          QT_LIBRARY_PATH: /opt/qt6-static/lib
+          QT_INCLUDE_PATH: /opt/qt6-static/include
+          RUSTFLAGS: "-C target-feature=+crt-static"
 
       - name: Download Qt 5.15.17 (Linux arm64)
         run: |
@@ -251,7 +343,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: vpid-linux-arm64
-          path: target/aarch64-unknown-linux-gnu/release/vpid
+          path: target/release/vpid
 
   # ── Create Release & Upload Assets ────────────────────────────
   create-release:
