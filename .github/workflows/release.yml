@@ -88,9 +88,9 @@ jobs:
           name: vpid-linux-x86_64
           path: target/release/vpid
 
-  # ── Windows x86 (XP 兼容版 Qt) ─────────────────────────────────
+  # ── Windows x86 (XP 兼容版 Qt 静态链接) ────────────────────────
   build-windows:
-    name: Windows x86 (XP)
+    name: Windows x86 (XP) Static
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -105,7 +105,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: windows-x86
+          key: windows-x86-static
 
       - name: Download Qt 6.5 XP (x86)
         run: |
@@ -121,39 +121,41 @@ jobs:
             exit 1
           }
           Write-Output "Qt root: $qtRoot"
-          echo "Qt6_DIR=$qtRoot\lib\cmake\Qt6" >> $env:GITHUB_ENV
-          echo "QT_PLUGIN_PATH=$qtRoot\plugins" >> $env:GITHUB_ENV
+          echo "QMAKE=$qtRoot\bin\qmake.exe" >> $env:GITHUB_ENV
+          echo "QT_LIBRARY_PATH=$qtRoot\lib" >> $env:GITHUB_ENV
+          echo "QT_INCLUDE_PATH=$qtRoot\include" >> $env:GITHUB_ENV
           echo "$qtRoot\bin" >> $env:GITHUB_PATH
 
-      - name: Configure Cargo for x86
+      - name: Configure Cargo for x86 static
         shell: bash
         run: |
           mkdir -p .cargo
-          cat >> .cargo/config.toml << 'EOF'
+          cat > .cargo/config.toml << 'EOF'
           [target.i686-pc-windows-msvc]
           linker = "rust-lld"
+          rustflags = ["-C", "target-feature=+crt-static"]
           EOF
 
-      - name: Build
+      - name: Build static binary
         run: cargo build --release --target i686-pc-windows-msvc
+        env:
+          QMAKE: ${{ env.QMAKE }}
+          QT_LIBRARY_PATH: ${{ env.QT_LIBRARY_PATH }}
+          QT_INCLUDE_PATH: ${{ env.QT_INCLUDE_PATH }}
 
-      - name: Deploy Qt
+      - name: Verify static linking
         run: |
           $binPath = "target/i686-pc-windows-msvc/release/vpid.exe"
-          $deployDir = "dist/vpid-windows-x86-xp"
-          mkdir -p $deployDir
-          Copy-Item $binPath $deployDir\vpid.exe
-          windeployqt --release --no-translations --no-system-d3d-compiler $deployDir\vpid.exe
-
-      - name: Package
-        run: |
-          Compress-Archive -Path dist/vpid-windows-x86-xp -DestinationPath dist/vpid-windows-x86-xp.zip
+          echo "=== 检查依赖 ==="
+          dumpbin /dependents $binPath
+          echo "=== 文件大小 ==="
+          Get-Item $binPath | Select-Object Length
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid-windows-x86-xp
-          path: dist/vpid-windows-x86-xp.zip
+          path: target/i686-pc-windows-msvc/release/vpid.exe
 
   # ── macOS (x86_64 + arm64) ───────────────────────────────────
   build-macos:
@@ -255,19 +257,19 @@ jobs:
             ### 平台
             - **Linux x86_64**: `vpid-linux-x86_64` — 静态编译单二进制文件，无外部 Qt 依赖，开箱即用
             - **Linux ARM64**: `vpid-linux-arm64` — 交叉编译二进制，需确保系统已安装 Qt 6.5+
-            - **Windows x86 (XP 兼容)**: `vpid-windows-x86-xp.zip` — 基于 [qt6_5_for_xp](https://github.com/cxxzhang/qt6_5_for_xp)，支持 Windows XP 及更高版本
+            - **Windows x86 (XP 兼容)**: `vpid-windows-x86-xp.exe` — 静态编译单二进制文件，基于 [qt6_5_for_xp](https://github.com/cxxzhang/qt6_5_for_xp)，支持 Windows XP 及更高版本
             - **macOS x86_64**: `vpid-macos-x86_64-apple-darwin.dmg` — 已内置 Qt Framework
             - **macOS ARM64 (Apple Silicon)**: `vpid-macos-aarch64-apple-darwin.dmg` — 已内置 Qt Framework
 
             ### 技术栈
             - Rust 2021 + nusb (纯 Rust USB 枚举)
             - Qt6 Quick (QML) + qmetaobject-rs
-            - 静态编译 Qt 6.5（Linux x86_64），单文件无依赖分发
+            - 静态编译 Qt 6.5（Linux x86_64 / Windows x86），单文件无依赖分发
 
             ### 使用说明
             - **Linux x86_64**: 直接运行 `./vpid`，无需安装 Qt，完全静态链接
             - **Linux ARM64**: 直接运行二进制，需确保系统已安装 Qt 6.5+
-            - **Windows x86 (XP 兼容)**: 解压后双击 `vpid.exe`，已内置 Qt DLL，支持 Windows XP 及以上
+            - **Windows x86 (XP 兼容)**: 直接运行 `vpid.exe`，无需安装 Qt，完全静态链接，支持 Windows XP 及以上
             - **macOS**: 双击 `.dmg` 文件挂载后拖拽安装，已内置 Qt Framework
           files: artifacts/*
           draft: true

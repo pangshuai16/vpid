@@ -92,9 +92,9 @@ jobs:
           name: vpid-linux-x86_64
           path: target/release/vpid
 
-  # ── Windows x86 (XP 兼容版 Qt) ─────────────────────────────────
+  # ── Windows x86 (XP 兼容版 Qt 静态链接) ────────────────────────
   build-windows:
-    name: Windows x86 (XP)
+    name: Windows x86 (XP) Static
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -109,7 +109,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: windows-x86
+          key: windows-x86-static
 
       - name: Download Qt 6.5 XP (x86)
         run: |
@@ -125,39 +125,42 @@ jobs:
             exit 1
           }
           Write-Output "Qt root: $qtRoot"
-          echo "Qt6_DIR=$qtRoot\lib\cmake\Qt6" >> $env:GITHUB_ENV
-          echo "QT_PLUGIN_PATH=$qtRoot\plugins" >> $env:GITHUB_ENV
+          # 设置环境变量指向静态 Qt
+          echo "QMAKE=$qtRoot\bin\qmake.exe" >> $env:GITHUB_ENV
+          echo "QT_LIBRARY_PATH=$qtRoot\lib" >> $env:GITHUB_ENV
+          echo "QT_INCLUDE_PATH=$qtRoot\include" >> $env:GITHUB_ENV
           echo "$qtRoot\bin" >> $env:GITHUB_PATH
 
-      - name: Configure Cargo for x86
+      - name: Configure Cargo for x86 static
         shell: bash
         run: |
           mkdir -p .cargo
-          cat >> .cargo/config.toml << 'EOF'
+          cat > .cargo/config.toml << 'EOF'
           [target.i686-pc-windows-msvc]
           linker = "rust-lld"
+          rustflags = ["-C", "target-feature=+crt-static"]
           EOF
 
-      - name: Build
+      - name: Build static binary
         run: cargo build --release --target i686-pc-windows-msvc
+        env:
+          QMAKE: ${{ env.QMAKE }}
+          QT_LIBRARY_PATH: ${{ env.QT_LIBRARY_PATH }}
+          QT_INCLUDE_PATH: ${{ env.QT_INCLUDE_PATH }}
 
-      - name: Deploy Qt
+      - name: Verify static linking
         run: |
           $binPath = "target/i686-pc-windows-msvc/release/vpid.exe"
-          $deployDir = "dist/vpid-windows-x86-xp"
-          mkdir -p $deployDir
-          Copy-Item $binPath $deployDir\vpid.exe
-          windeployqt --release --no-translations --no-system-d3d-compiler $deployDir\vpid.exe
-
-      - name: Package
-        run: |
-          Compress-Archive -Path dist/vpid-windows-x86-xp -DestinationPath dist/vpid-windows-x86-xp.zip
+          echo "=== 检查依赖 ==="
+          dumpbin /dependents $binPath
+          echo "=== 文件大小 ==="
+          Get-Item $binPath | Select-Object Length
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid-windows-x86-xp
-          path: dist/vpid-windows-x86-xp.zip
+          path: target/i686-pc-windows-msvc/release/vpid.exe
 
   # ── macOS (x86_64 + arm64) ───────────────────────────────────
   build-macos:
