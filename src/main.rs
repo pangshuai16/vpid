@@ -27,7 +27,8 @@ fn main() {
     let mut engine = QmlEngine::new();
 
     // 加载主 QML 文件
-    engine.load_file(qml_path.into());
+    let qml_url = format!("file://{}", qml_path.display());
+    engine.load_file(qml_url.into());
 
     // 启动事件循环
     engine.exec();

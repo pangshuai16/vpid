@@ -20,8 +20,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
 
@@ -29,12 +27,12 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.0'
-          modules: 'qtdeclarative'
+          # install-qt-action 默认包含 qtbase+qtdeclarative+qttools 等桌面必需组件
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential
+          sudo apt-get install -y build-essential mold
 
       - name: Check
         run: cargo check --all-targets
@@ -48,9 +46,9 @@ jobs:
           name: vpid-linux-x86_64
           path: target/release/vpid
 
-  # ── Windows x86_64 ────────────────────────────────────────────
+  # ── Windows x86 (XP 兼容版 Qt) ─────────────────────────────────
   build-windows:
-    name: Windows x86_64
+    name: Windows x86 (XP)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -58,26 +56,55 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          targets: i686-pc-windows-msvc
+
+      - name: Verify target installed
+        run: rustup target list --installed | grep i686-pc-windows-msvc || (rustup target add i686-pc-windows-msvc)
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
         with:
-          version: '6.5.0'
-          modules: 'qtdeclarative'
+          key: windows-x86
+
+      # 下载社区 XP 兼容版 Qt 6.5 预构建二进制 (x86)
+      # 来源: https://github.com/cxxzhang/qt6_5_for_xp/releases/download/v1.0.0.0/qt6_5_for_xp.zip
+      - name: Download Qt 6.5 XP (x86)
+        run: |
+          $qtUrl = "https://github.com/cxxzhang/qt6_5_for_xp/releases/download/v1.0.0.0/qt6_5_for_xp.zip"
+          $outDir = "$env:GITHUB_WORKSPACE\Qt"
+          $zipPath = "$env:GITHUB_WORKSPACE\qt_xp.zip"
+          Invoke-WebRequest -Uri $qtUrl -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath $outDir
+          Remove-Item $zipPath
+          # 解压后结构为 Qt/x86/，直接使用该路径
+          $qtRoot = "$outDir\x86"
+          if (-not (Test-Path "$qtRoot\lib")) {
+            Get-ChildItem -Path $outDir -Directory | ForEach-Object { $_.FullName }
+            exit 1
+          }
+          Write-Output "Qt root: $qtRoot"
+          echo "Qt6_DIR=$qtRoot\lib\cmake\Qt6" >> $env:GITHUB_ENV
+          echo "QT_PLUGIN_PATH=$qtRoot\plugins" >> $env:GITHUB_ENV
+          echo "$qtRoot\bin" >> $env:GITHUB_PATH
+
+      - name: Configure Cargo for x86
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << 'EOF'
+          [target.i686-pc-windows-msvc]
+          linker = "rust-lld"
+          EOF
 
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --target i686-pc-windows-msvc
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vpid-windows-x86_64
-          path: target/release/vpid.exe
+          name: vpid-windows-x86
+          path: target/i686-pc-windows-msvc/release/vpid.exe
 
-  # ── macOS (x86_64 + arm64) ───────────────────────────────────
+  # ─ macOS (x86_64 + arm64) ───────────────────────────────────
   build-macos:
     name: macOS ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -94,7 +121,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
@@ -103,7 +129,6 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.0'
-          modules: 'qtdeclarative'
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
@@ -124,7 +149,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
           targets: aarch64-unknown-linux-gnu
 
       - name: Install cross-compilation tools
@@ -170,7 +194,11 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.0'
-          modules: 'qtdeclarative'
+
+      - name: Install mold linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mold
 
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings
