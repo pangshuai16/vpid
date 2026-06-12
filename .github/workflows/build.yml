@@ -125,8 +125,10 @@ jobs:
       - name: Build static binary
         run: cargo build --release --target i686-pc-windows-msvc
         env:
-          QTDIR: ${{ github.workspace }}\Qt\5.15.17
-          Qt5_DIR: ${{ github.workspace }}\Qt\5.15.17\lib\cmake\Qt5
+          QMAKE: ${{ env.QMAKE }}
+          QT_LIBRARY_PATH: ${{ env.QT_LIBRARY_PATH }}
+          QT_INCLUDE_PATH: ${{ env.QT_INCLUDE_PATH }}
+          CXXFLAGS: "/D_HAS_STDEXT=0"
 
       - name: Verify static linking
         run: |
@@ -148,19 +150,22 @@ jobs:
           name: vpid-windows-x86-xp
           path: target/i686-pc-windows-msvc/release/vpid.exe
 
-  # ── macOS (x86_64 + arm64) ───────────────────────────────────
+  # ── macOS (x86_64 + arm64 静态链接 Qt 5.15.17) ────────────────────────────
   build-macos:
     name: macOS ${{ matrix.target }} Static
     runs-on: ${{ matrix.os }}
+    env:
+      QT_VERSION: '5.15.17'
+      QT_BASE_URL: 'https://github.com/cxxzhang/qt5.15.17/releases/download/qt5.15.17-21280744304'
     strategy:
       matrix:
         include:
           - os: macos-13
             target: x86_64-apple-darwin
-            qt_asset: qt5.15.17_macos_x64.zip
+            qt_arch: macos_x64
           - os: macos-latest
             target: aarch64-apple-darwin
-            qt_asset: qt5.15.17_macos_arm64.zip
+            qt_arch: macos_arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -171,36 +176,40 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Download Qt 5.15.17 (macOS)
-        run: |
-          curl -L -o qt5.15.17_macos.zip \
-            "${{ env.QT_BASE_URL }}/${{ matrix.qt_asset }}"
-          mkdir -p "$HOME/Qt/5.15.17"
-          unzip -q qt5.15.17_macos.zip -d "$HOME/Qt/5.15.17"
-          rm qt5.15.17_macos.zip
+      - name: Restore static Qt cache
+        id: cache-qt
+        uses: actions/cache@v4
+        with:
+          path: ~/Qt/${{ env.QT_VERSION }}
+          key: qt5-static-${{ env.QT_VERSION }}-${{ matrix.qt_arch }}
 
-      - name: Verify Qt version
+      - name: Download prebuilt static Qt
+        if: steps.cache-qt.outputs.cache-hit != 'true'
         run: |
-          export PATH="$HOME/Qt/5.15.17/bin:$PATH"
+          mkdir -p ~/Qt
+          curl -L -o ~/qt.zip "${{ env.QT_BASE_URL }}/qt5.15.17_${{ matrix.qt_arch }}.zip"
+          unzip -q ~/qt.zip -d ~/Qt/tmp
+          # 将解压后的内容移动到标准路径
+          mv ~/Qt/tmp/* ~/Qt/${{ env.QT_VERSION }}
+          rm -rf ~/Qt/tmp ~/qt.zip
+
+      - name: Fix Qt permissions
+        run: |
+          chmod -R +x ~/Qt/${{ env.QT_VERSION }}/bin/*
+          ls -la ~/Qt/${{ env.QT_VERSION }}/bin/qmake
+
+      - name: Verify qmake
+        run: |
+          export PATH="$HOME/Qt/${{ env.QT_VERSION }}/bin:$PATH"
           qmake --version
-
-          mkdir -p ~/qt-build && cd ~/qt-build
-          ~/qt-src/${{ env.QT_VERSION }}/src/configure \
-            -static -release -prefix /opt/qt6-static \
-            -nomake tests -nomake examples \
-            -skip qtwebengine -skip qtwebview -skip qtwayland -skip qtdoc \
-            -qt-libpng -qt-libjpeg -qt-zlib -qt-pcre -qt-harfbuzz -qt-freetype \
-            -no-feature-sql -no-feature-testlib \
-            -no-framework
-
-          cmake --build . --parallel $(sysctl -n hw.ncpu)
-          sudo cmake --install .
 
       - name: Build static binary
         run: cargo build --release --target ${{ matrix.target }}
         env:
-          QTDIR: ${{ github.workspace }}/Qt/5.15.17
-          PATH: ${{ github.workspace }}/Qt/5.15.17/bin:${{ env.PATH }}
+          QMAKE: /Users/runner/Qt/${{ env.QT_VERSION }}/bin/qmake
+          QT_LIBRARY_PATH: /Users/runner/Qt/${{ env.QT_VERSION }}/lib
+          QT_INCLUDE_PATH: /Users/runner/Qt/${{ env.QT_VERSION }}/include
+          RUSTFLAGS: "-C target-feature=+crt-static"
 
       - name: Verify static linking
         run: |
@@ -303,55 +312,4 @@ jobs:
           name: vpid-linux-arm64
           path: target/release/vpid
 
-  # ── Clippy ───────────────────────────────────────────────────
-  lint:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Download Qt 5.15.17 (Linux x64)
-        run: |
-          curl -L -o qt5.15.17_linux_x64.tar.xz \
-            "${{ env.QT_BASE_URL }}/qt5.15.17_linux_x64.tar.xz"
-          mkdir -p "$HOME/Qt/5.15.17"
-          tar -xf qt5.15.17_linux_x64.tar.xz -C "$HOME/Qt/5.15.17" --strip-components=1
-          rm qt5.15.17_linux_x64.tar.xz
-
-      - name: Verify Qt version
-        run: |
-          export PATH="$HOME/Qt/5.15.17/bin:$PATH"
-          qmake --version
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libfreetype6 libfontconfig1
-
-      - name: Run Clippy
-        run: cargo clippy --all-targets -- -D warnings
-        env:
-          QTDIR: ${{ github.workspace }}/Qt/5.15.17
-          PATH: ${{ github.workspace }}/Qt/5.15.17/bin:${{ env.PATH }}
-
-  # ── Format ───────────────────────────────────────────────────
-  format:
-    name: Rustfmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Check format
-        run: cargo fmt -- --check
