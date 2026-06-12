@@ -9,7 +9,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  QT_VERSION: '6.5.3'
+  QT_VERSION: "5.15.17"
+  QT_BASE_URL: "https://github.com/cxxzhang/qt5.15.17/releases/download/qt5.15.17-21280744304"
 
 jobs:
   # ── Linux x86_64 (静态链接 Qt) ──────────────────────────────────
@@ -24,67 +25,61 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Restore static Qt cache
-        id: cache-qt
-        uses: actions/cache@v4
-        with:
-          path: /opt/qt6-static
-          key: qt6-static-${{ env.QT_VERSION }}-linux-x64
+      - name: Download Qt 5.15.17 (Linux x64)
+        run: |
+          curl -L -o qt5.15.17_linux_x64.tar.xz \
+            "${{ env.QT_BASE_URL }}/qt5.15.17_linux_x64.tar.xz"
+          mkdir -p "$HOME/Qt/5.15.17"
+          tar -xf qt5.15.17_linux_x64.tar.xz -C "$HOME/Qt/5.15.17" --strip-components=1
+          rm qt5.15.17_linux_x64.tar.xz
+
+      - name: Verify Qt version
+        run: |
+          export PATH="$HOME/Qt/5.15.17/bin:$PATH"
+          qmake --version
 
       - name: Build static Qt (if cache miss)
         if: steps.cache-qt.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential cmake ninja-build python3 perl \
-            libgl1-mesa-dev libvulkan-dev libxkbcommon-dev \
-            libfontconfig1-dev libfreetype6-dev libx11-dev \
-            libxext-dev libxfixes-dev libxi-dev libxrender-dev \
-            libxcb1-dev libxcb-glx0-dev libxcb-keysyms1-dev \
-            libxcb-image0-dev libxcb-shm0-dev libxcb-icccm4-dev \
-            libxcb-sync-dev libxcb-xfixes0-dev libxcb-shape0-dev \
-            libxcb-randr0-dev libxcb-render-util0-dev \
-            libxcb-util-dev libxcb-xinerama0-dev libxcb-xkb-dev \
-            libxkbcommon-x11-dev libatspi2.0-dev libcups2-dev \
-            libdrm-dev libegl1-mesa-dev libnss3-dev libdbus-1-dev
-
-          pip install aqtinstall
-          mkdir -p ~/qt-src && cd ~/qt-src
-          aqt install-src linux desktop ${{ env.QT_VERSION }} --archives qtbase qtdeclarative qtquickcontrols2 qttools qtsvg
-
-          mkdir -p ~/qt-build && cd ~/qt-build
-          ~/qt-src/${{ env.QT_VERSION }}/src/configure \
-            -static -release -prefix /opt/qt6-static \
-            -nomake tests -nomake examples \
-            -skip qtwebengine -skip qtwebview -skip qtwayland -skip qtdoc \
-            -qt-libpng -qt-libjpeg -qt-zlib -qt-pcre -qt-harfbuzz -qt-freetype \
-            -no-feature-sql -no-feature-testlib \
-            -feature-eglfs -feature-linuxfb -bundled-xcb-xinput
-
-          cmake --build . --parallel $(nproc)
-          sudo cmake --install .
+          sudo apt-get install -y build-essential libfreetype6 libfontconfig1
 
       - name: Check
         run: cargo check --all-targets
         env:
-          QMAKE: /opt/qt6-static/bin/qmake
-          QT_LIBRARY_PATH: /opt/qt6-static/lib
-          QT_INCLUDE_PATH: /opt/qt6-static/include
+          QTDIR: ${{ github.workspace }}/Qt/5.15.17
+          PATH: ${{ github.workspace }}/Qt/5.15.17/bin:${{ env.PATH }}
 
       - name: Build static binary
         run: cargo build --release
         env:
-          QMAKE: /opt/qt6-static/bin/qmake
-          QT_LIBRARY_PATH: /opt/qt6-static/lib
-          QT_INCLUDE_PATH: /opt/qt6-static/include
-          RUSTFLAGS: "-C target-feature=+crt-static"
+          QTDIR: ${{ github.workspace }}/Qt/5.15.17
+          PATH: ${{ github.workspace }}/Qt/5.15.17/bin:${{ env.PATH }}
 
       - name: Verify static linking
         run: |
-          echo "=== 检查动态依赖 ==="
-          ldd target/release/vpid || true
-          echo "=== 文件大小 ==="
-          ls -lh target/release/vpid
+          mkdir -p dist/vpid-linux-x86_64/lib dist/vpid-linux-x86_64/plugins/platforms
+          cp target/release/vpid dist/vpid-linux-x86_64/
+          # 复制 Qt 运行时库
+          QT_LIB_DIR="$HOME/Qt/5.15.17/lib"
+          if [ -d "$QT_LIB_DIR" ]; then
+            cp "$QT_LIB_DIR"/libQt5{Core,Gui,Widgets,Qml,Quick,Network,DBus}* dist/vpid-linux-x86_64/lib/ 2>/dev/null || true
+          fi
+          # 复制 Qt platform plugins
+          QT_PLUGINS_DIR="$HOME/Qt/5.15.17/plugins"
+          if [ -d "$QT_PLUGINS_DIR" ]; then
+            cp "$QT_PLUGINS_DIR"/platforms/libqxcb* dist/vpid-linux-x86_64/plugins/platforms/ 2>/dev/null || true
+          fi
+          # 创建启动脚本
+          cat > dist/vpid-linux-x86_64/run.sh << 'SCRIPT'
+          #!/bin/bash
+          DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export LD_LIBRARY_PATH="$DIR/lib:${LD_LIBRARY_PATH:-}"
+          export QT_PLUGIN_PATH="$DIR/plugins"
+          exec "$DIR/vpid" "$@"
+          SCRIPT
+          chmod +x dist/vpid-linux-x86_64/run.sh
+          cd dist && tar czf vpid-linux-x86_64.tar.gz vpid-linux-x86_64
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -92,7 +87,7 @@ jobs:
           name: vpid-linux-x86_64
           path: target/release/vpid
 
-  # ── Windows x86 (XP 兼容版 Qt 静态链接) ────────────────────────
+  # ── Windows x86 (XP 兼容) ────────────────────────────────────
   build-windows:
     name: Windows x86 (XP) Static
     runs-on: windows-latest
@@ -111,49 +106,41 @@ jobs:
         with:
           key: windows-x86-static
 
-      - name: Download Qt 6.5 XP (x86)
+      - name: Download Qt 5.15.17 (Windows x86)
         run: |
-          $qtUrl = "https://github.com/cxxzhang/qt6_5_for_xp/releases/download/v1.0.0.0/qt6_5_for_xp.zip"
-          $outDir = "$env:GITHUB_WORKSPACE\Qt"
-          $zipPath = "$env:GITHUB_WORKSPACE\qt_xp.zip"
+          $qtUrl = "${{ env.QT_BASE_URL }}/qt5.15.17_windows_x86.zip"
+          $outDir = "$env:USERPROFILE\Qt\5.15.17"
+          $zipPath = "$env:USERPROFILE\qt5.15.17_windows_x86.zip"
           Invoke-WebRequest -Uri $qtUrl -OutFile $zipPath
-          Expand-Archive -Path $zipPath -DestinationPath $outDir
+          Expand-Archive -Path $zipPath -DestinationPath "$outDir" -Force
           Remove-Item $zipPath
-          $qtRoot = "$outDir\x86"
-          if (-not (Test-Path "$qtRoot\lib")) {
-            Get-ChildItem -Path $outDir -Directory | ForEach-Object { $_.FullName }
-            exit 1
-          }
-          Write-Output "Qt root: $qtRoot"
-          echo "QMAKE=$qtRoot\bin\qmake.exe" >> $env:GITHUB_ENV
-          echo "QT_LIBRARY_PATH=$qtRoot\lib" >> $env:GITHUB_ENV
-          echo "QT_INCLUDE_PATH=$qtRoot\include" >> $env:GITHUB_ENV
-          echo "$qtRoot\bin" >> $env:GITHUB_PATH
+          Write-Output "Qt installed to: $outDir"
+          Get-ChildItem -Path $outDir -Recurse -Filter "qmake.exe" | ForEach-Object { $_.FullName }
 
-      - name: Configure Cargo for x86 static
-        shell: bash
+      - name: Verify Qt version
         run: |
-          mkdir -p .cargo
-          cat > .cargo/config.toml << 'EOF'
-          [target.i686-pc-windows-msvc]
-          linker = "rust-lld"
-          rustflags = ["-C", "target-feature=+crt-static"]
-          EOF
+          $qtRoot = "$env:USERPROFILE\Qt\5.15.17"
+          & "$qtRoot\bin\qmake.exe" --version
 
       - name: Build static binary
         run: cargo build --release --target i686-pc-windows-msvc
         env:
-          QMAKE: ${{ env.QMAKE }}
-          QT_LIBRARY_PATH: ${{ env.QT_LIBRARY_PATH }}
-          QT_INCLUDE_PATH: ${{ env.QT_INCLUDE_PATH }}
+          QTDIR: ${{ github.workspace }}\Qt\5.15.17
+          Qt5_DIR: ${{ github.workspace }}\Qt\5.15.17\lib\cmake\Qt5
 
       - name: Verify static linking
         run: |
+          $qtRoot = "$env:USERPROFILE\Qt\5.15.17"
           $binPath = "target/i686-pc-windows-msvc/release/vpid.exe"
-          echo "=== 检查依赖 ==="
-          dumpbin /dependents $binPath
-          echo "=== 文件大小 ==="
-          Get-Item $binPath | Select-Object Length
+          $deployDir = "dist/vpid-windows-x86-xp"
+          mkdir -p $deployDir
+          Copy-Item $binPath $deployDir\vpid.exe
+          # windeployqt 自动收集所需 Qt DLL、plugins、qml 等
+          & "$qtRoot\bin\windeployqt.exe" --release --no-translations --no-system-d3d-compiler $deployDir\vpid.exe
+
+      - name: Package
+        run: |
+          Compress-Archive -Path dist/vpid-windows-x86-xp -DestinationPath dist/vpid-windows-x86-xp.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -161,7 +148,7 @@ jobs:
           name: vpid-windows-x86-xp
           path: target/i686-pc-windows-msvc/release/vpid.exe
 
-  # ── macOS (x86_64 + arm64 静态链接) ────────────────────────────
+  # ── macOS (x86_64 + arm64) ───────────────────────────────────
   build-macos:
     name: macOS ${{ matrix.target }} Static
     runs-on: ${{ matrix.os }}
@@ -170,8 +157,10 @@ jobs:
         include:
           - os: macos-13
             target: x86_64-apple-darwin
+            qt_asset: qt5.15.17_macos_x64.zip
           - os: macos-latest
             target: aarch64-apple-darwin
+            qt_asset: qt5.15.17_macos_arm64.zip
     steps:
       - uses: actions/checkout@v4
 
@@ -182,21 +171,18 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Restore static Qt cache
-        id: cache-qt
-        uses: actions/cache@v4
-        with:
-          path: /opt/qt6-static
-          key: qt6-static-${{ env.QT_VERSION }}-${{ matrix.target }}
-
-      - name: Build static Qt (if cache miss)
-        if: steps.cache-qt.outputs.cache-hit != 'true'
+      - name: Download Qt 5.15.17 (macOS)
         run: |
-          brew install cmake ninja python3
+          curl -L -o qt5.15.17_macos.zip \
+            "${{ env.QT_BASE_URL }}/${{ matrix.qt_asset }}"
+          mkdir -p "$HOME/Qt/5.15.17"
+          unzip -q qt5.15.17_macos.zip -d "$HOME/Qt/5.15.17"
+          rm qt5.15.17_macos.zip
 
-          pip install aqtinstall
-          mkdir -p ~/qt-src && cd ~/qt-src
-          aqt install-src mac desktop ${{ env.QT_VERSION }} --archives qtbase qtdeclarative qtquickcontrols2 qttools qtsvg
+      - name: Verify Qt version
+        run: |
+          export PATH="$HOME/Qt/5.15.17/bin:$PATH"
+          qmake --version
 
           mkdir -p ~/qt-build && cd ~/qt-build
           ~/qt-src/${{ env.QT_VERSION }}/src/configure \
@@ -213,17 +199,17 @@ jobs:
       - name: Build static binary
         run: cargo build --release --target ${{ matrix.target }}
         env:
-          QMAKE: /opt/qt6-static/bin/qmake
-          QT_LIBRARY_PATH: /opt/qt6-static/lib
-          QT_INCLUDE_PATH: /opt/qt6-static/include
-          RUSTFLAGS: "-C target-feature=+crt-static"
+          QTDIR: ${{ github.workspace }}/Qt/5.15.17
+          PATH: ${{ github.workspace }}/Qt/5.15.17/bin:${{ env.PATH }}
 
       - name: Verify static linking
         run: |
-          echo "=== 检查动态依赖 ==="
-          otool -L target/${{ matrix.target }}/release/vpid || true
-          echo "=== 文件大小 ==="
-          ls -lh target/${{ matrix.target }}/release/vpid
+          mkdir -p dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS
+          cp target/${{ matrix.target }}/release/vpid dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS/vpid
+          chmod +x dist/vpid-macos-${{ matrix.target }}.app/Contents/MacOS/vpid
+          # macdeployqt 自动打包 Qt Framework 和 plugins
+          export PATH="$HOME/Qt/5.15.17/bin:$PATH"
+          macdeployqt dist/vpid-macos-${{ matrix.target }}.app -dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -250,8 +236,20 @@ jobs:
           path: /opt/qt6-static
           key: qt6-static-${{ env.QT_VERSION }}-linux-arm64
 
-      - name: Build static Qt (if cache miss)
-        if: steps.cache-qt.outputs.cache-hit != 'true'
+      - name: Download Qt 5.15.17 (Linux arm64)
+        run: |
+          curl -L -o qt5.15.17_linux_arm64.tar.xz \
+            "${{ env.QT_BASE_URL }}/qt5.15.17_linux_arm64.tar.xz"
+          mkdir -p "$HOME/Qt/5.15.17"
+          tar -xf qt5.15.17_linux_arm64.tar.xz -C "$HOME/Qt/5.15.17" --strip-components=1
+          rm qt5.15.17_linux_arm64.tar.xz
+
+      - name: Verify Qt version
+        run: |
+          export PATH="$HOME/Qt/5.15.17/bin:$PATH"
+          qmake --version
+
+      - name: Configure Cargo for cross-compilation
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -291,12 +289,13 @@ jobs:
           QT_INCLUDE_PATH: /opt/qt6-static/include
           RUSTFLAGS: "-C target-feature=+crt-static"
 
-      - name: Verify static linking
-        run: |
-          echo "=== 检查动态依赖 ==="
-          ldd target/release/vpid || true
-          echo "=== 文件大小 ==="
-          ls -lh target/release/vpid
+      - name: Build
+        run: cargo build --release --target aarch64-unknown-linux-gnu
+        env:
+          QTDIR: ${{ github.workspace }}/Qt/5.15.17
+          QT_INCLUDE_PATH: ${{ github.workspace }}/Qt/5.15.17/include
+          QT_LIBRARY_PATH: ${{ github.workspace }}/Qt/5.15.17/lib
+          PATH: ${{ github.workspace }}/Qt/5.15.17/bin:${{ env.PATH }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -318,13 +317,29 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.5.0'
+      - name: Download Qt 5.15.17 (Linux x64)
+        run: |
+          curl -L -o qt5.15.17_linux_x64.tar.xz \
+            "${{ env.QT_BASE_URL }}/qt5.15.17_linux_x64.tar.xz"
+          mkdir -p "$HOME/Qt/5.15.17"
+          tar -xf qt5.15.17_linux_x64.tar.xz -C "$HOME/Qt/5.15.17" --strip-components=1
+          rm qt5.15.17_linux_x64.tar.xz
+
+      - name: Verify Qt version
+        run: |
+          export PATH="$HOME/Qt/5.15.17/bin:$PATH"
+          qmake --version
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libfreetype6 libfontconfig1
 
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings
+        env:
+          QTDIR: ${{ github.workspace }}/Qt/5.15.17
+          PATH: ${{ github.workspace }}/Qt/5.15.17/bin:${{ env.PATH }}
 
   # ── Format ───────────────────────────────────────────────────
   format:
