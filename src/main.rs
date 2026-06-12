@@ -1,7 +1,7 @@
-use std::ffi::CString;
 use std::path::PathBuf;
 
-use qmetaobject::*;
+use cstr::cstr;
+use qmetaobject::prelude::*;
 
 fn main() {
     env_logger::init();
@@ -19,9 +19,7 @@ fn main() {
     }
 
     // 注册 UsbManager 类型，QML 中通过 import app 1.0 使用 UsbManager {}
-    let uri = CString::new("app").unwrap();
-    let name = CString::new("UsbManager").unwrap();
-    qml_register_type::<vpid::ui::usb_manager::UsbManager>(&uri, 1, 0, &name);
+    qml_register_type::<vpid::ui::usb_manager::UsbManager>(cstr!("app"), 1, 0, cstr!("UsbManager"));
 
     // 创建 QML 引擎
     let mut engine = QmlEngine::new();

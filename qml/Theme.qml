@@ -1,4 +1,4 @@
-import QtQuick
+import QtQuick 2.15
 
 /// 全局主题与设计 Token。作为普通 QtObject 由 main.qml 实例化并向下传递。
 QtObject {
