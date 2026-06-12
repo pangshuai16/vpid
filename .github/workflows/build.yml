@@ -146,6 +146,7 @@ jobs:
           QMAKE: ${{ env.QMAKE }}
           QT_LIBRARY_PATH: ${{ env.QT_LIBRARY_PATH }}
           QT_INCLUDE_PATH: ${{ env.QT_INCLUDE_PATH }}
+          CXXFLAGS: "-D_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING"
 
       - name: Verify static linking
         run: |
