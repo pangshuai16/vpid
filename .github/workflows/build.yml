@@ -123,11 +123,14 @@ jobs:
           & "$qtRoot\bin\qmake.exe" --version
 
       - name: Build static binary
-        run: cargo build --release --target i686-pc-windows-msvc
+        run: |
+          $qtRoot = "$env:USERPROFILE\Qt\5.15.17"
+          $env:QMAKE = "$qtRoot\bin\qmake.exe"
+          $env:QT_INCLUDE_PATH = "$qtRoot\include"
+          $env:QT_LIBRARY_PATH = "$qtRoot\lib"
+          $env:PATH = "$qtRoot\bin;$env:PATH"
+          cargo build --release --target i686-pc-windows-msvc
         env:
-          QMAKE: ${{ env.QMAKE }}
-          QT_LIBRARY_PATH: ${{ env.QT_LIBRARY_PATH }}
-          QT_INCLUDE_PATH: ${{ env.QT_INCLUDE_PATH }}
           CXXFLAGS: "/D_HAS_STDEXT=0"
 
       - name: Verify static linking
