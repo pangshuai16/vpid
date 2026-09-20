@@ -9,6 +9,7 @@ Makefile
 *.a
 *.lib
 *.so
+*.exe
 
 # 环境与密钥
 .env

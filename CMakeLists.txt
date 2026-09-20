@@ -14,7 +14,7 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-add_compile_options(-O2 -fno-rtti)
+add_compile_options(-Os -fno-rtti -fno-exceptions -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections)
 
 # 跨平台复用层：设备信息/扫描抽象/比对
 set(CORE_SOURCES
@@ -34,7 +34,10 @@ if(WIN32)
     src/core/windows_scanner.cpp
   )
   target_include_directories(vpid_viewer PRIVATE src platform/resources)
-  set_source_files_properties(platform/resources/app.rc PROPERTIES LANGUAGE RC)
+  set_source_files_properties(platform/resources/app.rc PROPERTIES
+    LANGUAGE RC
+    INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/platform/resources"
+  )
   # 仅系统库（MinGW 自带），无需 wx/libusb；-municode 让 CRT 以 wWinMain 为入口
   target_link_libraries(vpid_viewer PRIVATE
     setupapi   # SetupAPI 设备枚举
@@ -44,7 +47,7 @@ if(WIN32)
   )
   # 完全静态链接（含 MinGW 运行库 libwinpthread/libgcc_s/libstdc++），
   # 产出零 DLL 依赖、可独立运行在裸机 XP 的 exe
-  target_link_options(vpid_viewer PRIVATE -municode -static -static-libgcc -static-libstdc++)
+  target_link_options(vpid_viewer PRIVATE -municode -static -static-libgcc -static-libstdc++ -Wl,-s -Wl,--gc-sections -Wl,--strip-all -Wl,--dynamicbase -Wl,--nxcompat)
   # XP 兼容：锁定 NT 5.1 API 集 + Win 层 API 集
   target_compile_definitions(vpid_viewer PRIVATE _WIN32_WINNT=0x0501 WINVER=0x0501 _WIN32_IE=0x0501)
 else()
