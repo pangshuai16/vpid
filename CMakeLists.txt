@@ -50,6 +50,18 @@ if(WIN32)
   target_link_options(vpid_viewer PRIVATE -municode -static -static-libgcc -static-libstdc++ -Wl,-s -Wl,--gc-sections -Wl,--strip-all -Wl,--dynamicbase -Wl,--nxcompat)
   # XP 兼容：锁定 NT 5.1 API 集 + Win 层 API 集
   target_compile_definitions(vpid_viewer PRIVATE _WIN32_WINNT=0x0501 WINVER=0x0501 _WIN32_IE=0x0501)
+
+  # UPX 压缩（可选）：构建后自动压缩 exe，进一步减小体积
+  # 若 UPX 不在 PATH 中则跳过，不影响构建
+  find_program(UPX_EXECUTABLE upx)
+  if(UPX_EXECUTABLE)
+    add_custom_command(TARGET vpid_viewer POST_BUILD
+      COMMAND ${UPX_EXECUTABLE} --best --force $<TARGET_FILE:vpid_viewer>
+      COMMENT "UPX 压缩 $<TARGET_FILE:vpid_viewer>"
+    )
+  else()
+    message(STATUS "UPX 未找到，跳过压缩（安装 UPX 后自动启用）")
+  endif()
 else()
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
