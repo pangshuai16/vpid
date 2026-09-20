@@ -26,21 +26,17 @@ jobs:
             mingw-w64-i686-binutils
             make
             git
+            unzip
 
-      - name: Download UPX
-        shell: pwsh
-        run: |
-          $upxUrl = "https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip"
-          Invoke-WebRequest -Uri $upxUrl -OutFile upx.zip
-          Expand-Archive -Path upx.zip -DestinationPath upx
-          $upxPath = (Get-ChildItem -Path upx -Recurse -Filter upx.exe | Select-Object -First 1).FullName
-          Write-Host "UPX path: $upxPath"
-          Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $upxPath)
-
-      - name: Build vpid_viewer (i686, Win32 API, fully static)
+      - name: Build vpid_viewer (i686, Win32 API, fully static, UPX compressed)
         shell: msys2 {0}
         run: |
           set -eux
+          curl -sL -o upx.zip https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip
+          unzip -o upx.zip -d upx
+          UPX_DIR="$(dirname "$(find upx -name upx.exe -print -quit)")"
+          export PATH="$UPX_DIR:$PATH"
+          upx --version | head -1
           rm -rf build && mkdir -p build
           cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j"$(nproc)"
