@@ -1,7 +1,5 @@
 name: Release
 
-# main 分支：构建并发布，构建矩阵与 build.yml 完全一致：
-#   windows-x86 / linux-amd64 / linux-arm64
 on:
   push:
     branches: [main]
@@ -26,9 +24,18 @@ jobs:
             mingw-w64-i686-cmake
             mingw-w64-i686-make
             mingw-w64-i686-binutils
-            mingw-w64-i686-upx
             make
             git
+
+      - name: Download UPX
+        shell: pwsh
+        run: |
+          $upxUrl = "https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip"
+          Invoke-WebRequest -Uri $upxUrl -OutFile upx.zip
+          Expand-Archive -Path upx.zip -DestinationPath upx
+          $upxPath = (Get-ChildItem -Path upx -Recurse -Filter upx.exe | Select-Object -First 1).FullName
+          Write-Host "UPX path: $upxPath"
+          Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $upxPath)
 
       - name: Build vpid_viewer (i686, Win32 API, fully static)
         shell: msys2 {0}
@@ -49,53 +56,8 @@ jobs:
           path: build/vpid_viewer_windows_x86.exe
           retention-days: 30
 
-  build-linux:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            name: vpid_viewer_linux_amd64
-            platform: linux/amd64
-          - arch: arm64
-            name: vpid_viewer_linux_arm64
-            platform: linux/arm64
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Build in Rocky Linux 8 container (${{ matrix.arch }}, glibc 2.28)
-        uses: addnab/docker-run-action@v3
-        with:
-          image: quay.io/rockylinux/rockylinux:8
-          options: --platform ${{ matrix.platform }} -v ${{ github.workspace }}:/workspace -w /workspace
-          run: |
-            dnf install -y epel-release
-            dnf install -y gcc-c++ make cmake libusb1-devel gtk3-devel pkgconfig
-            rm -rf build && mkdir -p build
-            cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
-            cmake --build build -j"$(nproc)"
-            ls -lh build/vpid_viewer
-            objdump -T build/vpid_viewer | grep -m1 GLIBC || true
-            cp build/vpid_viewer build/${{ matrix.name }}
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-${{ matrix.name }}
-          path: build/${{ matrix.name }}
-          retention-days: 30
-
   release:
-    needs:
-      - build-windows-x86
-      - build-linux
+    needs: build-windows-x86
     runs-on: ubuntu-latest
     permissions:
       contents: write
