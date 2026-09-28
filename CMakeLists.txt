@@ -185,15 +185,17 @@ elseif(UNIX AND NOT APPLE AND VPID_UI_STYLE STREQUAL "SOUI")
   )
   target_include_directories(vpid_viewer PRIVATE src)
 
-  # swinx + SOUI 组件静态库
+  # swinx + SOUI 组件静态库 + Linux 原生扫描(libusb)/设备通知(libudev)
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(LIBUDEV REQUIRED libudev)
+  pkg_check_modules(LIBUSB REQUIRED libusb-1.0)   # linux_scanner.cpp 用 libusb 枚举 USB
   target_link_libraries(vpid_viewer PRIVATE
     soui4 utilities4 render-gdi imgdecoder-stb aupng
-    ${LIBUDEV_LIBRARIES}
+    ${LIBUDEV_LIBRARIES} ${LIBUSB_LIBRARIES}
     dl pthread
   )
-  target_compile_options(vpid_viewer PRIVATE ${LIBUDEV_CFLAGS_OTHER})
+  target_include_directories(vpid_viewer PRIVATE ${LIBUSB_INCLUDE_DIRS})
+  target_compile_options(vpid_viewer PRIVATE ${LIBUDEV_CFLAGS_OTHER} ${LIBUSB_CFLAGS_OTHER})
 
 elseif(WIN32 AND MINGW AND VPID_UI_STYLE STREQUAL "WIN32")
   # ===================== Windows (MinGW) 回退：原生 Win32 UI =====================

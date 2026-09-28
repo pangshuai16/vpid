@@ -43,11 +43,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: "Install deps (swinx: Cairo/xcb/fontconfig + libudev)"
+      - name: "Install deps (swinx: Cairo/xcb/fontconfig + libudev + libusb)"
         run: |
           sudo apt-get update && sudo apt-get install -y gcc g++ cmake pkg-config \
             libcairo2-dev libfontconfig1-dev libfreetype6-dev libpixman-1-dev \
-            libxcb1-dev libxkbcommon-dev libdbus-1-dev libudev-dev \
+            libxcb1-dev libxkbcommon-dev libdbus-1-dev libudev-dev libusb-1.0-dev \
             libx11-dev libxext-dev libxrender-dev libxi-dev libxtst-dev libglib2.0-dev
 
       - name: Build vpid_viewer (SOUI5 + swinx)
@@ -84,7 +84,7 @@ jobs:
           docker run --rm --platform linux/arm64 -v "$PWD":/work -w /work ubuntu:22.04 bash -c '
             apt-get update && apt-get install -y git cmake pkg-config g++ \
               libcairo2-dev libfontconfig1-dev libfreetype6-dev libpixman-1-dev \
-              libxcb1-dev libxkbcommon-dev libdbus-1-dev libudev-dev \
+              libxcb1-dev libxkbcommon-dev libdbus-1-dev libudev-dev libusb-1.0-dev \
               libx11-dev libxext-dev libxrender-dev libxi-dev libxtst-dev libglib2.0-dev &&
             cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=SOUI &&
             cmake --build build -j"$(nproc)" &&
