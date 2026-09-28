@@ -180,8 +180,11 @@ set(INCSRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 #message(STATUS "fontconfig binary dir: ${CMAKE_CURRENT_BINARY_DIR}")
 # Add build directory to include path for generated files
-include_directories(${CMAKE_CURRENT_BINARY_DIR})
-include_directories(${CMAKE_CURRENT_BINARY_DIR}/fc-lang)
+# vendored/swinx 加固：必须 BEFORE——SOUI 的 ${CMAKE_BINARY_DIR}/config 也有
+# 一个 config.h 且其 -I 更靠前，否则 fcint.h 的 #include <config.h>（尖括号）
+# 误命中 SOUI 的 config.h，FLEXIBLE_ARRAY_MEMBER 等宏全部缺失（同 dbus）。
+include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR})
+include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR}/fc-lang)
 add_compile_options(-Wno-excess-initializers)
 # Add subdirectories
 add_subdirectory(fontconfig)
