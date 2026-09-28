@@ -184,6 +184,10 @@ elseif(UNIX AND NOT APPLE AND VPID_UI_STYLE STREQUAL "SOUI")
     src/core/linux_notifier.cpp
   )
   target_include_directories(vpid_viewer PRIVATE src)
+  # 组件裁剪（与 Windows 分支一致）：只启用 render-gdi + imgdecoder-stb，
+  # 否则 com-cfg.h 的 SCreator 会引用 RENDER_SKIA/RESPROVIDER_7ZIP/ZIP/
+  # TRANSLATOR/LOG4Z 等未链接组件 → 链接期 undefined reference
+  target_compile_definitions(vpid_viewer PRIVATE "SCOM_MASK=(scom_mask_render_gdi|scom_mask_imgdecoder_stb)")
 
   # swinx + SOUI 组件静态库 + Linux 原生扫描(libusb)/设备通知(libudev)
   find_package(PkgConfig REQUIRED)
