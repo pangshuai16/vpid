@@ -18,11 +18,11 @@
 
 /*
  * vendored/swinx 加固：dbus 的 CMake configure check 流程在本项目被裁剪，
- * HAVE_*/DBUS_ENABLE_* 等变量不会经 @VAR@ 替换写入 config.h，导致生成的
- * config.h 里这些宏全部退化为 #undef，进而出现 uintptr_t 未定义、
+ * 模板中的 HAVE_STAR 等宏不会经 configure_file 变量替换写入 config.h，
+ * 生成的 config.h 里这些宏全部退化为 undef，进而出现 uintptr_t 未定义、
  * DBusConnection 缺 generation 成员等连锁编译错误。
- * 此处按 Linux (glibc) 平台常识强制给出编译必需宏（#ifndef 保护，避免与
- * 模板中 #cmakedefine 正常展开的 #define 重复定义）。
+ * 此处按 Linux (glibc) 平台常识强制给出编译必需宏（ifndef 保护，避免与
+ * 模板中 cmakedefine 正常展开的 define 重复定义）。
  */
 #ifndef HAVE_STDINT_H
 #  define HAVE_STDINT_H 1
@@ -165,8 +165,8 @@
 /* Hard-coded so the bundled dbus-1.14.10 build never ends up with
    `#undef DBUS_*_BUS_*_ADDRESS` (which breaks dbus-bus.c with
    "'DBUS_SESSION_BUS_CONNECT_ADDRESS' undeclared"). The upstream template
-   relied on configure_file @VAR@ substitution that is not honoured in this
-   vendored/swinx build context. */
+   relied on configure_file variable substitution that is not honoured in
+   this vendored/swinx build context. */
 #define DBUS_SYSTEM_BUS_DEFAULT_ADDRESS "unix:path=/run/dbus/system_bus_socket"
 #define DBUS_SESSION_BUS_CONNECT_ADDRESS "autolaunch:"
 #cmakedefine DBUS_MACHINE_UUID_FILE "@DBUS_MACHINE_UUID_FILE@"
