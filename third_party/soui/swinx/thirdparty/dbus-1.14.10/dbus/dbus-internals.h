@@ -27,6 +27,13 @@
 #ifndef DBUS_INTERNALS_H
 #define DBUS_INTERNALS_H
 
+/* vendored/swinx 加固：_DBUS_ALIGN_VALUE 等宏直接使用 uintptr_t，
+   无条件包含 <stdint.h>（C99 标准头）。不能依赖调用方先包含 config.h
+   且 HAVE_STDINT_H 已定义——本头 include 的 dbus-sysdeps.h 可能因
+   include guard 顺序（先于 config.h 被引入）而漏掉 stdint.h 包含，
+   导致 'uintptr_t' undeclared。 */
+#include <stdint.h>
+
 #include <dbus/dbus-memory.h>
 #include <dbus/dbus-types.h>
 #include <dbus/dbus-errors.h>
