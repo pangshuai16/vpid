@@ -21,7 +21,9 @@ jobs:
           cmake --build build --config Release -- /m
           Get-Item build/Release/vpid_viewer.exe | Select-Object Name, Length
           echo "=== imported DLLs (should be system libs only) ==="
-          dumpbin /imports build/Release/vpid_viewer.exe | Select-String '\.dll"'
+          $vsDir = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $vcvars = Join-Path $vsDir "VC\Auxiliary\Build\vcvarsall.bat"
+          cmd /c "`"$vcvars`" x86 >nul 2>&1 && dumpbin /imports build\Release\vpid_viewer.exe | Select-String '\.dll'"
           Copy-Item build/Release/vpid_viewer.exe build/vpid_viewer_windows_x86.exe
 
       - name: Upload artifact
