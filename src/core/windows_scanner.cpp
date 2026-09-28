@@ -17,6 +17,9 @@
 namespace vpid {
 
 namespace {
+// UTF-16 -> UTF-8（设备名等含非 ASCII，须保真）；定义见文件末尾，使用前需前向声明
+std::string w2utf8(const std::wstring& w);
+
 // 按唯一键去重（保留顺序）
 std::vector<USBDevice> dedup(const std::vector<USBDevice>& in) {
     std::vector<USBDevice> out;

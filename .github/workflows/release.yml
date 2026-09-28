@@ -41,7 +41,8 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y gcc g++ cmake pkg-config \
             libcairo2-dev libfontconfig1-dev libfreetype6-dev libpixman-1-dev \
-            libxcb1-dev libxkbcommon-dev libdbus-1-dev libudev-dev
+            libxcb1-dev libxkbcommon-dev libdbus-1-dev libudev-dev \
+            libx11-dev libxext-dev libxrender-dev libxi-dev libxtst-dev libglib2.0-dev
 
       - name: Build vpid_viewer (SOUI5 + swinx)
         run: |
@@ -59,6 +60,7 @@ jobs:
   # Linux arm64（多平台推送发布：与 README 的 x64/arm64 声明一致）
   build-linux-soui-arm64:
     runs-on: ubuntu-22.04
+    timeout-minutes: 360
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -71,7 +73,8 @@ jobs:
           docker run --rm --platform linux/arm64 -v "$PWD":/work -w /work ubuntu:22.04 bash -c '
             apt-get update && apt-get install -y git cmake pkg-config g++ \
               libcairo2-dev libfontconfig1-dev libfreetype6-dev libpixman-1-dev \
-              libxcb1-dev libxkbcommon-dev libdbus-1-dev libudev-dev &&
+              libxcb1-dev libxkbcommon-dev libdbus-1-dev libudev-dev \
+              libx11-dev libxext-dev libxrender-dev libxi-dev libxtst-dev libglib2.0-dev &&
             cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=SOUI &&
             cmake --build build -j"$(nproc)" &&
             cp build/vpid_viewer build/vpid_viewer_linux_arm64

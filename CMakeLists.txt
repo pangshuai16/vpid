@@ -169,6 +169,12 @@ elseif(LINUX AND VPID_UI_STYLE STREQUAL "SOUI")
   include(${SOUI_ROOT}/__cmake/global.cmake)
   config_compiler_and_linker()
 
+  # ★ Linux 必需：swinx 跨平台兼容层（模拟 Win32 API，并提供 cairo/xkbcommon 等内部库）
+  #   必须在 SOUI 之前 add，否则 SOUI/CMakeLists 的 add_dependencies(soui4 swinx) 找不到 target。
+  #   swinx 由 SOUI 顶层 CMakeLists 本应自动 add_subdirectory(swinx)，但本项目为精简依赖
+  #   手动挂载 SOUI 子目录，故此处显式补齐。
+  add_subdirectory(${SOUI_ROOT}/swinx)
+
   VPID_ADD_SOUI_SUBDIRS()
 
   add_executable(vpid_viewer
