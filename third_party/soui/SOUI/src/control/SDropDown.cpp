@@ -1,0 +1,190 @@
+﻿/**
+ * Copyright (C) 2014-2050 SOUI team
+ * All rights reserved.
+ *
+ * @file       SDropDown.cpp
+ * @brief      SDropDownWnd class source file
+ * @version    v1.0
+ * @author     soui
+ * @date       2014-05-25
+ *
+ * Describe  This file mainly contains the implementation related to the SDropDownWnd class
+ */
+#include <souistd.h>
+#include <control/SDropDown.h>
+#include <core/SMsgLoop.h>
+
+SNSBEGIN
+#define IDINIT -1
+
+SDropDownWnd::SDropDownWnd(ISDropDownOwner *pOwner)
+    : m_pOwner(pOwner)
+    , m_uExitCode((UINT)IDINIT)
+{
+}
+
+SDropDownWnd::~SDropDownWnd()
+{
+}
+
+void SDropDownWnd::OnFinalMessage(HWND hWnd)
+{
+    __baseCls::OnFinalMessage(hWnd);
+    delete this;
+}
+
+void SDropDownWnd::OnRootBeforePaint(const SRootWindow *pRoot, IRenderTarget *pRT, SPainter &painter) const
+{
+    SHostWnd::OnRootBeforePaint(pRoot, pRT, painter);
+    if (painter.oldFont == NULL && painter.oldTextColor == CR_INVALID)
+    {
+        // no font or color setted, use owner font and color
+        if (SWindow *pOwnerWindow = m_pOwner->GetDropDownOwner())
+        {
+            SPainter ownerPainter;
+            pOwnerWindow->BuildPainter(ownerPainter);
+            if (ownerPainter.oldFont)
+            {
+                pRT->SelectObject(ownerPainter.oldFont, (IRenderObj **)&painter.oldFont);
+            }
+            if (ownerPainter.oldTextColor != CR_INVALID)
+            {
+                painter.oldTextColor = pRT->SetTextColor(ownerPainter.oldTextColor);
+            }
+        }
+    }
+}
+
+void SDropDownWnd::OnKillFocus(HWND wndFocus)
+{
+    if (wndFocus != m_hWnd)
+    {
+        EndDropDown();
+    }
+}
+
+SWindow *SDropDownWnd::GetDropDownOwner()
+{
+    SASSERT(m_pOwner);
+    return m_pOwner->GetDropDownOwner();
+}
+
+BOOL SDropDownWnd::Create(LPCRECT lpRect, IXmlNode *pInitXml, DWORD dwStyle, DWORD dwExStyle)
+{
+    HWND hParent = m_pOwner->GetDropDownOwner()->GetContainer()->GetHostHwnd();
+    HWND hWnd = CreateEx(hParent, dwStyle, dwExStyle, lpRect->left, lpRect->top, lpRect->right - lpRect->left, lpRect->bottom - lpRect->top, pInitXml);
+    if (!hWnd)
+        return FALSE;
+    GetMsgLoop()->AddMessageFilter(this);
+    m_pOwner->OnCreateDropDown(this);
+    return TRUE;
+}
+
+void SDropDownWnd::ShowWindow(int x, int y, int nWidth, int nHeight, int nAniMs, BOOL bDropDown)
+{
+    MoveWindow(x, y, nWidth, nHeight, FALSE);
+#ifdef _WIN32
+    if (nAniMs > 0)
+        AnimateHostWindow(nAniMs, AW_SLIDE | (bDropDown ? AW_VER_POSITIVE : AW_VER_NEGATIVE));
+    else
+        SetWindowPos(HWND_TOP, 0, 0, 0, 0, SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
+#else
+    SetWindowPos(HWND_TOP, 0, 0, 0, 0, SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
+#endif
+    SetCapture();
+}
+
+void SDropDownWnd::OnLButtonDown(UINT nFlags, CPoint point)
+{
+    CRect rcWnd;
+    SNativeWnd::GetClientRect(&rcWnd);
+    if (!rcWnd.PtInRect(point))
+    {
+        ClientToScreen(&point);
+        HWND hwndTarget = WindowFromPoint(point);
+        EndDropDown();
+        if (hwndTarget)
+        {
+            CPoint ptTarget = point;
+            ::ScreenToClient(hwndTarget, &ptTarget);
+            ::SendMessage(hwndTarget, WM_LBUTTONDOWN, nFlags, MAKELPARAM(ptTarget.x, ptTarget.y));
+        }
+    }
+    else
+    {
+        SetMsgHandled(FALSE);
+    }
+}
+
+void SDropDownWnd::OnKeyDown(UINT nChar, UINT nRepCnt, UINT nFlags)
+{
+    if (nChar == VK_RETURN)
+        EndDropDown(IDOK);
+    else if (nChar == VK_ESCAPE)
+        EndDropDown();
+    else
+        SetMsgHandled(FALSE);
+}
+
+void SDropDownWnd::EndDropDown(UINT uCode)
+{
+    if (m_uExitCode != IDINIT)
+        return;
+    m_uExitCode = uCode;
+    SNativeWnd::DestroyWindow();
+}
+
+void SDropDownWnd::OnDestroy()
+{
+    m_pOwner->OnDestroyDropDown(this);
+    GetMsgLoop()->RemoveMessageFilter(this);
+    SetMsgHandled(FALSE);
+}
+
+BOOL SDropDownWnd::PreTranslateMessage(MSG *pMsg)
+{
+    if (pMsg->message == WM_ACTIVATEAPP)
+    {
+        SNativeWnd::SendMessage(pMsg->message, pMsg->wParam, pMsg->lParam);
+    }
+    else if (pMsg->message == WM_MOUSEMOVE)
+    { // Since setcapture is called after the window is shown, the setcursor message is not received; here we simulate a setcursor message within WM_MOUSEMOVE.
+        SNativeWnd::SendMessage(WM_SETCURSOR, (WPARAM)m_hWnd, MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+    }
+    return FALSE;
+}
+
+void SDropDownWnd::OnActivateApp(BOOL bActive, DWORD dwThreadID)
+{
+    if (!bActive)
+    {
+        EndDropDown();
+    }
+}
+
+int SDropDownWnd::OnMouseActivate(HWND wndTopLevel, UINT nHitTest, UINT message)
+{
+    return MA_NOACTIVATEANDEAT;
+}
+
+BOOL SDropDownWnd::OnReleaseSwndCapture()
+{
+    BOOL bRet = SHostWnd::OnReleaseSwndCapture();
+    SNativeWnd::SetCapture();
+    return bRet;
+}
+
+IMessageLoop *SDropDownWnd::GetMsgLoop()
+{
+    return m_pOwner->GetDropDownOwner()->GetContainer()->GetMsgLoop();
+}
+
+void SDropDownWnd::OnActivate(UINT nState, BOOL bMinimized, HWND wndOther)
+{
+    if (nState == WA_INACTIVE)
+    {
+        EndDropDown();
+    }
+}
+
+SNSEND

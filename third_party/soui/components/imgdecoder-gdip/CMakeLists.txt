@@ -1,0 +1,49 @@
+set(imgdecoder-gdip_header
+    imgdecoder-gdip.h
+)
+
+set(imgdecoder-gdip_src
+    imgdecoder-gdip.cpp
+)
+
+source_group("Header Files" FILES ${imgdecoder-gdip_header})
+source_group("Source Files" FILES ${imgdecoder-gdip_src})
+
+if (NOT SOUI_ENABLE_COM_LIB)
+    set (imgdecoder-gdip_src  ${imgdecoder-gdip_src} imgdecoder-gdip.rc)
+    add_library(imgdecoder-gdip SHARED ${imgdecoder-gdip_src} ${imgdecoder-gdip_header})
+else()
+    add_library(imgdecoder-gdip STATIC ${imgdecoder-gdip_src} ${imgdecoder-gdip_header})
+    target_compile_definitions(imgdecoder-gdip
+      PUBLIC SOUI_IMAGE_DECODER_USE_GDIPLUS_STATIC
+    )
+endif()
+
+target_compile_definitions(imgdecoder-gdip
+  PUBLIC SOUI_IMAGE_DECODER_USE_GDIPLUS
+)
+target_include_directories(imgdecoder-gdip
+  PRIVATE ${SOUI_ROOT_DIR}/utilities/include
+  PRIVATE ${SOUI_ROOT_DIR}/SOUI/include
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}    
+)
+
+set(COM_LIBS ${COM_LIBS} imgdecoder-gdip CACHE INTERNAL "com_lib")
+set_target_properties (imgdecoder-gdip PROPERTIES
+    FOLDER components/imgdecoder
+)
+target_link_libraries(imgdecoder-gdip gdiplus.lib)
+
+install(TARGETS imgdecoder-gdip
+    CONFIGURATIONS Release
+    RUNTIME DESTINATION bin/Release
+    LIBRARY DESTINATION lib/Release
+    ARCHIVE DESTINATION lib/Release
+)
+
+install(TARGETS imgdecoder-gdip
+    CONFIGURATIONS Debug
+    RUNTIME DESTINATION bin/Debug
+    LIBRARY DESTINATION lib/Debug
+    ARCHIVE DESTINATION lib/Debug
+)

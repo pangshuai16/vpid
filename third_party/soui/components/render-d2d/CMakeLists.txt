@@ -1,0 +1,70 @@
+add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+
+set(header
+	stdafx.h
+	render-d2d.h
+)
+
+set(src
+    render-d2d.cpp
+)
+
+source_group("Header Files" FILES ${header})
+source_group("Source Files" FILES ${src})
+
+if (NOT SOUI_ENABLE_COM_LIB)
+    set (src  ${src} render-d2d.rc)
+    add_library(render-d2d SHARED ${src} ${header})
+    target_link_libraries(render-d2d utilities4 d2d1.lib dwrite.lib)
+else()
+    add_library(render-d2d STATIC ${src} ${header})
+    target_link_libraries(render-d2d PUBLIC utilities4 d2d1.lib dwrite.lib)
+endif()
+if(SOUI_ENABLE_COM_LIB)
+    set(COM_DEP_LIBS ${COM_DEP_LIBS} d2d1 dwrite CACHE INTERNAL "com_dep_libs")
+endif()
+
+if(MSVC AND MSVC_VERSION LESS 1600)
+    message(STATUS "vs is less than vs2008 d2d")
+    target_include_directories(render-d2d  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/sdk7.1_d2d/include)
+    if (CMAKE_CL_64)
+        target_link_directories(render-d2d PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/sdk7.1_d2d/lib/x64")
+    else ()
+        target_link_directories(render-d2d PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/sdk7.1_d2d/lib/x86")
+    endif ()
+else()
+
+endif()
+if(MINGW OR (MSVC AND MSVC_VERSION GREATER 1600))
+    message(STATUS "enable d2d1.1")
+    add_definitions(-DUSE_D2D1_1=1)
+else()
+    add_definitions(-DUSE_D2D1_1=0)
+endif()
+
+target_include_directories(render-d2d
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+  PRIVATE ${SOUI_ROOT_DIR}/utilities/include
+  PRIVATE ${SOUI_ROOT_DIR}/SOUI/include
+  PRIVATE ${SOUI_ROOT_DIR}/third-part/nanosvg
+)
+
+  
+set(COM_LIBS ${COM_LIBS} render-d2d CACHE INTERNAL "com_lib")
+set_target_properties (render-d2d PROPERTIES
+    FOLDER components/render
+)
+
+install(TARGETS render-d2d
+    CONFIGURATIONS Release
+    RUNTIME DESTINATION bin/Release
+    LIBRARY DESTINATION lib/Release
+    ARCHIVE DESTINATION lib/Release
+)
+
+install(TARGETS render-d2d
+    CONFIGURATIONS Debug
+    RUNTIME DESTINATION bin/Debug
+    LIBRARY DESTINATION lib/Debug
+    ARCHIVE DESTINATION lib/Debug
+)

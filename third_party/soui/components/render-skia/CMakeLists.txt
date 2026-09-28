@@ -1,0 +1,99 @@
+include_directories(${SOUI_ROOT_DIR}/utilities/include)
+include_directories(${SOUI_ROOT_DIR}/SOUI/include)
+include_directories(${SOUI_ROOT_DIR}/third-part/nanosvg)
+
+set(render-skia_header
+	stdafx.h
+	drawtext-skia.h
+	render-skia.h
+	skia2rop2.h
+	PathEffect-Skia.h
+    MaskFilter-Skia.h
+    ImageFilter-Skia.h
+)
+set(render-skia_src
+	drawtext-skia.cpp
+	render-skia.cpp
+	skia2rop2.cpp
+	PathEffect-Skia.cpp
+    MaskFilter-Skia.cpp
+    ImageFilter-Skia.cpp
+)
+
+source_group("Header Files" FILES ${render-skia_header})
+source_group("Source Files" FILES ${render-skia_src})
+
+if (NOT SOUI_ENABLE_COM_LIB)
+    set (render-skia_src  ${render-skia_src} render-skia.rc)
+    add_library(render-skia SHARED ${render-skia_src} ${render-skia_header})
+else()
+    add_library(render-skia STATIC ${render-skia_src} ${render-skia_header})
+endif()
+add_dependencies(render-skia skia utilities4)
+target_link_libraries(render-skia skia utilities4 soui4)
+set(GL_LIB )
+if (CMAKE_SYSTEM_NAME MATCHES Windows)
+    set(GL_LIB Usp10 opengl32)
+else()
+    # 通过swinx间接获取fontconfig和freetype支持
+    # swinx已经包含了这些库，不需要直接链接
+    add_dependencies(render-skia swinx)
+    if(CMAKE_SYSTEM_NAME MATCHES "OHOS|OpenHarmony|HarmonyOS")
+        find_library(OHOS_EGL EGL REQUIRED)
+        find_library(OHOS_GLES GLESv3 REQUIRED)
+        set(GL_LIB ${OHOS_EGL} ${OHOS_GLES} fontconfig)
+    elseif(CMAKE_SYSTEM_NAME MATCHES iOS)
+        # iOS 使用 OpenGL ES 框架，非桌面 GL
+        # 用 -framework 避免 find_library 缓存设备 SDK 路径（模拟器缺切片）
+        set(GL_LIB "-framework OpenGLES")
+    elseif(CMAKE_SYSTEM_NAME MATCHES Darwin)
+            # 查找GLEW和GLFW包
+        find_package(GLEW REQUIRED)
+        find_package(glfw3 REQUIRED)
+        set(GL_LIB GLEW::GLEW glfw)
+    elseif(CMAKE_SYSTEM_NAME MATCHES Android)
+        set(GL_LIB EGL GLESv2)
+    else()
+        set(GL_LIB GL)
+    endif()
+endif()
+target_link_libraries(render-skia ${GL_LIB})
+if(SOUI_ENABLE_COM_LIB)
+    set(COM_DEP_LIBS ${COM_DEP_LIBS} skia ${GL_LIB} CACHE INTERNAL "com_dep_libs")
+endif()
+
+target_compile_definitions(render-skia
+  PUBLIC SOUI_RENDER_USE_SKIA
+)
+target_include_directories(render-skia
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+  PRIVATE ${SOUI_ROOT_DIR}/config
+  PRIVATE ${SOUI_ROOT_DIR}/utilities/include
+  PRIVATE ${SOUI_ROOT_DIR}/SOUI/include
+  PRIVATE ${SOUI_ROOT_DIR}/third-part/skia
+  PRIVATE ${SOUI_ROOT_DIR}/third-part/skia/include
+  PRIVATE ${SOUI_ROOT_DIR}/third-part/skia/include/config
+  PRIVATE ${SOUI_ROOT_DIR}/third-part/skia/include/core
+  PRIVATE ${SOUI_ROOT_DIR}/third-part/skia/include/xml
+  PRIVATE ${SOUI_ROOT_DIR}/third-part/skia/include/svg
+  PRIVATE ${SOUI_ROOT_DIR}/third-part/skia/src/core
+)
+
+set(COM_LIBS ${COM_LIBS} render-skia CACHE INTERNAL "com_lib")
+set_target_properties (render-skia PROPERTIES
+    FOLDER components/render
+)
+
+install(TARGETS render-skia
+    CONFIGURATIONS Release
+    RUNTIME DESTINATION bin/Release
+    LIBRARY DESTINATION lib/Release
+    ARCHIVE DESTINATION lib/Release
+)
+
+install(TARGETS render-skia
+    CONFIGURATIONS Debug
+    RUNTIME DESTINATION bin/Debug
+    LIBRARY DESTINATION lib/Debug
+    ARCHIVE DESTINATION lib/Debug
+)

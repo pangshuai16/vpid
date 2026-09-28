@@ -1,0 +1,147 @@
+﻿#include "souistd.h"
+#include "core/SObjectFactory.h"
+#include "res.mgr/SObjDefAttr.h"
+#include "res.mgr/SUiDef.h"
+
+void ObjInfo_New(SObjectInfo *ret, LPCWSTR name, int type, LPCWSTR alise)
+{
+    SNS::SStringW strName(name);
+    strName.MakeLower();
+    SASSERT(strName.GetLength() < MAX_OBJNAME);
+    wcscpy(ret->szName, strName.c_str());
+    ret->nType = type;
+    ret->szAlise = alise;
+}
+
+BOOL ObjInfo_IsValid(const SObjectInfo *pObjInfo)
+{
+    return pObjInfo->nType >= SNS::Undef && pObjInfo->szName[0] != 0;
+}
+
+SNSBEGIN
+
+SObjectFactoryMgr::SObjectFactoryMgr(void)
+{
+    m_pFunOnKeyRemoved = OnFactoryRemoved;
+}
+
+//************************************
+/** Method:    RegisterFactory, registers the window class customized by the APP */
+/** Access:    public */
+/** Returns:   bool */
+/** Qualifier: */
+/** Parameter: SObjectFactory * pWndFactory: pointer to the window factory */
+/** Parameter: bool bReplace: flag to force replacement of the existing factory */
+//************************************
+BOOL SObjectFactoryMgr::RegisterFactory(const IObjectFactory *objFactory, BOOL bReplace)
+{
+    SObjectInfo objInfo;
+    objFactory->GetObjectInfo(&objInfo);
+    if (HasKey(objInfo))
+    {
+        if (!bReplace)
+            return FALSE;
+        RemoveKeyObject(objInfo);
+    }
+    AddKeyObject(objInfo, objFactory->Clone());
+    if (objInfo.szAlise)
+    {
+        SStringWList aliseList;
+        SplitString(SStringW(objInfo.szAlise), L'|', aliseList);
+        for (size_t i = 0; i < aliseList.GetCount(); i++)
+        {
+            SObjectInfo objInfoAlise;
+            ObjInfo_New(&objInfoAlise, aliseList[i], objInfo.nType);
+            AddKeyObject(objInfoAlise, objFactory->Clone());
+        }
+    }
+    return TRUE;
+}
+
+void SObjectFactoryMgr::OnFactoryRemoved(const SObjectFactoryPtr &obj)
+{
+    obj->Release();
+}
+
+//************************************
+/** Method:    UnregisterFactor, unregisters the window class customized by the APP */
+/** Access:    public */
+/** Returns:   bool */
+/** Qualifier: */
+/** Parameter: SWindowFactory * pWndFactory */
+//************************************
+
+BOOL SObjectFactoryMgr::UnregisterFactory(const SObjectInfo &objInfo)
+{
+    return (BOOL)RemoveKeyObject(objInfo);
+}
+
+IObject *SObjectFactoryMgr::CreateObject(const SObjectInfo &objInfo) const
+{
+    if (!HasKey(objInfo))
+    {
+        return OnCreateUnknownObject(objInfo);
+    }
+    IObject *pRet = GetKeyObject(objInfo)->NewObject();
+    SASSERT(pRet);
+    SetSwndDefAttr(pRet);
+    return pRet;
+}
+
+SObjectInfo SObjectFactoryMgr::BaseObjectInfoFromObjectInfo(const SObjectInfo &objInfo) const
+{
+    SObjectInfo ret = { L"", NULL, Invalid };
+    if (!HasKey(objInfo))
+    {
+        return ret;
+    }
+
+    SStringW strBaseClass = GetKeyObject(objInfo)->BaseClassName();
+    if (strBaseClass == objInfo.szName)
+        return ret;
+    ObjInfo_New(&ret, strBaseClass, objInfo.nType);
+    return ret;
+}
+
+void SObjectFactoryMgr::SetSwndDefAttr(IObject *pObject) const
+{
+    if (pObject->GetObjectType() != Window)
+        return;
+    // Retrieve and set the class's default attributes
+    SObjDefAttr *pDefObjAttr = GETUIDEF->GetUiDef()->GetObjDefAttr();
+    if (!pDefObjAttr)
+        return;
+    wchar_t szClassNameList[20][50] = { 0 };
+    int lens = pObject->GetClassNameList(szClassNameList, 20);
+    for (int i = lens - 1; i >= 0; i--)
+    {
+        SXmlNode defAttr = pDefObjAttr->GetDefAttribute(szClassNameList[i]);
+        if (!defAttr)
+            continue;
+        // Prioritize handling the "class" attribute
+        SXmlAttr attrClass = defAttr.attribute(L"class");
+        if (attrClass)
+        {
+            attrClass.set_userdata(1);
+            pObject->SetAttribute(attrClass.name(), attrClass.value(), TRUE);
+        }
+        for (SXmlAttr attr = defAttr.first_attribute(); attr; attr = attr.next_attribute())
+        {
+            if (attr.get_userdata())
+                continue;
+            pObject->SetAttribute(attr.name(), attr.value(), TRUE);
+        }
+        if (attrClass)
+        {
+            attrClass.set_userdata(0);
+        }
+    }
+}
+
+IObject *SObjectFactoryMgr::OnCreateUnknownObject(const SObjectInfo &objInfo) const
+{
+    SSLOGD() << "Warning: no object " << objInfo.szName << "of type:" << objInfo.nType << "in SOUI !!";
+    return NULL;
+}
+
+SNSEND

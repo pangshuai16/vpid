@@ -1,0 +1,583 @@
+﻿#include "souistd.h"
+#include "control/SSplitWnd.h"
+
+SNSBEGIN
+
+#define DEF_SEPSIZE 5
+
+SSplitPane::SSplitPane()
+    : m_nPriority(0)
+    , m_nSizeIdeal(20, dp)
+    , m_nSizeMin(0, dp)
+    , m_nSizeMax(10000, dp)
+{
+    GetEventSet()->addEvent(EVENTID(EventSplitPaneMoved));
+}
+
+void SSplitPane::Move(CRect rc)
+{
+    SWindow::Move(rc);
+    EventSplitPaneMoved evt(this);
+    evt.rcPane = rc;
+    FireEvent(evt);
+}
+
+///////////////////////////////////////////////////////////////////////
+SSplitWnd::SSplitWnd(void)
+    : m_orintation(Vertical)
+    , m_bAdjustable(TRUE)
+    , m_spliterSize(DEF_SEPSIZE)
+    , m_pSkinSep(NULL)
+    , m_iDragSep(-1)
+{
+}
+
+SSplitWnd::~SSplitWnd(void)
+{
+}
+
+BOOL SSplitWnd::ShowPane(UINT iPane)
+{
+    if (iPane < 0 || iPane >= m_lstPane.GetCount())
+        return FALSE;
+
+    m_lstPane[iPane]->SetVisible(TRUE);
+    UpdateChildrenPosition();
+    return TRUE;
+}
+
+BOOL SSplitWnd::HidePane(UINT iPane)
+{
+    if (iPane < 0 || iPane >= m_lstPane.GetCount())
+        return FALSE;
+
+    m_lstPane[iPane]->SetVisible(FALSE);
+    UpdateChildrenPosition();
+    return TRUE;
+}
+
+BOOL SSplitWnd::CreateChildren(SXmlNode xmlNode)
+{
+    if (!xmlNode)
+        return FALSE;
+    SXmlNode xmlPane = xmlNode.child(SSplitPane::GetClassName());
+    while (xmlPane)
+    {
+        SSplitPane *pPane = new SSplitPane();
+        InsertChild(pPane);
+        if (pPane->InitFromXml(&xmlPane))
+        {
+            InsertItem(pPane);
+        }
+        xmlPane = xmlPane.next_sibling(SSplitPane::GetClassName());
+    }
+    return TRUE;
+}
+
+BOOL SSplitWnd::OnSetCursor(const CPoint &pt)
+{
+    if (!m_bAdjustable)
+        return FALSE;
+    HCURSOR hCursor = GETRESPROVIDER->LoadCursor((m_orintation == Vertical) ? IDC_SIZEWE : IDC_SIZENS);
+    SetCursor(hCursor);
+    return TRUE;
+}
+
+void SSplitWnd::OnPaint(IRenderTarget *pRT)
+{
+    if (!m_pSkinSep)
+        return;
+
+    CRect rcClient;
+    GetChildrenLayoutRect(&rcClient);
+
+    CRect rcSep = rcClient;
+    if (m_orintation == Vertical)
+        rcSep.right = rcClient.left;
+    else
+        rcSep.bottom = rcSep.top;
+
+    LONG &RB = (m_orintation == Vertical) ? rcSep.right : rcSep.bottom;
+    LONG &LT = (m_orintation == Vertical) ? rcSep.left : rcSep.top;
+
+    for (int i = 0; i < (int)m_lstPane.GetCount() - 1; i++)
+    {
+        if (!m_lstPane[i]->IsVisible())
+            continue;
+        CRect rcPane = m_lstPane[i]->GetWindowRect();
+        RB += (m_orintation == Vertical) ? rcPane.Width() : rcPane.Height();
+        LT = RB;
+        RB += m_spliterSize;
+        m_pSkinSep->DrawByIndex(pRT, rcSep, 0);
+    }
+}
+
+void SSplitWnd::OnLButtonDown(UINT nFlags, CPoint pt)
+{
+    __baseCls::OnLButtonDown(nFlags, pt);
+
+    if (!m_bAdjustable)
+        return;
+
+    m_ptDragPrev = pt;
+    if (m_orintation == Vertical)
+    {
+        for (int i = 0; i < (int)m_lstPane.GetCount(); i++)
+        {
+            if (m_ptDragPrev.x < m_lstPane[i]->GetWindowRect().left)
+            {
+                m_iDragSep = i - 1;
+                break;
+            }
+        }
+    }
+    else
+    {
+        for (int i = 0; i < (int)m_lstPane.GetCount(); i++)
+        {
+            if (m_ptDragPrev.y < m_lstPane[i]->GetWindowRect().top)
+            {
+                m_iDragSep = i - 1;
+                break;
+            }
+        }
+    }
+}
+
+void SSplitWnd::OnLButtonUp(UINT nFlags, CPoint pt)
+{
+    __baseCls::OnLButtonUp(nFlags, pt);
+    m_iDragSep = -1;
+}
+
+BOOL SSplitWnd::CancelCaptureMode(int reason)
+{
+    if (reason == CANCEL_REASON_SCROLL && m_iDragSep >= 0)
+        return FALSE;
+    return __baseCls::CancelCaptureMode(reason);
+}
+
+void SSplitWnd::OnMouseMove(UINT nFlags, CPoint pt)
+{
+    if (-1 == m_iDragSep)
+        return;
+
+    // Split the list into two groups.
+    SplitPaneList lstPane1, lstPane2;
+    SplitPaneList lstPriority1, lstPriority2;
+
+    for (int i = 0; i < (int)m_lstPane.GetCount(); i++)
+    {
+        if (i <= m_iDragSep)
+            lstPane1.Add(m_lstPane[i]);
+        else
+            lstPane2.Add(m_lstPane[i]);
+    }
+
+    for (int i = 0; i < (int)m_lstPriority.GetCount(); i++)
+    {
+        SSplitPane *pane = m_lstPriority[i];
+        int idx = m_lstPane.Find(pane);
+        SASSERT(idx != -1);
+        if (idx <= m_iDragSep)
+            lstPriority1.Add(pane);
+        else
+            lstPriority2.Add(pane);
+    }
+
+    CPoint diffPoint = m_ptDragPrev;
+    m_ptDragPrev = pt;
+    diffPoint = m_ptDragPrev - diffPoint;
+    int diff = m_orintation == Vertical ? diffPoint.x : diffPoint.y;
+
+    PANESIZELIST lstPaneSize1, lstPaneSize2;
+    FatchPaneSizeInfo(lstPriority1, lstPaneSize1);
+    FatchPaneSizeInfo(lstPriority2, lstPaneSize2);
+
+    if (diff > 0)
+    {
+        int maxShrink = 0, maxExtent = 0;
+        for (int i = 0; i < (int)lstPaneSize1.GetCount(); i++)
+        {
+            maxExtent += lstPaneSize1[i].maximum - lstPaneSize1[i].actural;
+        }
+        for (int i = 0; i < (int)lstPaneSize2.GetCount(); i++)
+        {
+            maxShrink += lstPaneSize2[i].actural - lstPaneSize2[i].minimum;
+        }
+        diff = smin(diff, smin(maxShrink, maxExtent));
+        if (diff == 0)
+            return;
+
+        // Elongate part1
+        int idxPrev = lstPriority1.Find(lstPane1.GetAt(lstPane1.GetCount() - 1));
+        SASSERT(idxPrev != -1);
+        PANESIZE &paneSize1 = lstPaneSize1[idxPrev];
+
+        int max_digest = paneSize1.maximum - paneSize1.actural;
+        if (max_digest > diff)
+        {
+            paneSize1.actural += diff;
+        }
+        else
+        {
+            paneSize1.actural += max_digest;
+            PANESIZE szBackup = paneSize1;
+            lstPaneSize1.RemoveAt(idxPrev);
+            int remain = diff - max_digest;
+            AdjustPanesSize(lstPaneSize1, remain);
+            lstPaneSize1.InsertAt(idxPrev, szBackup);
+        }
+
+        // Compress part2
+        int idxNext = lstPriority2.Find(lstPane2[0]);
+        SASSERT(idxNext != -1);
+        PANESIZE &paneSize2 = lstPaneSize2[idxNext];
+
+        max_digest = paneSize2.actural - paneSize2.minimum;
+        if (max_digest > diff)
+        {
+            paneSize2.actural -= diff;
+        }
+        else
+        {
+            paneSize2.actural -= max_digest;
+            PANESIZE szBackup = paneSize2;
+            lstPaneSize2.RemoveAt(idxNext);
+            int remain = max_digest - diff; // remain < 0
+            AdjustPanesSize(lstPaneSize2, remain);
+            lstPaneSize2.InsertAt(idxNext, szBackup);
+        }
+    }
+    else
+    {
+        int maxShrink = 0, maxExtent = 0;
+        for (int i = 0; i < (int)lstPaneSize2.GetCount(); i++)
+        {
+            maxExtent += lstPaneSize2[i].maximum - lstPaneSize2[i].actural;
+        }
+        for (int i = 0; i < (int)lstPaneSize1.GetCount(); i++)
+        {
+            maxShrink += lstPaneSize1[i].actural - lstPaneSize1[i].minimum;
+        }
+
+        diff *= -1;
+        diff = smin(diff, smin(maxShrink, maxExtent));
+        if (diff == 0)
+            return;
+
+        // Compress part1
+        int idxPrev = lstPriority1.Find(lstPane1.GetAt(lstPane1.GetCount() - 1));
+        SASSERT(idxPrev != -1);
+        PANESIZE &paneSize1 = lstPaneSize1[idxPrev];
+
+        int max_digest = paneSize1.actural - paneSize1.minimum;
+        if (max_digest > diff)
+        {
+            paneSize1.actural -= diff;
+        }
+        else
+        {
+            paneSize1.actural -= max_digest;
+            PANESIZE szBackup = paneSize1;
+            lstPaneSize1.RemoveAt(idxPrev);
+            int remain = max_digest - diff; // remain < 0
+            AdjustPanesSize(lstPaneSize1, remain);
+            lstPaneSize1.InsertAt(idxPrev, szBackup);
+        }
+
+        // Elongate part2
+        int idxNext = lstPriority2.Find(lstPane2[0]);
+        SASSERT(idxNext != -1);
+        PANESIZE &paneSize2 = lstPaneSize2[idxNext];
+
+        max_digest = paneSize2.maximum - paneSize2.actural;
+        if (max_digest > diff)
+        {
+            paneSize2.actural += diff;
+        }
+        else
+        {
+            paneSize2.actural += max_digest;
+            PANESIZE szBackup = paneSize2;
+            lstPaneSize2.RemoveAt(idxNext);
+            int remain = diff - max_digest;
+            AdjustPanesSize(lstPaneSize2, remain);
+            lstPaneSize2.InsertAt(idxNext, szBackup);
+        }
+        diff *= -1;
+    }
+    // Reset window positions based on the newly allocated window size
+    CRect rcClient;
+    GetChildrenLayoutRect(&rcClient);
+    int nOffset = m_orintation == Vertical ? rcClient.left : rcClient.top;
+    nOffset = ResetPanesPostion(lstPane1, lstPriority1, lstPaneSize1, nOffset);
+    ResetPanesPostion(lstPane2, lstPriority2, lstPaneSize2, nOffset);
+    Invalidate();
+    Update();
+}
+
+int SSplitWnd::PaneIndex(const SStringW &strName) const
+{
+    for (UINT i = 0; i < m_lstPane.GetCount(); i++)
+    {
+        if (m_lstPane[i]->GetName() == strName)
+            return i;
+    }
+    return -1;
+}
+
+SSplitPane *SSplitWnd::GetPane(UINT iPane)
+{
+    if (iPane >= m_lstPane.GetCount())
+        return FALSE;
+    return m_lstPane[iPane];
+}
+
+void SSplitWnd::UpdateChildrenPosition()
+{
+    RECT rcLayout;
+    GetChildrenLayoutRect(&rcLayout);
+    Relayout(rcLayout);
+}
+
+void SSplitWnd::RemoveItem(SSplitPane *pane)
+{
+    int index = m_lstPane.Find(pane);
+    if (index == -1)
+        return;
+
+    m_lstPane.RemoveAt(index);
+
+    index = m_lstPriority.Find(pane);
+    m_lstPriority.RemoveAt(index);
+
+    UpdateChildrenPosition();
+}
+
+void SSplitWnd::GetChildrenLayoutRect(RECT *prc) const
+{
+    CRect rc = GetClientRect();
+    rc.DeflateRect(GetStyle().GetPadding());
+    *prc = rc;
+}
+
+int SSplitWnd::InsertItem(SSplitPane *pane, int index /**< = -1 */)
+{
+    // Disallow duplicate insertion
+    if (m_lstPane.Find(pane) != -1)
+    {
+        SASSERT(FALSE);
+        return -1;
+    }
+
+    if (index < 0)
+    {
+        index = (int)m_lstPane.GetCount();
+    }
+
+    m_lstPane.InsertAt(index, pane);
+    m_lstPriority.Add(pane);
+    SortPriorityList(m_lstPriority);
+
+    CRect rcContainer;
+    GetChildrenLayoutRect(&rcContainer);
+
+    if (!rcContainer.IsRectEmpty())
+    {
+        PANESIZELIST lstPaneSize;
+        FatchPaneSizeInfo(m_lstPriority, lstPaneSize);
+
+        const int index = m_lstPriority.Find(pane);
+        lstPaneSize[index].actural = lstPaneSize[index].preferred;
+
+        Relayout(rcContainer, lstPaneSize);
+    }
+    return index;
+}
+
+void SSplitWnd::Relayout(const CRect &rc, PANESIZELIST lstPaneSize /**< =PANESIZELIST() */)
+{
+    if (lstPaneSize.IsEmpty())
+    {
+        FatchPaneSizeInfo(m_lstPriority, lstPaneSize);
+    }
+    int actural = 0;
+    for (int i = 0; i < (int)lstPaneSize.GetCount(); i++)
+        actural += lstPaneSize[i].actural;
+
+    int nVisiblePanelCount = 0;
+    for (int i = 0; i < (int)m_lstPriority.GetCount(); i++)
+    {
+        if (m_lstPriority[i]->IsVisible())
+            ++nVisiblePanelCount;
+    }
+
+    int remain = ((Vertical == m_orintation) ? rc.Width() : rc.Height()) - actural - (nVisiblePanelCount - 1) * m_spliterSize;
+    AdjustPanesSize(lstPaneSize, remain);
+    int nOffset = (Vertical == m_orintation) ? rc.left : rc.top;
+    ResetPanesPostion(m_lstPane, m_lstPriority, lstPaneSize, nOffset);
+}
+
+int SSplitWnd::AdjustPanesSize(PANESIZELIST &lstPriority, int remain)
+{
+    // step 1: Distribute the residual amount among windows according to desired size in order of priority from high to low
+    for (int i = 0; i < (int)lstPriority.GetCount(); i++)
+    {
+        PANESIZE &pane = lstPriority[i];
+        if (remain > 0)
+        { // Enlarge window
+            if (pane.preferred < pane.actural)
+                continue;
+
+            int max_digest = pane.preferred - pane.actural;
+            if (max_digest >= remain)
+            {
+                pane.actural += remain;
+                remain = 0;
+                break;
+            }
+            else
+            {
+                pane.actural += max_digest;
+                remain -= max_digest;
+            }
+        }
+        else
+        { // Shrink window
+            if (pane.preferred > pane.actural)
+                continue;
+
+            int max_digest = pane.actural - pane.preferred;
+            if (max_digest > -remain)
+            {
+                pane.actural += remain;
+                remain = 0;
+                break;
+            }
+            else
+            {
+                pane.actural -= max_digest;
+                remain += max_digest;
+            }
+        }
+    }
+    // step 2: Distribute the residual amount among window extremes in order of priority from low to high
+    if (remain)
+    {
+        for (int i = (int)lstPriority.GetCount() - 1; i >= 0; i--)
+        {
+            PANESIZE &pane = lstPriority[i];
+            if (remain > 0)
+            { // Enlarge window
+                int max_digest = pane.maximum - pane.actural;
+                if (max_digest >= remain)
+                {
+                    pane.actural += remain;
+                    remain = 0;
+                    break;
+                }
+                else
+                {
+                    pane.actural += max_digest;
+                    remain -= max_digest;
+                }
+            }
+            else
+            { // Shrink window
+                int max_digest = pane.actural - pane.minimum;
+                if (max_digest > -remain)
+                {
+                    pane.actural += remain;
+                    remain = 0;
+                    break;
+                }
+                else
+                {
+                    pane.actural -= max_digest;
+                    remain += max_digest;
+                }
+            }
+        }
+    }
+    return remain;
+}
+
+int SSplitWnd::ResetPanesPostion(SplitPaneList &lstPane, SplitPaneList &lstPanePriority, PANESIZELIST &lstPaneSize, int offset)
+{
+    CRect rc;
+    GetChildrenLayoutRect(&rc);
+    for (int i = 0; i < (int)lstPane.GetCount(); i++)
+    {
+        int idx = lstPanePriority.Find(lstPane[i]);
+        SASSERT(idx != -1);
+        if (m_orintation == Vertical)
+        {
+            rc.left = (offset);
+            rc.right = (offset + lstPaneSize[idx].actural);
+        }
+        else
+        {
+            rc.top = (offset);
+            rc.bottom = (offset + lstPaneSize[idx].actural);
+        }
+        if (lstPane[i]->IsVisible()) // Do not modify window size when the window is invisible
+        {
+            lstPane[i]->Move(rc);
+            offset += lstPaneSize[idx].actural + m_spliterSize;
+        }
+        else
+        {
+            offset += lstPaneSize[idx].actural;
+        }
+    }
+    return offset;
+}
+
+void SSplitWnd::FatchPaneSizeInfo(const SplitPaneList &lstPane, PANESIZELIST &lstPaneSize)
+{
+    lstPaneSize.SetCount(lstPane.GetCount()); // Allocate space
+
+    for (int i = 0; i < (int)lstPane.GetCount(); i++)
+    {
+        if (!lstPane[i]->IsVisible())
+        {
+            lstPaneSize[i].actural = 0;
+            lstPaneSize[i].preferred = 0;
+            lstPaneSize[i].minimum = 0;
+            lstPaneSize[i].maximum = 0;
+            continue;
+        }
+
+        lstPaneSize[i].preferred = lstPane[i]->m_nSizeIdeal.toPixelSize(GetScale());
+        lstPaneSize[i].minimum = lstPane[i]->m_nSizeMin.toPixelSize(GetScale());
+        lstPaneSize[i].maximum = lstPane[i]->m_nSizeMax.toPixelSize(GetScale());
+
+        CRect rcItem;
+        lstPane[i]->GetWindowRect(&rcItem);
+        if (m_orintation == Vertical)
+        {
+            lstPaneSize[i].actural = rcItem.Width();
+        }
+        else
+        {
+            lstPaneSize[i].actural = rcItem.Height();
+        }
+        if (lstPaneSize[i].actural == 0)
+            lstPaneSize[i].actural = lstPane[i]->m_nSizeMin.toPixelSize(GetScale());
+    }
+}
+
+int SSplitWnd::FunComp(const void *p1, const void *p2)
+{
+    SSplitPane *pane1 = *(SSplitPane **)p1;
+    SSplitPane *pane2 = *(SSplitPane **)p2;
+    return pane2->m_nPriority - pane1->m_nPriority;
+}
+
+void SSplitWnd::SortPriorityList(SplitPaneList &lstPane)
+{
+    qsort(lstPane.GetData(), lstPane.GetCount(), sizeof(SSplitPane *), FunComp);
+}
+
+SNSEND

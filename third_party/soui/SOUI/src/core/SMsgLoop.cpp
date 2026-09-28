@@ -1,0 +1,393 @@
+#include "souistd.h"
+#include "core/SMsgLoop.h"
+#include "helper/slog.h"
+#include "core/SNativeWnd.h"
+#include "helper/SCriticalSection.h"
+#ifndef WM_SYSTIMER
+#define WM_SYSTIMER 0x0118 /**< (caret blink) */
+#endif                     /**< WM_SYSTIMER */
+
+#define TM_POSTTASK 200 /**< Timer ID for posting tasks to the message loop */
+
+SNSBEGIN
+
+template <class T>
+BOOL RemoveElementFromArray(SArray<T> &arr, T ele)
+{
+    int idx = arr.Find(ele);
+    if (idx == -1)
+        return FALSE;
+    arr.RemoveAt(idx);
+    return TRUE;
+}
+
+class SMsgLoopWnd : public SNativeWnd {
+    SCriticalSection m_cs;
+    BOOL m_hasTimer;
+    IMessageLoop *m_pMsgLoop;
+
+  public:
+    SMsgLoopWnd(IMessageLoop *pMsgLoop)
+        : m_pMsgLoop(pMsgLoop)
+        , m_hasTimer(FALSE)
+    {
+    }
+    ~SMsgLoopWnd()
+    {
+    }
+    void OnTimer(UINT_PTR nIDEvent)
+    {
+        if (nIDEvent == TM_POSTTASK)
+        {
+            StopTimer();
+            m_pMsgLoop->ExecutePendingTask();
+        }
+    }
+
+    void StartTimer()
+    {
+        SAutoLock lock(m_cs);
+        if (!m_hasTimer)
+        {
+            m_hasTimer = TRUE;
+            SetTimer(TM_POSTTASK, 0);
+        }
+    }
+
+    void StopTimer()
+    {
+        SAutoLock lock(m_cs);
+        if (m_hasTimer)
+        {
+            m_hasTimer = FALSE;
+            KillTimer(TM_POSTTASK);
+        }
+    }
+    BEGIN_MSG_MAP_EX(SMsgLoopWnd)
+        MSG_WM_TIMER(OnTimer)
+        CHAIN_MSG_MAP(SNativeWnd)
+    END_MSG_MAP()
+};
+
+class SMessageLoopPriv {
+  public:
+    SMessageLoopPriv(IMessageLoop *pOwner, IMessageLoop *pParentLoop = NULL)
+        : m_parentLoop(pParentLoop)
+        , m_msgWnd(pOwner)
+    {
+    }
+    SArray<IMsgFilter *> m_aMsgFilter;
+    SArray<IIdleHandler *> m_aIdleHandler;
+    SList<IRunnable *> m_runnables;
+    SList<IRunnable *> m_runningQueue;
+    SAutoRefPtr<IMessageLoop> m_parentLoop;
+    /** Window handle for the message loop, used for handling WM_TIMER messages */
+    SMsgLoopWnd m_msgWnd;
+};
+
+SMessageLoop::SMessageLoop(IMessageLoop *pParentLoop)
+    : m_bRunning(FALSE)
+    , m_tid(0)
+    , m_bQuit(FALSE)
+    , m_bDoIdle(FALSE)
+    , m_nIdleCount(0)
+{
+    m_priv = new SMessageLoopPriv(this, pParentLoop);
+}
+
+SMessageLoop::~SMessageLoop()
+{
+    delete m_priv;
+}
+
+void SMessageLoop::OnMsg(LPMSG pMsg)
+{
+    ExecutePendingTask();
+    if (!PreTranslateMessage(pMsg))
+    {
+        ::TranslateMessage(pMsg);
+        ::DispatchMessage(pMsg);
+    }
+}
+
+void SMessageLoop::Quit(int exitCode)
+{
+    if (!m_bRunning)
+        return;
+    PostThreadMessage(m_tid, WM_QUIT, (WPARAM)exitCode, 0);
+}
+
+void SMessageLoop::OnStart()
+{
+    m_bDoIdle = TRUE;
+    m_nIdleCount = 0;
+    m_tid = GetCurrentThreadId();
+    // [XP fix 2026-09] XP 上 CreateWindowEx(HWND_MESSAGE) 会在窗口过程里卡死
+    //   （表现为窗口未响应；Win10 正常）。m_msgWnd 隐藏消息窗口的唯一用途是
+    //   PostTask 的 TM_POSTTASK 定时唤醒，而全工程（含 SOUI 内部）无任何
+    //   PostTask 调用，跳过创建 100% 安全。若将来启用 PostTask，需先解决 XP 兼容。
+#if 0
+    m_priv->m_msgWnd.CreateNative(NULL, 0, 0, 0, 0, 0, 0, HWND_MESSAGE, 0);
+    SASSERT(m_priv->m_msgWnd.IsWindow());
+#endif
+    m_bRunning = TRUE;
+    m_bQuit = FALSE;
+}
+
+void SMessageLoop::OnStop()
+{
+    SAutoLock lock(m_cs);
+    SPOSITION pos = m_priv->m_runnables.GetHeadPosition();
+    while (pos)
+    {
+        IRunnable *pRunnable = m_priv->m_runnables.GetNext(pos);
+        pRunnable->Release();
+    }
+    m_priv->m_runnables.RemoveAll();
+    m_bRunning = FALSE;
+    m_priv->m_msgWnd.StopTimer();
+    m_priv->m_msgWnd.DestroyWindow();
+}
+
+int SMessageLoop::Run()
+{
+    OnStart();
+    int nRet = 0;
+    do
+    {
+        BOOL bGetMsg = WaitMsg();
+        if (m_bQuit)
+            break;
+        if (!bGetMsg)
+        {
+            m_bDoIdle = TRUE;
+            m_nIdleCount = 0;
+            if (RunIdle())
+                continue;
+        }
+        nRet = HandleMsg();
+    } while (!m_bQuit);
+
+    OnStop();
+    return nRet;
+}
+
+BOOL SMessageLoop::OnIdle(int nIdleCount)
+{
+    BOOL bContinue = !m_priv->m_aIdleHandler.IsEmpty();
+
+    for (size_t i = 0; i < m_priv->m_aIdleHandler.GetCount(); i++)
+    {
+        IIdleHandler *pIdleHandler = m_priv->m_aIdleHandler[i];
+        if (!pIdleHandler->OnIdle(nIdleCount))
+            bContinue = FALSE;
+    }
+    if (m_priv->m_parentLoop)
+    {
+        if (!m_priv->m_parentLoop->OnIdle(nIdleCount))
+            bContinue = FALSE;
+    }
+    return bContinue;
+}
+
+BOOL SMessageLoop::PreTranslateMessage(MSG *pMsg)
+{
+    // loop backwards
+    for (int i = (int)m_priv->m_aMsgFilter.GetCount() - 1; i >= 0; i--)
+    {
+        IMsgFilter *pMessageFilter = m_priv->m_aMsgFilter[i];
+        if (pMessageFilter != NULL && pMessageFilter->PreTranslateMessage(pMsg))
+            return TRUE;
+    }
+    if (m_priv->m_parentLoop)
+    {
+        m_priv->m_parentLoop->PreTranslateMessage(pMsg);
+    }
+    return FALSE; // not translated
+}
+
+BOOL SMessageLoop::IsIdleMessage(MSG *pMsg)
+{
+    // These messages should NOT cause idle processing
+    switch (pMsg->message)
+    {
+    case WM_MOUSEMOVE:
+    case WM_NCMOUSEMOVE:
+    case WM_PAINT:
+    case WM_SYSTIMER: // WM_SYSTIMER (caret blink)
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+BOOL SMessageLoop::RemoveIdleHandler(IIdleHandler *pIdleHandler)
+{
+    if (!pIdleHandler)
+        return FALSE;
+    return RemoveElementFromArray(m_priv->m_aIdleHandler, pIdleHandler);
+}
+
+BOOL SMessageLoop::AddIdleHandler(IIdleHandler *pIdleHandler)
+{
+    if (!pIdleHandler)
+        return FALSE;
+    if (m_priv->m_aIdleHandler.Find(pIdleHandler) != -1)
+        return TRUE;
+    m_priv->m_aIdleHandler.Add(pIdleHandler);
+    return TRUE;
+}
+
+BOOL SMessageLoop::RemoveMessageFilter(IMsgFilter *pMessageFilter)
+{
+    return RemoveElementFromArray(m_priv->m_aMsgFilter, pMessageFilter);
+}
+
+BOOL SMessageLoop::AddMessageFilter(IMsgFilter *pMessageFilter)
+{
+    if (!pMessageFilter)
+        return FALSE;
+    if (m_priv->m_aMsgFilter.Find(pMessageFilter) != -1)
+        return TRUE;
+    m_priv->m_aMsgFilter.Add(pMessageFilter);
+    return TRUE;
+}
+
+BOOL SMessageLoop::PostTask(IRunnable *runable)
+{
+    SAutoLock lock(m_cs);
+    if (m_tid == 0)
+    {
+        SSLOGW() << "msg loop not running now! pending task size:" << m_priv->m_runnables.GetCount();
+    }
+    m_priv->m_runnables.AddTail(runable->clone());
+    if (m_bRunning)
+    {
+        m_priv->m_msgWnd.StartTimer();
+    }
+    return TRUE;
+}
+
+int SMessageLoop::RemoveTasksForObject(void *pObj)
+{
+    int nRet = 0;
+    SAutoLock lock(m_cs);
+    SPOSITION pos = m_priv->m_runnables.GetHeadPosition();
+    while (pos)
+    {
+        SPOSITION pos2 = pos;
+        IRunnable *p = m_priv->m_runnables.GetNext(pos);
+        if (p->getObject() == pObj)
+        {
+            p->Release();
+            m_priv->m_runnables.RemoveAt(pos2);
+            nRet++;
+        }
+    }
+    SAutoLock lock2(m_csRunningQueue);
+    pos = m_priv->m_runningQueue.GetHeadPosition();
+    while (pos)
+    {
+        SPOSITION pos2 = pos;
+        IRunnable *p = m_priv->m_runningQueue.GetNext(pos);
+        if (p->getObject() == pObj)
+        {
+            p->Release();
+            m_priv->m_runningQueue.RemoveAt(pos2);
+            nRet++;
+        }
+    }
+    return nRet;
+}
+
+BOOL SMessageLoop::IsRunning(THIS) const
+{
+    return m_bRunning;
+}
+
+void SMessageLoop::ExecutePendingTask()
+{
+    m_cs.Enter();
+    m_priv->m_runningQueue.Swap(m_priv->m_runnables);
+    m_cs.Leave();
+    for (;;)
+    {
+        SAutoLock lock(m_csRunningQueue);
+        if (m_priv->m_runningQueue.IsEmpty())
+            break;
+        IRunnable *pRunnable = m_priv->m_runningQueue.GetHead();
+        m_priv->m_runningQueue.RemoveHead();
+        pRunnable->run();
+        pRunnable->Release();
+    }
+    if (m_priv->m_parentLoop)
+    {
+        m_priv->m_parentLoop->ExecutePendingTask();
+    }
+    // Do NOT stop the timer here. The timer is consumed by SMsgLoopWnd::OnTimer,
+    // which stops it BEFORE draining. If a worker thread posts a task while tasks
+    // are being executed, its StartTimer() has already re-armed the timer; stopping
+    // it here would kill that fresh timer and orphan the task in m_runnables with
+    // no wakeup until the next UI message arrives (on Android this surfaced as
+    // multi-second delays of the pending queue, resumed only by touch input).
+}
+
+BOOL SMessageLoop::PeekMsg(THIS_ LPMSG pMsg, UINT wMsgFilterMin, UINT wMsgFilterMax, BOOL bRemove)
+{
+    return ::PeekMessage(pMsg, 0, wMsgFilterMin, wMsgFilterMax, bRemove ? PM_REMOVE : PM_NOREMOVE);
+}
+
+BOOL SMessageLoop::RunIdle()
+{
+    while (!m_bQuit && m_bDoIdle)
+    {
+        if (MsgWaitForMultipleObjects(0, NULL, FALSE, 20, QS_ALLINPUT) != WAIT_TIMEOUT)
+        {
+            MSG msg;
+            if (PeekMessage(&msg, 0, 0, 0, PM_NOREMOVE) && IsIdleMessage(&msg))
+            {
+                m_bDoIdle = OnIdle(m_nIdleCount++);
+            }
+            return FALSE;
+        }
+        m_bDoIdle = OnIdle(m_nIdleCount++);
+    }
+    return TRUE;
+}
+
+BOOL SMessageLoop::WaitMsg(THIS)
+{
+    BOOL bIdle = RunIdle();
+    if (m_bQuit)
+        return FALSE;
+    if (!bIdle)
+    {
+        return TRUE;
+    }
+    BOOL bR = (WAIT_TIMEOUT != ::MsgWaitForMultipleObjects(0, NULL, FALSE, 100, QS_ALLINPUT));
+    return bR;
+}
+
+int SMessageLoop::HandleMsg(THIS)
+{
+    MSG msg = { 0 };
+    int nCount = 0;
+    while (PeekMsg(&msg, 0, 0, TRUE) && !m_bQuit)
+    {
+        if (msg.message == WM_QUIT)
+        {
+            m_bQuit = TRUE;
+            break;
+        }
+        OnMsg(&msg);
+        nCount++;
+        m_bDoIdle = IsIdleMessage(&msg);
+        if (m_bDoIdle)
+        {
+            m_nIdleCount = 0;
+        }
+    }
+    return (int)msg.wParam;
+}
+
+SNSEND

@@ -1,0 +1,4530 @@
+﻿#include "souistd.h"
+#include "core/SWnd.h"
+#include "core/SNcPainter.h"
+#include "helper/SColor.h"
+#include "helper/SplitString.h"
+#include "layout/SouiLayout.h"
+#ifdef SOUI_ENABLE_ACC
+#include "interface/sacchelper-i.h"
+#endif /**< SOUI_ENABLE_ACC */
+#include "helper/SwndFinder.h"
+#include "helper/STime.h"
+#include "animation/STransformation.h"
+#include "core/SCaret.h"
+#include <atl.mini/SComCli.h>
+#include <core/SModalViewSession.h>
+SNSBEGIN
+
+///////////////////////////////////////////////////////////////////////
+/** STextTr */
+///////////////////////////////////////////////////////////////////////
+STrText::STrText(SWindow *pOwner_ /**< = NULL */)
+    : pOwner(pOwner_)
+    , bAutoEscape(true)
+{
+}
+
+void STrText::SetOwner(SWindow *pOwner_)
+{
+    pOwner = pOwner_;
+}
+
+SStringT STrText::GetText(BOOL bRawText) const
+{
+    return bRawText ? strRaw : strTr;
+}
+
+void STrText::SetText(const SStringT &strText, bool bEscape /**< =true */)
+{
+    strRaw = strText;
+    bAutoEscape = bEscape;
+    TranslateText();
+}
+
+void STrText::TranslateText()
+{
+    if (pOwner == NULL)
+        return;
+    SStringW str = pOwner->tr(S_CT2W(strRaw));
+    if (bAutoEscape)
+        str = EscapeString(str);
+    strTr = S_CW2T(str);
+}
+
+SStringW STrText::TranslateText2(const SStringW &_strRaw) const
+{
+    if (pOwner == NULL)
+        return _strRaw;
+    SStringW str = pOwner->tr(_strRaw);
+    if (bAutoEscape)
+        str = EscapeString(str);
+    return str;
+}
+
+SStringW STrText::EscapeString(const SStringW &strValue)
+{
+    if (strValue.IsEmpty())
+        return strValue;
+    SStringW strText = strValue;
+    SStringW strCvt;
+    LPCWSTR pszBuf = strText;
+    int i = 0;
+    int iBegin = i;
+    while (i < strText.GetLength())
+    {
+        if (pszBuf[i] == L'\\' && i + 1 < strText.GetLength())
+        {
+            if (pszBuf[i + 1] == L'n')
+            {
+                strCvt += strText.Mid(iBegin, i - iBegin);
+                strCvt += L"\n";
+                i += 2;
+                iBegin = i;
+            }
+            else if (pszBuf[i + 1] == L't')
+            {
+                strCvt += strText.Mid(iBegin, i - iBegin);
+                strCvt += L"\t";
+                i += 2;
+                iBegin = i;
+            }
+            else if (pszBuf[i + 1] == L'\\')
+            {
+                strCvt += strText.Mid(iBegin, i - iBegin);
+                strCvt += L"\\";
+                i += 2;
+                iBegin = i;
+            }
+            else
+            {
+                i += 1;
+            }
+        }
+        else
+        {
+            i += 1;
+        }
+    }
+    strCvt += strText.Mid(iBegin);
+    return strCvt;
+}
+
+//------------------------------------------------------------------------
+class SAnimationHandler : public ITimelineHandler {
+  private:
+    SWindow *m_pOwner;             /**< Owner window */
+    STransformation m_transform;   /**< Transformation */
+    bool m_bFillAfter;             /**< Fill after flag */
+    SWindow *m_pPrevSiblingBackup; /**< Previous sibling backup */
+
+  public:
+    /**
+     * @brief Constructor.
+     * @param pOwner Owner window.
+     */
+    SAnimationHandler(SWindow *pOwner);
+
+    /**
+     * @brief Called when animation starts.
+     */
+    void OnAnimationStart();
+
+    /**
+     * @brief Called when animation stops.
+     */
+    void OnAnimationStop();
+
+    /**
+     * @brief Gets the transformation.
+     * @return Transformation object.
+     */
+    const STransformation &GetTransformation() const;
+
+    /**
+     * @brief Gets the fill after flag.
+     * @return Fill after flag.
+     */
+    bool getFillAfter() const;
+
+  public:
+    STDMETHOD_(void, OnNextFrame)(THIS_) OVERRIDE;
+
+  protected:
+    /**
+     * @brief Called when the owner window is resized.
+     * @param e Event arguments.
+     * @return TRUE if handled, FALSE otherwise.
+     */
+    BOOL OnOwnerResize(IEvtArgs *e);
+};
+
+static SWindow *ICWND_NONE = (SWindow *)-2;
+SAnimationHandler::SAnimationHandler(SWindow *pOwner)
+    : m_pOwner(pOwner)
+    , m_bFillAfter(false)
+    , m_pPrevSiblingBackup(ICWND_NONE)
+{
+}
+
+void SAnimationHandler::OnAnimationStart()
+{
+    IAnimation *pAni = m_pOwner->GetAnimation();
+    SASSERT(pAni);
+    if (pAni->getZAdjustment() != ZORDER_NORMAL)
+    {
+        m_pPrevSiblingBackup = m_pOwner->GetWindow(GSW_PREVSIBLING);
+        if (m_pPrevSiblingBackup == NULL)
+            m_pPrevSiblingBackup = ICWND_FIRST;
+
+        if (pAni->getZAdjustment() == ZORDER_TOP)
+            m_pOwner->AdjustZOrder(ICWND_LAST);
+        else
+            m_pOwner->AdjustZOrder(ICWND_FIRST);
+    }
+    else
+    {
+        m_pPrevSiblingBackup = ICWND_NONE;
+    }
+    m_pOwner->GetEventSet()->subscribeEvent(EventSwndSize::EventID, Subscriber(&SAnimationHandler::OnOwnerResize, this));
+    if (m_pOwner->GetParent())
+    {
+        m_pOwner->GetParent()->GetEventSet()->subscribeEvent(EventSwndSize::EventID, Subscriber(&SAnimationHandler::OnOwnerResize, this));
+    }
+    OnOwnerResize(NULL);
+}
+
+void SAnimationHandler::OnAnimationStop()
+{
+    m_pOwner->GetEventSet()->unsubscribeEvent(EventSwndSize::EventID, Subscriber(&SAnimationHandler::OnOwnerResize, this));
+    if (m_pOwner->GetParent())
+    {
+        m_pOwner->GetParent()->GetEventSet()->unsubscribeEvent(EventSwndSize::EventID, Subscriber(&SAnimationHandler::OnOwnerResize, this));
+    }
+    if (m_pPrevSiblingBackup != ICWND_NONE)
+    {
+        m_pOwner->AdjustZOrder(m_pPrevSiblingBackup);
+        m_pPrevSiblingBackup = ICWND_NONE;
+    }
+}
+
+const STransformation &SAnimationHandler::GetTransformation() const
+{
+    return m_transform;
+}
+
+void SAnimationHandler::OnNextFrame()
+{
+    IAnimation *pAni = m_pOwner->GetAnimation();
+    SASSERT(pAni);
+    pAni->AddRef();
+    m_pOwner->AddRef();
+    uint64_t tm = pAni->getStartTime();
+    if (tm > 0)
+    {
+        m_pOwner->OnAnimationInvalidate(true);
+        BOOL bMore = pAni->getTransformation(STime::GetCurrentTimeMs(), &m_transform);
+        m_pOwner->OnAnimationInvalidate(false);
+        if (!bMore)
+        { // animation stopped.
+            if (pAni->isFillEnabled() && pAni->getFillAfter())
+            {
+                m_bFillAfter = true;
+            }
+            else
+            {
+                m_bFillAfter = false;
+            }
+        }
+    }
+    m_pOwner->Release();
+    pAni->Release();
+}
+
+BOOL SAnimationHandler::OnOwnerResize(IEvtArgs *e)
+{
+    CSize szOwner = m_pOwner->GetWindowRect().Size();
+    CSize szParent = szOwner;
+    SWindow *p = m_pOwner->GetParent();
+    if (p)
+    {
+        szParent = p->GetWindowRect().Size();
+    }
+    m_pOwner->GetAnimation()->initialize(szOwner.cx, szOwner.cy, szParent.cx, szParent.cy, m_pOwner->GetScale());
+    return true;
+}
+
+bool SAnimationHandler::getFillAfter() const
+{
+    return m_bFillAfter;
+}
+//------------------------------------------------------------------------
+enum
+{
+    ANI_ALPHA = 0,
+    ANI_SCALE,
+    ANI_SCALE_X,
+    ANI_SCALE_Y,
+    ANI_ROTATE,
+    ANI_TRANSLATE,
+    ANI_TRANSLATE_X,
+    ANI_TRANSLATE_Y,
+};
+
+struct PropIdMap
+{
+    const LPCWSTR pszName;
+    int type;
+};
+
+static const PropIdMap kPropIdMap[] = {
+    { WindowProperty::SCALE, ANI_SCALE }, { WindowProperty::SCALE_X, ANI_SCALE_X }, { WindowProperty::SCALE_Y, ANI_SCALE_Y }, { WindowProperty::ROTATE, ANI_ROTATE }, { WindowProperty::TRANSLATE, ANI_TRANSLATE }, { WindowProperty::TRANSLATE_X, ANI_TRANSLATE_X }, { WindowProperty::TRANSLATE_Y, ANI_TRANSLATE_Y },
+};
+
+class AnimatorHolder : public TObjRefImpl<IObjRef> {
+  public:
+    SAutoRefPtr<IPropertyValuesHolder> holder;
+    float fraction;
+    int type;
+};
+
+class SAnimatorHandler {
+    STransformation m_transform; /**< Transformation */
+    SWindow *m_pOwner;
+
+  public:
+    SAnimatorHandler(SWindow *pOwner);
+
+    BOOL IsEmpty() const;
+
+    int GetPropType(SStringW strPropName) const;
+
+    BOOL OnSetAnimatorValue(SStringW strType, IPropertyValuesHolder *pHolder, float fraction, ANI_STATE state);
+
+    const STransformation &GetTransformation() const
+    {
+        return m_transform;
+    }
+
+  private:
+    void UpdateTransformation();
+    STransformation GetTransformation(AnimatorHolder *pHolder, int wid, int hei, int nScale) const;
+
+    SList<SAutoRefPtr<AnimatorHolder>> m_lstAnimator;
+};
+
+SAnimatorHandler::SAnimatorHandler(SWindow *pOwner)
+    : m_pOwner(pOwner)
+{
+}
+
+BOOL SAnimatorHandler::IsEmpty() const
+{
+    return m_lstAnimator.IsEmpty();
+}
+
+int SAnimatorHandler::GetPropType(SStringW strPropName) const
+{
+    int type = -1;
+    for (size_t i = 0; i < ARRAYSIZE(kPropIdMap); i++)
+    {
+        if (strPropName.CompareNoCase(kPropIdMap[i].pszName) == 0)
+        {
+            type = kPropIdMap[i].type;
+            break;
+        }
+    }
+    return type;
+}
+
+BOOL SAnimatorHandler::OnSetAnimatorValue(SStringW strType, IPropertyValuesHolder *pHolder, float fraction, ANI_STATE state)
+{
+    int type = GetPropType(strType);
+    if (type == -1)
+        return FALSE;
+    BOOL bEmpty1 = IsEmpty();
+    m_pOwner->OnAnimationInvalidate(true);
+    if (state == ANI_START)
+    {
+        AnimatorHolder *pAniHolder = new AnimatorHolder;
+        pAniHolder->holder = pHolder;
+        pAniHolder->type = type;
+        pAniHolder->fraction = fraction;
+        m_lstAnimator.AddTail(pAniHolder);
+        pAniHolder->Release();
+    }
+    if (state == ANI_END)
+    {
+        for (SPOSITION it = m_lstAnimator.GetHeadPosition(); it;)
+        {
+            SPOSITION pos = it;
+            AnimatorHolder *pAniHolder = m_lstAnimator.GetNext(it);
+            if (pAniHolder->holder == pHolder)
+            {
+                CRect rc = m_pOwner->GetWindowRect();
+                int wid = rc.Width();
+                int hei = rc.Height();
+                int nScale = m_pOwner->GetScale();
+                pAniHolder->fraction = fraction;
+                STransformation tmp = GetTransformation(pAniHolder, wid, hei, nScale);
+                m_pOwner->m_transform.Compose(&tmp);
+                m_lstAnimator.RemoveAt(pos);
+                break;
+            }
+        }
+    }
+    else if (state == ANI_PROGRESS)
+    {
+        for (SPOSITION pos = m_lstAnimator.GetHeadPosition(); pos;)
+        {
+            AnimatorHolder *pAniHolder = m_lstAnimator.GetNext(pos);
+            if (pAniHolder->holder == pHolder)
+            {
+                pAniHolder->fraction = fraction;
+                break;
+            }
+        }
+    }
+    UpdateTransformation();
+    BOOL bEmpty2 = IsEmpty();
+    if (bEmpty1 != bEmpty2)
+    {
+        m_pOwner->UpdateCacheMode();
+    }
+    m_pOwner->OnAnimationInvalidate(false);
+    return TRUE;
+}
+
+void SAnimatorHandler::UpdateTransformation()
+{
+    m_transform.Clear();
+    CRect rc = m_pOwner->GetWindowRect();
+    int wid = rc.Width();
+    int hei = rc.Height();
+    int nScale = m_pOwner->GetScale();
+    for (SPOSITION pos = m_lstAnimator.GetHeadPosition(); pos;)
+    {
+        AnimatorHolder *pHolder = m_lstAnimator.GetNext(pos);
+        STransformation tmp = GetTransformation(pHolder, wid, hei, nScale);
+        m_transform.compose(tmp);
+    }
+}
+
+STransformation SAnimatorHandler::GetTransformation(AnimatorHolder *pHolder, int wid, int hei, int nScale) const
+{
+    STransformation tmp;
+    switch (pHolder->type)
+    {
+    case ANI_ALPHA:
+    {
+        if (pHolder->holder->GetValueType() == PROP_TYPE_BYTE)
+        {
+            BYTE alpha;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &alpha);
+            tmp.SetAlpha(alpha);
+            tmp.SetTransformationType(TYPE_ALPHA);
+        }
+        else if (pHolder->holder->GetValueType() == PROP_TYPE_FLOAT)
+        {
+            float alpha;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &alpha);
+            tmp.SetAlpha((BYTE)(alpha * 255));
+            tmp.SetTransformationType(TYPE_ALPHA);
+        }
+    }
+    break;
+    case ANI_SCALE:
+    {
+        if (pHolder->holder->GetValueType() == PROP_TYPE_FLOAT)
+        {
+            float scale;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &scale);
+            tmp.GetMatrix()->setScale2(scale, scale, wid * m_pOwner->m_pivotX, hei * m_pOwner->m_pivotY);
+            tmp.SetTransformationType(TYPE_MATRIX);
+        }
+    }
+    break;
+    case ANI_SCALE_X:
+    {
+        if (pHolder->holder->GetValueType() == PROP_TYPE_FLOAT)
+        {
+            float scale;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &scale);
+            tmp.GetMatrix()->setScale2(scale, 1, wid * m_pOwner->m_pivotX, hei * m_pOwner->m_pivotY);
+            tmp.SetTransformationType(TYPE_MATRIX);
+        }
+    }
+    break;
+    case ANI_SCALE_Y:
+    {
+        if (pHolder->holder->GetValueType() == PROP_TYPE_FLOAT)
+        {
+            float scale;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &scale);
+            tmp.GetMatrix()->setScale2(1, scale, wid * m_pOwner->m_pivotX, hei * m_pOwner->m_pivotY);
+            tmp.SetTransformationType(TYPE_MATRIX);
+        }
+    }
+    break;
+    case ANI_ROTATE:
+    {
+        if (pHolder->holder->GetValueType() == PROP_TYPE_FLOAT)
+        {
+            float rotate;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &rotate);
+            tmp.GetMatrix()->setRotate2(rotate, wid * m_pOwner->m_pivotX, hei * m_pOwner->m_pivotY);
+            tmp.SetTransformationType(TYPE_MATRIX);
+        }
+    }
+    break;
+    case ANI_TRANSLATE:
+    {
+        if (pHolder->holder->GetValueType() == PROP_TYPE_FLOAT)
+        {
+            float translate;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &translate);
+            tmp.GetMatrix()->setTranslate(translate, translate);
+            tmp.SetTransformationType(TYPE_MATRIX);
+        }
+        else if (pHolder->holder->GetValueType() == PROP_TYPE_LAYOUT_SIZE)
+        {
+            SLayoutSize translate;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &translate);
+            tmp.GetMatrix()->setTranslate((float)translate.toPixelSize(nScale), (float)translate.toPixelSize(nScale));
+            tmp.SetTransformationType(TYPE_MATRIX);
+        }
+        else if (pHolder->holder->GetValueType() == PROP_TYPE_INT)
+        {
+            int nValue;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &nValue);
+            tmp.GetMatrix()->setTranslate((float)nValue, (float)nValue);
+            tmp.SetTransformationType(TYPE_MATRIX);
+        }
+    }
+    break;
+    case ANI_TRANSLATE_X:
+    {
+        if (pHolder->holder->GetValueType() == PROP_TYPE_FLOAT)
+        {
+            float translate;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &translate);
+            tmp.GetMatrix()->setTranslate(translate, 0.0f);
+            tmp.SetTransformationType(TYPE_MATRIX);
+        }
+        else if (pHolder->holder->GetValueType() == PROP_TYPE_LAYOUT_SIZE)
+        {
+            SLayoutSize translate;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &translate);
+            tmp.GetMatrix()->setTranslate((float)translate.toPixelSize(nScale), 0.0f);
+            tmp.SetTransformationType(TYPE_MATRIX);
+        }
+        else if (pHolder->holder->GetValueType() == PROP_TYPE_INT)
+        {
+            int nValue;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &nValue);
+            tmp.GetMatrix()->setTranslate((float)nValue, 0.0f);
+            tmp.SetTransformationType(TYPE_MATRIX);
+        }
+    }
+    break;
+    case ANI_TRANSLATE_Y:
+    {
+        if (pHolder->holder->GetValueType() == PROP_TYPE_FLOAT)
+        {
+            float translate;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &translate);
+            tmp.GetMatrix()->setTranslate(0.0f, translate);
+            tmp.SetTransformationType(TYPE_MATRIX);
+        }
+        else if (pHolder->holder->GetValueType() == PROP_TYPE_LAYOUT_SIZE)
+        {
+            SLayoutSize translate;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &translate);
+            tmp.GetMatrix()->setTranslate(0.0f, (float)translate.toPixelSize(nScale));
+            tmp.SetTransformationType(TYPE_MATRIX);
+        }
+        else if (pHolder->holder->GetValueType() == PROP_TYPE_INT)
+        {
+            int nValue;
+            pHolder->holder->GetAnimatedValue(pHolder->fraction, &nValue);
+            tmp.GetMatrix()->setTranslate(0.0f, (float)nValue);
+            tmp.SetTransformationType(TYPE_MATRIX);
+        }
+    }
+    break;
+    }
+    return tmp;
+}
+
+///////////////////////////////////////////////////////////////////////
+/** SWindow Implement */
+///////////////////////////////////////////////////////////////////////
+
+SWindow::SWindow()
+    : m_swnd(SWindowMgr::NewWindow(this))
+    , m_pContainer(NULL)
+    , m_pParent(NULL)
+    , m_pFirstChild(NULL)
+    , m_pLastChild(NULL)
+    , m_pNextSibling(NULL)
+    , m_pPrevSibling(NULL)
+    , m_nChildrenCount(0)
+    , m_uZorder(0)
+    , m_nLayer(0)
+    , m_bEnableLayer(FALSE)
+    , m_dwState(WndState_Normal)
+    , m_bMsgTransparent(FALSE)
+    , m_bVisible(TRUE)
+    , m_bDisplay(TRUE)
+    , m_bDisable(FALSE)
+    , m_nUpdateLockCnt(0)
+    , m_bClipClient(FALSE)
+    , m_bFocusable(FALSE)
+    , m_bDrawFocusRect(TRUE)
+    , m_bCacheDraw(FALSE)
+    , m_bCacheDirty(TRUE)
+    , m_layoutDirty(dirty_self)
+    , m_bHoverAware(TRUE)
+    , m_bLayeredWindow(FALSE)
+    , m_bMsgHandled(FALSE)
+    , m_uData(0)
+    , m_pOwner(NULL)
+    , m_pCurMsg(NULL)
+    , m_pBgSkin(NULL)
+    , m_pNcSkin(NULL)
+    , m_pGetRTData(NULL)
+    , m_bFloat(FALSE)
+    , m_crColorize(0)
+    , m_strText(this)
+    , m_strToolTipText(this)
+    , m_isAnimating(FALSE)
+    , m_isDestroying(FALSE)
+    , m_isLoading(FALSE)
+    , m_funSwndProc(NULL)
+    , m_pivotX(0.5f)
+    , m_pivotY(0.5f)
+#ifdef _DEBUG
+    , m_nMainThreadId(::GetCurrentThreadId()) /**< The thread that initializes the object is not necessarily the main thread */
+#endif
+{
+    m_pAnimatorHandler = new SAnimatorHandler(this);
+    m_pAnimationHandler = new SAnimationHandler(this);
+
+    m_nMaxWidth.setWrapContent();
+
+    m_pLayout.Attach(new SouiLayout());
+    m_pLayoutParam.Attach(new SouiLayoutParam());
+    m_pLayoutParam->SetMatchParent(Both);
+
+    m_evtSet.addEvent(EVENTID(EventGetCaret));
+    m_evtSet.addEvent(EVENTID(EventSwndCreate));
+    m_evtSet.addEvent(EVENTID(EventSwndInitFinish));
+    m_evtSet.addEvent(EVENTID(EventSwndDestroy));
+    m_evtSet.addEvent(EVENTID(EventSwndSize));
+    m_evtSet.addEvent(EVENTID(EventSwndPos));
+    m_evtSet.addEvent(EVENTID(EventSwndMouseHover));
+    m_evtSet.addEvent(EVENTID(EventSwndMouseLeave));
+    m_evtSet.addEvent(EVENTID(EventSwndMouseMove));
+    m_evtSet.addEvent(EVENTID(EventSwndStateChanged));
+    m_evtSet.addEvent(EVENTID(EventSwndVisibleChanged));
+    m_evtSet.addEvent(EVENTID(EventSwndCaptureChanged));
+    m_evtSet.addEvent(EVENTID(EventSwndUpdateTooltip));
+    m_evtSet.addEvent(EVENTID(EventMouseClick));
+    m_evtSet.addEvent(EVENTID(EventCmd));
+    m_evtSet.addEvent(EVENTID(EventCtxMenu));
+    m_evtSet.addEvent(EVENTID(EventSetFocus));
+    m_evtSet.addEvent(EVENTID(EventKillFocus));
+    m_evtSet.addEvent(EVENTID(EventKeyDown));
+    m_evtSet.addEvent(EVENTID(EventKeyUp));
+    m_evtSet.addEvent(EVENTID(EventChar));
+    m_evtSet.addEvent(EVENTID(EventSysKeyDown));
+    m_evtSet.addEvent(EVENTID(EventSysKeyUp));
+
+    m_evtSet.addEvent(EVENTID(EventSwndAnimationStart));
+    m_evtSet.addEvent(EVENTID(EventSwndAnimationStop));
+    m_evtSet.addEvent(EVENTID(EventSwndAnimationRepeat));
+    m_evtSet.addEvent(EVENTID(EventSwndAnimatorFractor));
+
+    IAttrStorageFactory *pAttrFac = SApplication::getSingleton().GetAttrStorageFactory();
+    if (pAttrFac)
+    {
+        pAttrFac->CreateAttrStorage(this, &m_attrStorage);
+    }
+}
+
+SWindow::~SWindow()
+{
+    delete m_pAnimatorHandler;
+    delete m_pAnimationHandler;
+#ifdef SOUI_ENABLE_ACC
+    if (m_pAcc)
+    {
+        SComPtr<IAccHelper> accHelper;
+        if (m_pAcc->QueryInterface(__suidof(IAccHelper), (void **)&accHelper) == S_OK)
+        {
+            SASSERT(accHelper->GetOwner() == NULL);
+        }
+    }
+#endif
+    SWindowMgr::DestroyWindow(m_swnd);
+}
+
+void SWindow::OnFinalRelease(THIS)
+{
+    if (m_funSwndProc)
+    {
+        m_funSwndProc(this, WM_NCDESTROY, 0, 0, NULL);
+    }
+    delete this;
+}
+
+BOOL SWindow::IsMsgHandled() const
+{
+    return m_bMsgHandled;
+}
+
+void SWindow::SetMsgHandled(BOOL bHandled)
+{
+    m_bMsgHandled = bHandled ? 1 : 0;
+}
+
+/** Get align */
+UINT SWindow::GetTextAlign() const
+{
+    return GetStyle().GetTextAlign();
+}
+
+void SWindow::GetWindowRect(LPRECT prect) const
+{
+    SASSERT(prect);
+    CRect rcWnd = GetWindowRect();
+    memcpy(prect, &rcWnd, sizeof(RECT));
+}
+
+CRect SWindow::GetWindowRect() const
+{
+    return m_rcWindow;
+}
+
+void SWindow::GetClientRect(LPRECT pRect) const
+{
+    SASSERT(pRect);
+    CRect rc = GetWindowRect();
+    rc.DeflateRect(GetStyle().GetMargin());
+    *pRect = rc;
+}
+
+CRect SWindow::GetClientRect() const
+{
+    CRect rc;
+    SWindow::GetClientRect(&rc);
+    return rc;
+}
+
+SStringT SWindow::GetWindowText(BOOL bRawText /**< =FALSE */) const
+{
+    return m_strText.GetText(bRawText);
+}
+
+int SWindow::GetWindowTextU8(THIS_ IStringA *pStr, BOOL bRawText) const
+{
+    SStringT strText = GetWindowText(bRawText);
+    SStringA strA = S_CT2A(strText, CP_UTF8);
+    pStr->Copy(&strA);
+    return pStr->GetLength();
+}
+
+int SWindow::GetWindowText(TCHAR *pBuf, int nBufLen, BOOL bRawText) const
+{
+    SStringT str = GetWindowText(bRawText);
+    if (!pBuf)
+        return str.GetLength();
+    int nRet = smin(nBufLen, str.GetLength());
+    _tcsncpy(pBuf, str.c_str(), nRet);
+    if (nBufLen > nRet)
+    {
+        pBuf[nRet] = 0;
+    }
+    return nRet;
+}
+
+SStringT SWindow::GetTooltip(CPoint pt) const
+{
+    return GetToolTipText();
+}
+
+BOOL SWindow::UpdateToolTip(CPoint pt, SwndToolTipInfo &tipInfo)
+{
+    tipInfo.swnd = m_swnd;
+    tipInfo.dwCookie = 0;
+    tipInfo.rcTarget = GetWindowRect();
+
+    SMatrix mtx = _GetMatrixEx();
+    if (!mtx.isIdentity())
+    {
+        SRect src = SRect::IMake(tipInfo.rcTarget);
+        mtx.mapRect(&src);
+        tipInfo.rcTarget = src.toRect();
+    }
+
+    SStringT strTip;
+    EventSwndUpdateTooltip evt(this);
+    evt.bUpdated = FALSE;
+    evt.strToolTip = &strTip;
+    FireEvent(&evt);
+
+    if (evt.bUpdated)
+    {
+        tipInfo.strTip = strTip;
+        return !tipInfo.strTip.IsEmpty();
+    }
+    else
+    {
+        strTip = GetTooltip(pt);
+        if (strTip.IsEmpty())
+            return FALSE;
+        tipInfo.strTip = strTip;
+    }
+    return TRUE;
+}
+
+void SWindow::SetWindowText(LPCTSTR lpszText)
+{
+    m_strText.SetText(lpszText, false);
+    accNotifyEvent(EVENT_OBJECT_NAMECHANGE);
+    OnContentChanged();
+}
+
+void SWindow::SetWindowTextU8(THIS_ LPCSTR lpszText)
+{
+    SStringT str = S_CA2T(lpszText, CP_UTF8);
+    return SetWindowText(str);
+}
+
+void SWindow::SetEventMute(BOOL bMute)
+{
+    GetEventSet()->setMutedState(!!bMute);
+}
+
+void SWindow::OnContentChanged()
+{
+    MarkCacheDirty(true);
+    if (IsVisible(TRUE))
+        Invalidate();
+    if (GetLayoutParam()->IsWrapContent(Any))
+    {
+        RequestRelayout();
+        if (IsVisible(TRUE))
+            Invalidate();
+    }
+    else if (GetLayoutParam()->IsMatchParent(Any) && GetParent())
+    {
+        GetParent()->OnContentChanged();
+    }
+}
+
+void SWindow::TestMainThread()
+{
+#ifdef _DEBUG
+    if (IsBadWritePtr(this, sizeof(SWindow)))
+    {
+        SASSERT_MSGA(FALSE, "this is null!!!");
+    }
+    else
+    {
+        // When you see this, I regret to tell you that your other threads are updating the UI
+        // This is a very dangerous thing
+        tid_t dwCurThreadID = GetCurrentThreadId();
+        DWORD dwProcID = GetCurrentProcessId();
+        SASSERT_FMTW(m_nMainThreadId == dwCurThreadID, L"ProcessID:%d,请准备好红包再到群里提问", dwProcID);
+    }
+#endif
+}
+
+/** Send a message to SWindow */
+LRESULT SWindow::SSendMessage(UINT uMsg, WPARAM wParam /**< = 0 */, LPARAM lParam /**< = 0 */, BOOL *pbMsgHandled /**< =NULL */)
+{
+    LRESULT lResult = 0;
+
+    ASSERT_UI_THREAD();
+    SWindow *pOwner = GetOwner();
+    if (pOwner && uMsg != WM_DESTROY)
+        pOwner->AddRef();
+    AddRef();
+    SWNDMSG msgCur = { uMsg, wParam, lParam };
+    SWNDMSG *pOldMsg = m_pCurMsg;
+    m_pCurMsg = &msgCur;
+
+    BOOL bMsgHandled = SwndProc(uMsg, wParam, lParam, &lResult);
+    if (pbMsgHandled)
+        *pbMsgHandled = bMsgHandled;
+
+    m_pCurMsg = pOldMsg;
+    Release();
+    if (pOwner && uMsg != WM_DESTROY)
+        pOwner->Release();
+    return lResult;
+}
+
+void SWindow::SDispatchMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    SSendMessage(uMsg, wParam, lParam);
+    SWindow *pChild = GetWindow(GSW_FIRSTCHILD);
+    while (pChild)
+    {
+        pChild->SDispatchMessage(uMsg, wParam, lParam);
+        pChild = pChild->GetWindow(GSW_NEXTSIBLING);
+    }
+}
+
+void SWindow::Move(LPCRECT prect)
+{
+    ASSERT_UI_THREAD();
+
+    if (prect)
+    {
+        m_bFloat = TRUE; // After using Move, the program no longer automatically calculates the window coordinates
+        OnRelayout(*prect);
+    }
+    else if (GetParent())
+    {
+        // Restore automatic position calculation
+        m_bFloat = FALSE;
+        // Recalculate the coordinates of itself and its sibling windows
+        RequestRelayout();
+    }
+}
+
+void SWindow::Move2(int x, int y, int cx /**< =-1 */, int cy /**< =-1 */)
+{
+    CRect rcWnd = GetWindowRect();
+    if (cx == -1)
+        cx = rcWnd.Width();
+    if (cy == -1)
+        cy = rcWnd.Height();
+    CRect rcNew(x, y, x + cx, y + cy);
+    Move(&rcNew);
+}
+
+/** Set current cursor, when hover */
+BOOL SWindow::OnSetCursor(const CPoint &pt)
+{
+    HCURSOR hCursor = GETRESPROVIDER->LoadCursor(GetStyle().m_strCursor);
+    ::SetCursor(hCursor);
+    return TRUE;
+}
+
+/** Get SWindow state */
+DWORD SWindow::GetState(void) const
+{
+    return m_dwState;
+}
+
+/** Modify SWindow state */
+DWORD SWindow::ModifyState(DWORD dwStateAdd, DWORD dwStateRemove, BOOL bUpdate /**< =FALSE */)
+{
+    ASSERT_UI_THREAD();
+
+    DWORD dwOldState = m_dwState;
+
+    DWORD dwNewState = m_dwState;
+    dwNewState &= ~dwStateRemove;
+    dwNewState |= dwStateAdd;
+
+    OnStateChanging(dwOldState, dwNewState);
+    m_dwState = dwNewState;
+    OnStateChanged(dwOldState, dwNewState);
+
+    if (bUpdate && NeedRedrawWhenStateChange())
+    {
+        MarkCacheDirty(true);
+        InvalidateRect(GetWindowRect());
+    }
+    return dwOldState;
+}
+
+ULONG_PTR SWindow::GetUserData() const
+{
+    return m_uData;
+}
+
+ULONG_PTR SWindow::SetUserData(ULONG_PTR uData)
+{
+    ULONG_PTR uOld = m_uData;
+    m_uData = uData;
+    return uOld;
+}
+
+BOOL SWindow::SetTimer(char id, UINT uElapse)
+{
+    if (!GetContainer())
+        return FALSE;
+    STimerID timerID(m_swnd, id);
+    return (BOOL)::SetTimer(GetContainer()->GetHostHwnd(), DWORD(timerID), uElapse, NULL);
+}
+
+BOOL SWindow::KillTimer(char id)
+{
+    if (!GetContainer())
+        return FALSE;
+    STimerID timerID(m_swnd, id);
+    return ::KillTimer(GetContainer()->GetHostHwnd(), DWORD(timerID));
+}
+
+SWND SWindow::GetSwnd() const
+{
+    return m_swnd;
+}
+
+IWindow *SWindow::GetIParent() const
+{
+    return GetParent();
+}
+
+IWindow *SWindow::GetIRoot() const
+{
+    return GetRoot();
+}
+
+BOOL SWindow::Destroy()
+{
+    ASSERT_UI_THREAD();
+    if (!GetParent())
+    {
+        SSendMessage(WM_DESTROY);
+        Release();
+    }
+    else
+    {
+        GetParent()->DestroyChild(this);
+    }
+    return TRUE;
+}
+
+BOOL SWindow::DestroyChild(SWindow *pChild)
+{
+    ASSERT_UI_THREAD();
+    if (this != pChild->GetParent())
+        return FALSE;
+    if (pChild->m_isDestroying)
+        return FALSE;
+    pChild->InvalidateRect(NULL);
+    pChild->SSendMessage(WM_DESTROY);
+    RemoveChild(pChild);
+    pChild->Release();
+    return TRUE;
+}
+
+UINT SWindow::GetChildrenCount() const
+{
+    return m_nChildrenCount;
+}
+
+void SWindow::_InsertChild(SWindow *pNewChild, SWindow *pInsertAfter)
+{
+    pNewChild->m_pParent = this;
+    pNewChild->m_pPrevSibling = pNewChild->m_pNextSibling = NULL;
+
+    if (pInsertAfter == m_pLastChild)
+        pInsertAfter = ICWND_LAST;
+
+    if (pInsertAfter == ICWND_LAST)
+    {
+        // insert window at head
+        pNewChild->m_pPrevSibling = m_pLastChild;
+        if (m_pLastChild)
+            m_pLastChild->m_pNextSibling = pNewChild;
+        else
+            m_pFirstChild = pNewChild;
+        m_pLastChild = pNewChild;
+    }
+    else if (pInsertAfter == ICWND_FIRST)
+    {
+        // insert window at tail
+        pNewChild->m_pNextSibling = m_pFirstChild;
+        if (m_pFirstChild)
+            m_pFirstChild->m_pPrevSibling = pNewChild;
+        else
+            m_pLastChild = pNewChild;
+        m_pFirstChild = pNewChild;
+    }
+    else
+    {
+        // insert window at middle
+        SASSERT(pInsertAfter->m_pParent == this);
+        SASSERT(m_pFirstChild && m_pLastChild);
+        SWindow *pNext = pInsertAfter->m_pNextSibling;
+        SASSERT(pNext);
+        pInsertAfter->m_pNextSibling = pNewChild;
+        pNewChild->m_pPrevSibling = pInsertAfter;
+        pNewChild->m_pNextSibling = pNext;
+        pNext->m_pPrevSibling = pNewChild;
+    }
+    m_nChildrenCount++;
+}
+
+void SWindow::InsertChild(SWindow *pNewChild, SWindow *pInsertAfter /**< =ICWND_LAST */)
+{
+    ASSERT_UI_THREAD();
+    if (pNewChild->GetParent() == this)
+        return;
+    SASSERT(pNewChild->GetParent() == NULL);
+    OnBeforeInsertChild(pNewChild);
+    pNewChild->SetContainer(GetContainer());
+
+    _InsertChild(pNewChild, pInsertAfter);
+
+    m_layoutDirty = dirty_self;
+
+    if (!GetLayout()->IsParamAcceptable(pNewChild->GetLayoutParam()))
+    { // Check whether the child window's original layout attributes match the current window's layout type
+        ILayoutParam *pLayoutParam = GetLayout()->CreateLayoutParam();
+        pNewChild->SetLayoutParam(pLayoutParam);
+        pLayoutParam->Release();
+    }
+
+    // Inherit the parent window's disabled state
+    pNewChild->OnEnable(!IsDisabled(TRUE), ParentEnable);
+
+    // Only need to mark zorder invalid when inserting a new control; deleting a control does not require marking
+    if (GetContainer())
+        GetContainer()->MarkWndTreeZorderDirty();
+    OnAfterInsertChild(pNewChild);
+    if (!m_isLoading)
+    {
+        RequestRelayout();
+        pNewChild->SDispatchMessage(UM_SETSCALE, GetScale(), 0);
+        pNewChild->SDispatchMessage(UM_SETCOLORIZE, GetColorizeColor(), 0);
+        if (pNewChild->IsVisible(FALSE) && IsVisible(TRUE))
+        {
+            pNewChild->SSendMessage(WM_SHOWWINDOW, TRUE);
+        }
+    }
+}
+
+void SWindow::_RemoveChild(SWindow *pChild)
+{
+    SWindow *pPrevSib = pChild->m_pPrevSibling;
+    SWindow *pNextSib = pChild->m_pNextSibling;
+
+    if (pPrevSib)
+        pPrevSib->m_pNextSibling = pNextSib;
+    else
+        m_pFirstChild = pNextSib;
+
+    if (pNextSib)
+        pNextSib->m_pPrevSibling = pPrevSib;
+    else
+        m_pLastChild = pPrevSib;
+
+    pChild->m_pParent = NULL;
+    pChild->m_pNextSibling = NULL;
+    pChild->m_pPrevSibling = NULL;
+    m_nChildrenCount--;
+}
+
+BOOL SWindow::RemoveChild(SWindow *pChild)
+{
+    ASSERT_UI_THREAD();
+    if (this != pChild->GetParent())
+        return FALSE;
+    CRect rcChild = pChild->GetWindowRect();
+    InvalidateRect(&rcChild);
+
+    OnBeforeRemoveChild(pChild);
+    pChild->SetContainer(NULL);
+
+    _RemoveChild(pChild);
+
+    OnAfterRemoveChild(pChild);
+    return TRUE;
+}
+
+BOOL SWindow::IsChecked() const
+{
+    return WndState_Check == (m_dwState & WndState_Check);
+}
+
+BOOL SWindow::IsDisabled(BOOL bCheckParent /**< = FALSE */) const
+{
+    if (bCheckParent)
+        return m_dwState & WndState_Disable;
+    else
+        return m_bDisable;
+}
+
+BOOL SWindow::IsVisible(BOOL bCheckParent /**< = FALSE */) const
+{
+    if (bCheckParent)
+        return (0 == (m_dwState & WndState_Invisible));
+    else
+        return m_bVisible;
+}
+
+/** Because NotifyInvalidateRect only notifies a refresh when the window is visible, here a notification is performed both before and after the window's visible state changes. */
+void SWindow::SetVisible(BOOL bVisible, BOOL bUpdate /**< =FALSE */)
+{
+    if (bUpdate)
+        InvalidateRect(GetWindowRect());
+    AddRef();
+    SSendMessage(WM_SHOWWINDOW, bVisible);
+    if (bUpdate)
+        InvalidateRect(GetWindowRect());
+    Release();
+}
+
+void SWindow::EnableWindow(BOOL bEnable, BOOL bUpdate)
+{
+    SSendMessage(WM_ENABLE, bEnable);
+    if (bUpdate)
+        InvalidateRect(GetWindowRect());
+}
+
+void SWindow::SetCheck(BOOL bCheck)
+{
+    if (bCheck)
+        ModifyState(WndState_Check, 0, TRUE);
+    else
+        ModifyState(0, WndState_Check, TRUE);
+}
+
+ISwndContainer *SWindow::GetContainer()
+{
+    return m_pContainer;
+}
+
+const ISwndContainer *SWindow::GetContainer() const
+{
+    return m_pContainer;
+}
+
+void SWindow::SetContainer(ISwndContainer *pContainer)
+{
+    ASSERT_UI_THREAD();
+    OnContainerChanged(m_pContainer, pContainer);
+    SWindow *pChild = GetWindow(GSW_FIRSTCHILD);
+    while (pChild)
+    {
+        pChild->SetContainer(m_pContainer);
+        pChild = pChild->GetWindow(GSW_NEXTSIBLING);
+    }
+}
+
+void SWindow::SetOwner(SWindow *pOwner)
+{
+    m_pOwner = pOwner;
+}
+
+SWindow *SWindow::GetOwner() const
+{
+    return m_pOwner;
+}
+
+BOOL SWindow::IsMsgTransparent() const
+{
+    return m_bMsgTransparent;
+}
+
+const SwndStyle &SWindow::GetStyle() const
+{
+    return m_style;
+}
+
+SwndStyle &SWindow::GetStyle()
+{
+    return m_style;
+}
+
+COLORREF SWindow::GetTextColor(int iState) const
+{
+    return m_style.GetTextColor(iState);
+}
+
+void SWindow::SetTextColor(COLORREF cr, int iState)
+{
+    m_style.SetTextColor(iState, cr);
+    Invalidate();
+}
+
+SWindow *SWindow::_FindChildByID(int id, int nDeep)
+{
+    SWindow *pChild = (SWindow *)GetWindow(GSW_FIRSTCHILD);
+    while (pChild)
+    {
+        if (pChild->GetID() == id)
+            return pChild;
+        pChild = (SWindow *)pChild->GetWindow(GSW_NEXTSIBLING);
+    }
+
+    if (nDeep > 0)
+        nDeep--;
+    if (nDeep == 0)
+        return NULL;
+
+    pChild = (SWindow *)GetWindow(GSW_FIRSTCHILD);
+    while (pChild)
+    {
+        SWindow *pChildFind = pChild->_FindChildByID(id, nDeep);
+        if (pChildFind)
+            return pChildFind;
+        pChild = (SWindow *)pChild->GetWindow(GSW_NEXTSIBLING);
+    }
+
+    return NULL;
+}
+
+SWindow *SWindow::_FindChildByName(const SStringW &strName, int nDeep)
+{
+    SWindow *pChild = (SWindow *)GetWindow(GSW_FIRSTCHILD);
+    while (pChild)
+    {
+        if (pChild->m_strName == strName)
+            return pChild;
+        pChild = (SWindow *)pChild->GetWindow(GSW_NEXTSIBLING);
+    }
+
+    if (nDeep > 0)
+        nDeep--;
+    if (nDeep == 0)
+        return NULL;
+
+    pChild = (SWindow *)GetWindow(GSW_FIRSTCHILD);
+    while (pChild)
+    {
+        SWindow *pChildFind = pChild->_FindChildByName(strName, nDeep);
+        if (pChildFind)
+            return pChildFind;
+        pChild = (SWindow *)pChild->GetWindow(GSW_NEXTSIBLING);
+    }
+
+    return NULL;
+}
+
+SWindow *SWindow::FindChildByID(int id, int nDeep /**< =-1 */)
+{
+    if (id == SWindowMgr::SWND_INVALID || nDeep == 0)
+        return NULL;
+    ISwndFinder *pFinder = GetContainer()->GetSwndFinder();
+    SWindow *pRet = (SWindow *)pFinder->FindChildByID(this, id, nDeep);
+    if (pRet)
+    {
+        if (pRet->IsDescendant(this) && pRet->GetID() == id)
+            return pRet;
+        pFinder->EraseCacheForID(this, id, nDeep);
+    }
+
+    pRet = _FindChildByID(id, nDeep);
+    if (pRet)
+        pFinder->CacheResultForID(this, id, nDeep, pRet);
+    return pRet;
+}
+
+SWindow *SWindow::FindChildByName(LPCWSTR pszName, int nDeep)
+{
+    if (pszName == NULL || nDeep == 0)
+        return NULL;
+    SStringW strName(pszName);
+    if (strName.IsEmpty())
+        return NULL;
+    if (!GetContainer())
+        return _FindChildByName(strName, nDeep);
+
+    ISwndFinder *pFinder = GetContainer()->GetSwndFinder();
+    SWindow *pRet = (SWindow *)pFinder->FindChildByName(this, strName, nDeep);
+    if (pRet)
+    {
+        if (pRet->IsDescendant(this) && wcsicmp(pRet->GetName(), pszName) == 0)
+            return pRet;
+        // update find cache.
+        pFinder->EraseCacheForName(this, strName, nDeep);
+    }
+
+    pRet = _FindChildByName(strName, nDeep);
+    if (pRet)
+        pFinder->CacheResultForName(this, strName, nDeep, pRet);
+    return pRet;
+}
+
+SWindow *SWindow::FindChildByName(LPCSTR strName, int nDeep /**< = -1 */)
+{
+    return FindChildByName(S_CA2W(strName, CP_UTF8), nDeep);
+}
+
+BOOL SWindow::CreateChildren(SXmlNode xmlNode)
+{
+    ASSERT_UI_THREAD();
+    SAutoEnableHostPrivUiDef enableUiDef(this);
+    for (SXmlNode xmlChild = xmlNode.first_child(); xmlChild; xmlChild = xmlChild.next_sibling())
+    {
+        if (xmlChild.type() != node_element)
+            continue;
+
+        if (_wcsicmp(xmlChild.name(), SWindow_style::kLabel_Include) == 0)
+        { // Support the include tag in window layout
+            SStringT strSrc = S_CW2T(xmlChild.attribute(L"src").value());
+            SXmlDoc xmlDoc;
+            if (LOADXML(xmlDoc, strSrc))
+            {
+                SXmlNode xmlInclude = xmlDoc.root().first_child();
+                if (_wcsicmp(xmlInclude.name(), SWindow_style::kLabel_Include) == 0)
+                { // compatible with 2.9.0.1
+                    CreateChildren(xmlInclude);
+                }
+                else
+                {
+                    // merger include attribute to xml node.
+                    for (SXmlAttr attr = xmlChild.first_attribute(); attr; attr = attr.next_attribute())
+                    {
+                        if (_wcsicmp(attr.name(), L"src") == 0)
+                            continue;
+                        if (xmlInclude.attribute(attr.name()))
+                        {
+                            xmlInclude.attribute(attr.name()).set_value(attr.value());
+                        }
+                        else
+                        {
+                            xmlInclude.append_attribute(attr.name()).set_value(attr.value());
+                        }
+                    }
+                    CreateChild(xmlInclude);
+                }
+            }
+            else
+            {
+                SSLOGW() << "load include file failed, file name=" << strSrc;
+            }
+        }
+        else if (!xmlChild.get_userdata()) // Use userdata to mark whether a node can be ignored
+        {
+            SStringW strName = xmlChild.name();
+            if (strName.StartsWith(SWindow_style::kTemp_Namespace))
+            {
+                strName = strName.Right(strName.GetLength() - 2);
+                SStringW strXmlTemp = GETUIDEF->GetTemplateString(strName);
+                SASSERT(!strXmlTemp.IsEmpty());
+                if (!strXmlTemp.IsEmpty())
+                { // create children by template.
+                    SXmlNode xmlData = xmlChild.child(SWindow_style::kTemp_Data);
+                    while (xmlData)
+                    {
+                        SStringW strXml = strXmlTemp;
+                        for (SXmlAttr param = xmlData.first_attribute(); param; param = param.next_attribute())
+                        {
+                            SStringW strParam = SStringW().Format(SWindow_style::kTemp_ParamFormat, param.name());
+                            SStringW strValue = param.value();
+                            strValue.Replace(L"\"", L"&#34;");  // Prevent data containing "double quotes" from breaking the XML structure
+                            strXml.Replace(strParam, strValue); // replace params to value.
+                        }
+                        SXmlDoc xmlDoc;
+                        if (xmlDoc.load_buffer_inplace(strXml.GetBuffer(strXml.GetLength()), strXml.GetLength() * sizeof(WCHAR), 116, sizeof(wchar_t) == 2 ? enc_utf16 : enc_utf32))
+                        {
+                            CreateChilds(xmlDoc.root());
+                        }
+                        strXml.ReleaseBuffer();
+                        xmlData = xmlData.next_sibling(SWindow_style::kTemp_Data);
+                    }
+                }
+            }
+            else
+            {
+                CreateChild(xmlChild);
+            }
+        }
+    }
+    if (!m_isLoading)
+    {
+        // Dynamically create child windows and synchronize the window's attributes
+        if (GetScale() != 100)
+            SDispatchMessage(UM_SETSCALE, GetScale(), 0);
+        if (m_crColorize != 0)
+            SDispatchMessage(UM_SETCOLORIZE, GetColorizeColor());
+    }
+    return TRUE;
+}
+
+BOOL SWindow::CreateChild(SXmlNode xmlChild)
+{
+    SWindow *pChild = CreateChildByName(xmlChild.name());
+    if (!pChild)
+    {
+        return FALSE;
+    }
+    InsertChild(pChild);
+    pChild->InitFromXml(&xmlChild);
+    return TRUE;
+}
+
+void SWindow::CreateChilds(SXmlNode xmlNode)
+{
+    for (SXmlNode xmlChild = xmlNode.first_child(); xmlChild; xmlChild = xmlChild.next_sibling())
+    {
+        CreateChild(xmlChild);
+    }
+}
+
+SWindow *SWindow::CreateChildByName(LPCWSTR pszName)
+{
+    return (SWindow *)SApplication::getSingleton().CreateWindowByName(pszName);
+}
+
+SStringW SWindow::tr(const SStringW &strSrc) const
+{
+    if (strSrc.IsEmpty())
+        return strSrc;
+    return TR(strSrc, GetTrCtx());
+}
+
+/** Create SWindow from xml element */
+BOOL SWindow::InitFromXml(IXmlNode *pNode)
+{
+    ASSERT_UI_THREAD();
+    SXmlNode xmlNode(pNode);
+    m_isLoading = true;
+    if (xmlNode)
+    {
+        if (m_pLayoutParam)
+            m_pLayoutParam->Clear();
+
+        // Prioritize handling the "layout" attribute
+        SXmlAttr attrLayout = xmlNode.attribute(L"layout");
+        if (attrLayout)
+        {
+            MarkAttributeHandled(attrLayout, true);
+            SetAttribute(attrLayout.name(), attrLayout.value(), TRUE);
+        }
+
+        // Prioritize handling the "class" attribute
+        SXmlAttr attrClass = xmlNode.attribute(L"class");
+        if (attrClass)
+        {
+            MarkAttributeHandled(attrClass, true);
+            SetAttribute(attrClass.name(), attrClass.value(), TRUE);
+        }
+
+        __baseCls::InitFromXml(pNode);
+
+        MarkAttributeHandled(attrClass, false);
+        MarkAttributeHandled(attrLayout, false);
+
+        if (m_strText.GetText(TRUE).IsEmpty())
+        {
+            SStringW strText = GetXmlText(xmlNode);
+            if (!strText.IsEmpty())
+            {
+                OnAttrText(strText, TRUE);
+            }
+        }
+    }
+    // Send the WM_CREATE message
+    if (0 != SSendMessage(WM_CREATE))
+    {
+        if (m_pParent)
+            m_pParent->DestroyChild(this);
+        return FALSE;
+    }
+    if (m_pContainer)
+    {
+        // Send a WM_SHOWWINDOW message to this; some controls need to handle state in WM_SHOWWINDOW
+        // The initialization WM_SHOWWINDOW only affects this; the child window's SHOW is issued by the child window.
+        // Does not change the window's m_bVisible state; the ParentShow flag needs to be used
+        if (m_pParent)
+        { // Update state from the parent window
+            if (!m_pParent->IsVisible(TRUE))
+                m_dwState |= WndState_Invisible;
+            if (m_pParent->IsDisabled(TRUE))
+                m_dwState |= WndState_Disable;
+        }
+        SSendMessage(WM_SHOWWINDOW, IsVisible(TRUE), ParentShow);
+    }
+    // Create child windows
+    if (!CreateChildren(xmlNode))
+    {
+        if (m_pParent)
+            m_pParent->DestroyChild(this);
+        return FALSE;
+    }
+    if (m_pContainer)
+    {
+        // Request the root window to re-layout. Since layout involves synchronized parent-child windows, performing the layout synchronously may cause the layout process to be executed repeatedly.
+        RequestRelayout();
+        EventSwndInitFinish evt(this);
+        FireEvent(&evt);
+    }
+    m_isLoading = false;
+    return TRUE;
+}
+
+BOOL SWindow::InitFromResId(THIS_ LPCTSTR pszResId)
+{
+    SXmlDoc xmlDoc;
+    if (!LOADXML(xmlDoc, pszResId))
+        return FALSE;
+    SXmlNode xmlRoot = xmlDoc.root().first_child();
+    return InitFromXml(&xmlRoot);
+}
+
+BOOL SWindow::CreateChildrenFromXml(LPCWSTR pszXml)
+{
+    SXmlDoc xmlDoc;
+    if (!xmlDoc.load_buffer(pszXml, wcslen(pszXml) * sizeof(wchar_t), xml_parse_default, sizeof(wchar_t) == 2 ? enc_utf16 : enc_utf32))
+        return FALSE;
+    return CreateChildren(xmlDoc.root());
+}
+
+BOOL SWindow::CreateChildrenFromResId(LPCTSTR pszResId)
+{
+    SXmlDoc xmlDoc;
+    if (!LOADXML(xmlDoc, pszResId))
+        return FALSE;
+    return CreateChildren(xmlDoc.root());
+}
+
+SWND SWindow::SwndFromPoint(POINT *pt, BOOL bIncludeMsgTransparent) const
+{
+    if (!pt)
+        return 0;
+    CPoint pt2(*pt);
+    SWND ret = SwndFromPoint(pt2, bIncludeMsgTransparent);
+    *pt = pt2;
+    return ret;
+}
+
+/** Hittest children */
+SWND SWindow::SwndFromPoint(CPoint &pt, BOOL bIncludeMsgTransparent) const
+{
+    CPoint pt2(pt);
+    TransformPoint(pt2);
+
+    if (!IsContainPoint(pt2, FALSE))
+        return 0;
+
+    if (!IsContainPoint(pt2, TRUE))
+    {
+        pt = pt2;      // update pt;
+        return m_swnd; // Only continue searching for child windows when the mouse is in the client area
+    }
+    SWND swndChild = 0;
+
+    SWindow *pChild = GetWindow(GSW_LASTCHILD);
+    while (pChild)
+    {
+        if (pChild->IsVisible(TRUE) && (bIncludeMsgTransparent || !pChild->IsMsgTransparent()))
+        {
+            swndChild = pChild->SwndFromPoint(pt2, bIncludeMsgTransparent);
+
+            if (swndChild)
+            {
+                pt = pt2;
+                return swndChild;
+            }
+        }
+
+        pChild = pChild->GetWindow(GSW_PREVSIBLING);
+    }
+    pt = pt2; // update pt;
+    return m_swnd;
+}
+
+BOOL SWindow::NeedRedrawWhenStateChange()
+{
+    if (m_pBgSkin && m_pBgSkin->GetStates() > 1)
+    {
+        return TRUE;
+    }
+    return GetStyle().GetStates() > 1;
+}
+
+/** If the current window has a drawing cache, it may be defined by the cache attribute, or it may be due to a defined alpha */
+void SWindow::_PaintClient(IRenderTarget *pRT)
+{
+    if (m_pGetRTData)
+    {
+        CRect &rcRT = m_pGetRTData->rcRT;
+        pRT->AlphaBlend(rcRT, m_pGetRTData->rt, rcRT, 255);
+    }
+    else if (IsDrawToCache())
+    {
+        IRenderTarget *pRTCache = m_cachedRT;
+        if (pRTCache)
+        { // When entering while the window is being created, pRTCache may be NULL
+            CRect rcWnd = GetWindowRect();
+            pRTCache->SetViewportOrg(-rcWnd.TopLeft());
+            if (IsCacheDirty())
+            {
+                pRTCache->BeginDraw();
+                pRTCache->ClearRect(&rcWnd, 0);
+
+                SAutoRefPtr<IFontS> oldFont;
+                COLORREF crOld = pRT->GetTextColor();
+                pRTCache->SelectObject(pRT->GetCurrentObject(OT_FONT), (IRenderObj **)&oldFont);
+                pRTCache->SetTextColor(crOld);
+
+                SSendMessage(WM_ERASEBKGND, (WPARAM)pRTCache);
+                SSendMessage(WM_PAINT, (WPARAM)pRTCache);
+
+                pRTCache->SelectObject(oldFont, NULL);
+                pRTCache->SetTextColor(crOld);
+
+                MarkCacheDirty(false);
+                pRTCache->EndDraw();
+            }
+            pRT->AlphaBlend(rcWnd, pRTCache, rcWnd, 255);
+        }
+    }
+    else
+    {
+        SSendMessage(WM_ERASEBKGND, (WPARAM)pRT);
+        SSendMessage(WM_PAINT, (WPARAM)pRT);
+    }
+}
+
+void SWindow::_PaintNonClient(IRenderTarget *pRT)
+{
+    CRect rcWnd = GetWindowRect();
+    CRect rcClient = GetClientRect();
+    if (rcWnd == rcClient)
+        return;
+
+    if (m_pGetRTData)
+    {
+        CRect &rcRT = m_pGetRTData->rcRT;
+        pRT->AlphaBlend(rcRT, m_pGetRTData->rt, rcRT, 255);
+    }
+    else if (IsDrawToCache())
+    {
+        IRenderTarget *pRTCache = m_cachedRT;
+        if (pRTCache)
+        {
+            SSendMessage(WM_NCPAINT, (WPARAM)pRTCache);
+            pRT->PushClipRect(&rcClient, RGN_DIFF);
+            pRT->AlphaBlend(rcWnd, pRTCache, rcWnd, 255);
+            pRT->PopClip();
+        }
+    }
+    else
+    {
+        SSendMessage(WM_NCPAINT, (WPARAM)pRT);
+    }
+}
+
+void SWindow::_RedrawNonClient()
+{
+    CRect rcWnd = GetWindowRect();
+    CRect rcClient = SWindow::GetClientRect();
+    if (rcWnd == rcClient)
+        return;
+#ifdef __APPLE__
+    // Update is invalidate on mac
+    InvalidateRect(rcWnd, TRUE, FALSE);
+#else
+    Update();
+    InvalidateRect(rcWnd, TRUE, FALSE);   // invalid window rect
+    InvalidateRect(rcClient, TRUE, TRUE); // but clip client rect
+    Update();
+#endif // __APPLE__
+}
+
+static SAutoRefPtr<IRegionS> ConvertRect2RenderRegion(const CRect &rc, const SMatrix &mtx)
+{
+    SAutoRefPtr<IRegionS> pRet;
+    GETRENDERFACTORY->CreateRegion(&pRet);
+    if (!mtx.isIdentity())
+    {
+        SRect sRc = SRect::IMake(rc);
+        if (mtx.rectStaysRect())
+        {
+            mtx.mapRect(&sRc);
+            CRect rc2 = sRc.toRect();
+            pRet->CombineRect(&rc2, RGN_COPY);
+        }
+        else
+        {
+            SPoint quad[4];
+            mtx.mapRectToQuad(quad, sRc);
+            POINT pts[4];
+            for (int i = 0; i < 4; i++)
+            {
+                pts[i] = quad[i].toPoint();
+            }
+            pRet->CombinePolygon(pts, 4, WINDING, RGN_COPY);
+        }
+    }
+    else
+    {
+        pRet->CombineRect(&rc, RGN_COPY);
+    }
+    return pRet;
+}
+
+static bool RgnInRgn(const IRegionS *r1, IRegionS *r2)
+{
+    SAutoRefPtr<IRegionS> pRet;
+    GETRENDERFACTORY->CreateRegion(&pRet);
+    pRet->CombineRgn(r1, RGN_COPY);
+    pRet->CombineRgn(r2, RGN_AND);
+    return !pRet->IsEmpty();
+}
+
+bool SWindow::_WndRectInRgn(const CRect &rc, const IRegionS *rgn) const
+{
+    CRect rc2;
+    rgn->GetRgnBox(&rc2);
+
+    SMatrix mtx = _GetMatrixEx();
+    if (mtx.isIdentity() && !rc2.IntersectRect(rc2, rc))
+        return false;
+    SAutoRefPtr<IRegionS> rgn2 = ConvertRect2RenderRegion(rc, mtx);
+    return RgnInRgn(rgn, rgn2);
+}
+
+void SWindow::_PaintChildren(IRenderTarget *pRT, IRegionS *pRgn, UINT iBeginZorder, UINT iEndZorder)
+{
+    SWindow *pChild = GetWindow(GSW_FIRSTCHILD);
+    while (pChild)
+    {
+        if (pChild->m_uZorder >= iEndZorder)
+            break;
+        if (pChild->m_uZorder < iBeginZorder)
+        { // Check whether the zorder of the entire branch is within the drawing range
+            SWindow *pNextChild = pChild->GetWindow(GSW_NEXTSIBLING);
+            if (pNextChild)
+            {
+                if (pNextChild->m_uZorder <= iBeginZorder)
+                {
+                    pChild = pNextChild;
+                    continue;
+                }
+            }
+            else
+            { // When at the last node, check the zorder of the last child window
+                SWindow *pLastChild = pChild;
+                while (pLastChild->GetChildrenCount())
+                {
+                    pLastChild = pLastChild->GetWindow(GSW_LASTCHILD);
+                }
+                if (pLastChild->m_uZorder < iBeginZorder)
+                {
+                    break;
+                }
+            }
+        }
+
+        pChild->DispatchPaint(pRT, pRgn, iBeginZorder, iEndZorder);
+        pChild = pChild->GetWindow(GSW_NEXTSIBLING);
+    }
+}
+
+/** paint zorder in [iZorderBegin,iZorderEnd) widnows */
+void SWindow::DispatchPaint(IRenderTarget *pRT, IRegionS *pRgn, UINT iZorderBegin, UINT iZorderEnd)
+{
+    if (!IsVisible(FALSE) || !GetContainer())
+        return;
+
+    SMatrix oriMtx;
+    bool bMtx = _ApplyMatrix(pRT, oriMtx);
+
+    CRect rcWnd = GetWindowRect();
+    CRect rcClient = GetClientRect();
+    float fMat[9];
+    pRT->GetTransform(fMat);
+    SMatrix curMtx(fMat);
+    BOOL bRgnInClient = FALSE;
+    if (curMtx.isIdentity())
+    { // detect client area only if matrix is identity.
+        CRect rcRgn = rcWnd;
+        if (pRgn && !pRgn->IsEmpty())
+        {
+            pRgn->GetRgnBox(&rcRgn);
+        }
+        CRect rcRgnUnionClient;
+        rcRgnUnionClient.UnionRect(rcClient, rcRgn);
+        bRgnInClient = rcRgnUnionClient == rcClient;
+    }
+
+    IRenderTarget *pRTBackup = NULL; // backup current RT
+
+    if (IsLayeredWindow())
+    { // Obtain the current LayeredWindow RT to draw content
+        pRTBackup = pRT;
+        pRT = NULL;
+        GETRENDERFACTORY->CreateRenderTarget(&pRT, rcWnd.Width(), rcWnd.Height());
+        pRT->BeginDraw();
+        pRT->OffsetViewportOrg(-rcWnd.left, -rcWnd.top, NULL);
+        // Draw onto the window's cache; need to inherit the original RT's drawing attributes
+        pRT->SelectObject(pRTBackup->GetCurrentObject(OT_FONT), NULL);
+        pRT->SelectObject(pRTBackup->GetCurrentObject(OT_PEN), NULL);
+        pRT->SelectObject(pRTBackup->GetCurrentObject(OT_BRUSH), NULL);
+        pRT->SetTextColor(pRTBackup->GetTextColor());
+        pRT->ClearRect(&rcWnd, 0);
+    }
+    // save clip state
+    int nSave1 = -1;
+    pRT->SaveClip(&nSave1);
+    if (m_clipRgn)
+    {
+        m_clipRgn->Offset(rcWnd.TopLeft());
+        pRT->PushClipRegion(m_clipRgn, RGN_AND);
+        m_clipRgn->Offset(-rcWnd.TopLeft());
+    }
+    if (m_clipPath)
+    {
+        m_clipPath->offset((float)rcWnd.left, (float)rcWnd.top);
+        pRT->PushClipPath(m_clipPath, RGN_AND, true);
+        m_clipPath->offset(-(float)rcWnd.left, -(float)rcWnd.top);
+    }
+    int nSave2 = -1;
+    pRT->SaveClip(&nSave2);
+
+    if (IsClipClient())
+    {
+        pRT->PushClipRect(rcClient, RGN_AND);
+    }
+    if (m_uZorder >= iZorderBegin && m_uZorder < iZorderEnd && (!pRgn || pRgn->IsEmpty() || _WndRectInRgn(rcClient, pRgn)))
+    { // paint client
+        _PaintClient(pRT);
+        if (IsFocused() && m_caret)
+        { // draw caret
+            m_caret->Draw(pRT);
+        }
+    }
+
+    SPainter painter;
+    BeforePaint(pRT, painter);
+
+    CRect rcText;
+    GetTextRect(rcText);
+    if (rcText != rcClient && IsClipClient())
+    {
+        pRT->PushClipRect(rcText, RGN_AND);
+    }
+
+    _PaintChildren(pRT, pRgn, iZorderBegin, iZorderEnd);
+    AfterPaint(pRT, painter);
+    pRT->RestoreClip(nSave2);
+
+    if (m_uZorder >= iZorderBegin && m_uZorder < iZorderEnd && !bRgnInClient && (!pRgn || pRgn->IsEmpty() || _WndRectInRgn(rcWnd, pRgn)))
+    { // paint nonclient
+        _PaintNonClient(pRT);
+    }
+    // restore clip state.
+    pRT->RestoreClip(nSave1);
+
+    if (IsLayeredWindow())
+    { // Return the image drawn onto the window's cache to the upper-level RT
+        SASSERT(pRTBackup);
+        pRT->EndDraw();
+        OnCommitSurface(pRTBackup, &rcWnd, pRT, &rcWnd, GetAlpha());
+        pRT->Release();
+        pRT = pRTBackup;
+    }
+    if (bMtx)
+        pRT->SetTransform(oriMtx.fMat, NULL);
+}
+
+void SWindow::TransformPoint(CPoint &pt) const
+{
+    STransformation xform = GetTransformation();
+    if (xform.hasMatrix() && !xform.getMatrix().isIdentity())
+    {
+        CRect rc = GetWindowRect();
+        SMatrix mtx = xform.getMatrix();
+        mtx.preTranslate((int)-rc.left, (int)-rc.top);
+        mtx.postTranslate((int)rc.left, (int)rc.top);
+        if (mtx.invert(&mtx))
+        {
+            SPoint spt = SPoint::IMake(pt);
+            mtx.mapPoints(&spt, 1);
+            pt = spt.toPoint();
+        }
+    }
+}
+
+void SWindow::TransformPointEx(CPoint &pt) const
+{
+    SList<const SWindow *> lstParent;
+    const SWindow *pParent = this;
+    while (pParent)
+    {
+        lstParent.AddHead(pParent);
+        pParent = pParent->GetParent();
+    }
+    SPOSITION pos = lstParent.GetHeadPosition();
+    while (pos)
+    {
+        pParent = lstParent.GetNext(pos);
+        pParent->TransformPoint(pt);
+    }
+}
+
+/** The parameter in the current function includes zorder; to ensure the passed-in zorder is correct, zorder rebuilding must be called externally. */
+void SWindow::_PaintRegion(IRenderTarget *pRT, IRegionS *pRgn, UINT iZorderBegin, UINT iZorderEnd)
+{
+    ASSERT_UI_THREAD();
+    if (!IsVisible(TRUE))
+        return;
+    BeforePaintEx(pRT);
+    DispatchPaint(pRT, pRgn, iZorderBegin, iZorderEnd);
+}
+
+void SWindow::RedrawRegion(IRenderTarget *pRT, IRegionS *pRgn)
+{
+    ASSERT_UI_THREAD();
+    if (!IsVisible(TRUE))
+        return;
+    DispatchPaint(pRT, pRgn, (UINT)ZORDER_MIN, (UINT)ZORDER_MAX);
+}
+
+void SWindow::Update(BOOL bForce)
+{
+    if (!GetContainer())
+        return;
+    GetContainer()->UpdateWindow(bForce);
+}
+
+void SWindow::Invalidate()
+{
+    CRect rcClient;
+    GetClientRect(&rcClient);
+    InvalidateRect(rcClient);
+}
+
+void SWindow::InvalidateRect(LPCRECT lprect)
+{
+    if (lprect)
+    {
+        CRect rect = *lprect;
+        InvalidateRect(rect);
+    }
+    else
+    {
+        InvalidateRect(GetWindowRect());
+    }
+}
+
+void SWindow::InvalidateRect(const CRect &rect, BOOL bFromThis /**< =TRUE */, BOOL bClip /**< =FALSE */)
+{
+    ASSERT_UI_THREAD();
+    if (!IsVisible(TRUE) || IsUpdateLocked() || !GetContainer())
+        return;
+
+    // Can only update the window's valid region
+    CRect rcWnd = GetWindowRect();
+
+    CRect rcIntersect = rect & rcWnd;
+    if (rcIntersect.IsRectEmpty())
+        return;
+    if (!bClip)
+        MarkCacheDirty(true);
+
+    STransformation xForm = GetTransformation();
+    if (xForm.hasMatrix() && !xForm.getMatrix().isIdentity())
+    {
+        SMatrix mtx = xForm.getMatrix();
+        mtx.preTranslate((int)-rcWnd.left, (int)-rcWnd.top);
+        mtx.postTranslate((int)rcWnd.left, (int)rcWnd.top);
+        SRect fRc = SRect::IMake(rcIntersect);
+        mtx.mapRect(&fRc);
+        rcIntersect = fRc.toRect();
+    }
+    if (GetParent())
+    {
+        GetParent()->InvalidateRect(rcIntersect, FALSE, bClip);
+    }
+    else
+    {
+        GetContainer()->OnRedraw(rcIntersect, bClip);
+    }
+}
+
+void SWindow::LockUpdate()
+{
+    m_nUpdateLockCnt++;
+}
+
+void SWindow::UnlockUpdate()
+{
+    m_nUpdateLockCnt--;
+    SASSERT(m_nUpdateLockCnt >= 0);
+}
+
+BOOL SWindow::IsUpdateLocked(BOOL bCheckParent) const
+{
+    BOOL bLocked = m_nUpdateLockCnt > 0;
+    if (bLocked)
+        return TRUE;
+    if (!bCheckParent || !GetParent())
+        return bLocked;
+    return GetParent()->IsUpdateLocked(TRUE);
+}
+
+void SWindow::BringWindowToTop()
+{
+    AdjustZOrder(ICWND_LAST);
+}
+
+BOOL SWindow::AdjustZOrder(SWindow *pInsertAfter)
+{
+    ASSERT_UI_THREAD();
+    SWindow *pParent = GetParent();
+    if (!pParent)
+        return TRUE;
+    if (m_isDestroying)
+        return TRUE;
+    if (pInsertAfter != ICWND_FIRST && pInsertAfter != ICWND_LAST && pInsertAfter->GetParent() != pParent)
+    {
+        return FALSE;
+    }
+    if (pInsertAfter == this)
+    {
+        return FALSE;
+    }
+    pParent->RemoveChild(this);
+    pParent->InsertChild(this, pInsertAfter);
+    pParent->Invalidate();
+    return TRUE;
+}
+
+BOOL SWindow::FireEvent(IEvtArgs *evt)
+{
+    ASSERT_UI_THREAD();
+    if (m_evtSet.isMuted() || !GetContainer())
+        return FALSE;
+
+    AddRef();
+    BOOL bRet = FALSE;
+    do
+    {
+        // Call the handler method of the event subscription
+        m_evtSet.FireEvent(evt);
+        if (!evt->IsBubbleUp())
+        {
+            bRet = evt->HandleCount() > 0;
+            break;
+        }
+
+        // Call the script event handling method
+        if (GetScriptModule())
+        {
+            SStringW strEvtName = evt->GetName();
+            if (!strEvtName.IsEmpty())
+            {
+                SStringA strScriptHandler = m_evtSet.getEventScriptHandler(strEvtName);
+                if (!strScriptHandler.IsEmpty())
+                {
+                    GetScriptModule()->executeScriptedEventHandler(strScriptHandler, evt);
+                    if (!evt->IsBubbleUp())
+                    {
+                        bRet = evt->HandleCount() > 0;
+                        break;
+                    }
+                }
+            }
+        }
+        if (GetOwner())
+        {
+            bRet = GetOwner()->FireEvent(evt);
+            break;
+        }
+        if (GetContainer())
+        {
+            bRet = GetContainer()->OnFireEvent(evt);
+        }
+    } while (false);
+    Release();
+    return bRet;
+}
+
+void SWindow::OnLayoutFloatChild(SWindow *pChild, const CRect &rcLayout)
+{
+    if (pChild->IsClass(SModalRoot::GetClassName()))
+    {
+        pChild->Move(rcLayout);
+    }
+    else
+    {
+        CRect rcChild = pChild->GetWindowRect();
+        CPoint ptRelative(rcChild.left - rcLayout.left, rcChild.top - rcLayout.top); // relative pos
+        rcChild.MoveToXY(rcLayout.left + ptRelative.x, rcLayout.top + ptRelative.y);
+        pChild->Move(rcChild);
+    }
+}
+
+BOOL SWindow::OnRelayout(const CRect &rcWnd)
+{
+    if (m_rcWindow.EqualRect(&rcWnd) && m_layoutDirty == dirty_clean)
+        return FALSE;
+    CRect rcLayout1;
+    GetChildrenLayoutRect(&rcLayout1);
+    if (!m_rcWindow.EqualRect(&rcWnd))
+    {
+        InvalidateRect(m_rcWindow);
+        m_rcWindow = rcWnd;
+
+        m_layoutDirty = dirty_self;
+
+        if (m_rcWindow.left > m_rcWindow.right)
+            m_rcWindow.right = m_rcWindow.left;
+        if (m_rcWindow.top > m_rcWindow.bottom)
+            m_rcWindow.bottom = m_rcWindow.top;
+
+        InvalidateRect(m_rcWindow);
+        SSendMessage(WM_NCCALCSIZE); // Calculate the non-client area size
+    }
+    CRect rcLayout2;
+    GetChildrenLayoutRect(&rcLayout2);
+    if (rcLayout1 != rcLayout2)
+    {
+        SWindow *pChild = GetWindow(GSW_FIRSTCHILD);
+        while (pChild)
+        {
+            SWindow *pNextChild = pChild->GetWindow(GSW_NEXTSIBLING);
+            if (pChild->IsFloat())
+            {
+                OnLayoutFloatChild(pChild, rcLayout2);
+            }
+            pChild = pNextChild;
+        }
+    }
+
+    EventSwndPos evt(this);
+    evt.rcWnd = m_rcWindow;
+    FireEvent(evt);
+
+    CRect rcClient;
+    GetClientRect(&rcClient);
+    SSendMessage(WM_SIZE, 0, MAKELPARAM(rcClient.Width(), rcClient.Height()));
+
+    // only if window is visible now, we do relayout.
+    if (IsVisible(FALSE))
+    {
+        // don't call UpdateLayout, otherwise will result in dead cycle.
+        if (m_layoutDirty != dirty_clean && GetChildrenCount())
+        {
+            UpdateChildrenPosition(); // Update child window position
+        }
+        m_layoutDirty = dirty_clean;
+    }
+    else
+    { // mark layout to self dirty.
+        m_layoutDirty = dirty_self;
+    }
+    return TRUE;
+}
+
+static int LayerCompare(const void *arg1, const void *arg2)
+{
+    IWindow *pWnd1 = *(IWindow **)arg1;
+    IWindow *pWnd2 = *(IWindow **)arg2;
+    return pWnd1->GetLayer() - pWnd2->GetLayer();
+}
+
+UINT SWindow::OnBuildTreeZorder(UINT iOrder)
+{
+    m_uZorder = iOrder++;
+    if (m_bEnableLayer && !GetContainer()->IsDesignerMode())
+    {
+        SArray<SWindow *> lstChild;
+        lstChild.SetCount(GetChildrenCount());
+        int i = 0;
+        SWindow *pChild = GetWindow(GSW_FIRSTCHILD);
+        while (pChild)
+        {
+            lstChild[i++] = pChild;
+            pChild = pChild->GetWindow(GSW_NEXTSIBLING);
+        }
+        SASSERT(i == lstChild.GetCount());
+        // sort children by layer
+        SArray<SWindow *> lstChildSorted;
+        lstChildSorted.SetCount(lstChild.GetCount());
+        memcpy(lstChildSorted.GetData(), lstChild.GetData(), lstChild.GetCount() * sizeof(SWindow *));
+        qsort(lstChildSorted.GetData(), lstChildSorted.GetCount(), sizeof(SWindow *), LayerCompare);
+        if (memcmp(lstChild.GetData(), lstChildSorted.GetData(), lstChild.GetCount() * sizeof(SWindow *)) != 0)
+        {
+            // reorder children by layer
+            for (UINT i = 0; i < lstChild.GetCount(); i++)
+            {
+                SWindow *pChild = lstChild[i];
+                _RemoveChild(pChild);
+            }
+            for (UINT i = 0; i < lstChildSorted.GetCount(); i++)
+            {
+                SWindow *pChild = lstChildSorted[i];
+                _InsertChild(pChild, ICWND_LAST);
+            }
+        }
+    }
+    SWindow *pChild = GetWindow(GSW_FIRSTCHILD);
+    while (pChild)
+    {
+        iOrder = pChild->OnBuildTreeZorder(iOrder);
+        pChild = pChild->GetWindow(GSW_NEXTSIBLING);
+    }
+    return iOrder;
+}
+
+void SWindow::SetLayer(int nLayer)
+{
+    if (m_nLayer == nLayer)
+        return;
+    m_nLayer = nLayer;
+    if (GetContainer())
+    {
+        GetContainer()->MarkWndTreeZorderDirty();
+        Invalidate();
+    }
+}
+
+int SWindow::GetLayer() const
+{
+    return m_nLayer;
+}
+
+BOOL SWindow::GetAnimatedLayoutSize(IPropertyValuesHolder *pHolder, float fraction, SLayoutSize &ret)
+{
+    switch (pHolder->GetValueType())
+    {
+    case PROP_TYPE_LAYOUT_SIZE:
+        pHolder->GetAnimatedValue(fraction, &ret);
+        return TRUE;
+    case PROP_TYPE_INT:
+    {
+        int nValue;
+        pHolder->GetAnimatedValue(fraction, &nValue);
+        ret = SLayoutSize((float)nValue, SLayoutSize::defUnit);
+        return TRUE;
+    }
+    case PROP_TYPE_FLOAT:
+    {
+        float fValue;
+        pHolder->GetAnimatedValue(fraction, &fValue);
+        ret = SLayoutSize(fValue, SLayoutSize::defUnit);
+        return TRUE;
+    }
+    default:
+        return FALSE;
+    }
+}
+
+BOOL SWindow::SetAnimatorValue(IPropertyValuesHolder *pHolder, float fraction, ANI_STATE state)
+{
+    SStringW strPropName = pHolder->GetPropertyName();
+    if (strPropName.CompareNoCase(WindowProperty::COLOR_BKGND) == 0)
+    {
+        COLORREF crBkgnd;
+        pHolder->GetAnimatedValue(fraction, &crBkgnd);
+        GetStyle().m_crBg = crBkgnd;
+        InvalidateRect(NULL);
+        return TRUE;
+    }
+    if (strPropName.CompareNoCase(WindowProperty::COLOR_TEXT) == 0)
+    {
+        COLORREF crText;
+        pHolder->GetAnimatedValue(fraction, &crText);
+        GetStyle().SetTextColor(0, crText);
+        InvalidateRect(NULL);
+        return TRUE;
+    }
+    if (strPropName.CompareNoCase(WindowProperty::ALPHA) == 0)
+    {
+        if (pHolder->GetValueType() != PROP_TYPE_BYTE)
+            return FALSE;
+        BYTE byAlpha;
+        pHolder->GetAnimatedValue(fraction, &byAlpha);
+        SetAlpha(byAlpha);
+        return TRUE;
+    }
+    if (m_pAnimatorHandler->OnSetAnimatorValue(strPropName, pHolder, fraction, state))
+        return TRUE;
+
+    BOOL bRet = GetLayoutParam()->SetAnimatorValue(pHolder, fraction, state);
+    if (bRet)
+    {
+        if (GetParent())
+        {
+            GetParent()->RequestRelayout();
+            GetParent()->UpdateChildrenPosition();
+        }
+        InvalidateRect(NULL);
+    }
+    else
+    {
+        // fire event to external
+        EventSwndAnimatorFractor evt(this);
+        evt.fraction = fraction;
+        evt.pHolder = pHolder;
+        evt.state = state;
+        bRet = FireEvent(evt);
+    }
+    return bRet;
+}
+
+void SWindow::SetPivot(float x, float y)
+{
+    m_pivotX = x;
+    m_pivotY = y;
+}
+
+int SWindow::OnCreate(LPVOID)
+{
+    if (GetContainer())
+    {
+        if (GetStyle().m_bTrackMouseEvent)
+            GetContainer()->RegisterTrackMouseEvent(m_swnd);
+        if (GetStyle().m_bVideoCanvas)
+            GetContainer()->RegisterVideoCanvas(m_swnd);
+    }
+
+    GetStyle().SetScale(GetScale());
+
+    EventSwndCreate evt(this);
+    FireEvent(evt);
+    accNotifyEvent(EVENT_OBJECT_CREATE);
+    return 0;
+}
+
+IWindow *SWindow::FindIChildByID(THIS_ int nId)
+{
+    return FindChildByID(nId, -1);
+}
+
+IWindow *SWindow::FindIChildByName(THIS_ LPCWSTR pszName)
+{
+    return FindChildByName(pszName, -1);
+}
+
+IWindow *SWindow::FindIChildByNameA(THIS_ LPCSTR pszName)
+{
+    return FindChildByName(pszName, -1);
+}
+
+void SWindow::DestroyAllChildren()
+{
+    // destroy children windows
+    SWindow *pChild = m_pFirstChild;
+    while (pChild)
+    {
+        SWindow *pNextChild = pChild->m_pNextSibling;
+        pChild->SSendMessage(WM_DESTROY);
+        pChild->m_pParent = NULL;
+        pChild->Release();
+
+        pChild = pNextChild;
+    }
+    m_pFirstChild = m_pLastChild = NULL;
+    m_nChildrenCount = 0;
+}
+
+void SWindow::OnDestroy()
+{
+    if (m_isDestroying)
+        return;
+
+    m_isDestroying = true;
+    EventSwndDestroy evt(this);
+    FireEvent(evt);
+    accNotifyEvent(EVENT_OBJECT_DESTROY);
+
+#ifdef SOUI_ENABLE_ACC
+    if (m_pAcc)
+    {
+        SComPtr<IAccHelper> accHelper;
+        if (m_pAcc->QueryInterface(__suidof(IAccHelper), (void **)&accHelper) == S_OK)
+        {
+            accHelper->SetOwner(NULL);
+        }
+    }
+#endif
+    if (GetStyle().m_bTrackMouseEvent)
+        GetContainer()->UnregisterTrackMouseEvent(m_swnd);
+    if (GetStyle().m_bVideoCanvas)
+        GetContainer()->UnregisterVideoCanvas(m_swnd);
+
+    DestroyAllChildren();
+    ClearAnimation();
+    m_style = SwndStyle();
+    m_isDestroying = false;
+}
+
+/** Draw background default */
+BOOL SWindow::OnEraseBkgnd(IRenderTarget *pRT)
+{
+    CRect rcClient = GetClientRect();
+    if (!m_pBgSkin)
+    {
+        COLORREF crBg = GetBkgndColor();
+
+        if (CR_INVALID != crBg)
+        {
+            pRT->FillSolidRect(&rcClient, crBg);
+        }
+    }
+    else
+    {
+        int idx = SState2Index::GetDefIndex(GetState(), true);
+        if (idx >= m_pBgSkin->GetStates())
+            idx = 0;
+        m_pBgSkin->DrawByIndex(pRT, rcClient, idx);
+    }
+    return TRUE;
+}
+
+void SWindow::BuildPainter(SPainter &painter) const
+{
+    SWindow *pParent = GetParent();
+    if (pParent)
+        pParent->BuildPainter(painter);
+    int iState = SState2Index::GetDefIndex(GetState(), true);
+    IFontPtr pFont = GetStyle().GetTextFont(iState);
+    if (pFont)
+        painter.oldFont = pFont;
+    COLORREF crTxt = GetStyle().GetTextColor(iState);
+    if (crTxt != CR_INVALID)
+        painter.oldTextColor = crTxt;
+}
+
+void SWindow::BeforePaint(IRenderTarget *pRT, SPainter &painter) const
+{
+    int iState = SState2Index::GetDefIndex(GetState(), true);
+    IFontPtr pFont = GetStyle().GetTextFont(iState);
+    if (pFont)
+        pRT->SelectObject(pFont, (IRenderObj **)&painter.oldFont);
+
+    COLORREF crTxt = GetStyle().GetTextColor(iState);
+    if (crTxt != CR_INVALID)
+        painter.oldTextColor = pRT->SetTextColor(crTxt);
+}
+
+void SWindow::BeforePaintEx(IRenderTarget *pRT) const
+{
+    SWindow *pParent = GetParent();
+    if (pParent)
+        pParent->BeforePaintEx(pRT);
+    SPainter painter;
+    BeforePaint(pRT, painter);
+}
+
+void SWindow::AfterPaint(IRenderTarget *pRT, SPainter &painter) const
+{
+    if (painter.oldFont)
+        pRT->SelectObject(painter.oldFont, NULL);
+    if (painter.oldTextColor != CR_INVALID)
+        pRT->SetTextColor(painter.oldTextColor);
+}
+
+/** Draw inner text default and focus rect */
+void SWindow::OnPaint(IRenderTarget *pRT)
+{
+    SPainter painter;
+
+    BeforePaint(pRT, painter);
+
+    CRect rcText;
+    GetTextRect(rcText);
+    SStringT strText = GetWindowText(FALSE);
+    DrawText(pRT, strText, strText.GetLength(), rcText, GetTextAlign());
+
+    // draw focus rect
+    if (IsFocused())
+    {
+        DrawFocus(pRT);
+    }
+
+    AfterPaint(pRT, painter);
+}
+
+void SWindow::OnNcPaint(IRenderTarget *pRT)
+{
+    if (!IsVisible(TRUE))
+        return;
+    if (!GetStyle().GetMargin().IsRectNull())
+    {
+        SASSERT(pRT);
+        CRect rcClient = SWindow::GetClientRect();
+        CRect rcWnd = GetWindowRect();
+
+        pRT->PushClipRect(&rcClient, RGN_DIFF);
+
+        int nState = 0;
+        if (WndState_Hover & m_dwState)
+            nState = 1;
+        if (m_pNcSkin)
+        {
+            if (nState >= m_pNcSkin->GetStates())
+                nState = 0;
+            m_pNcSkin->DrawByIndex(pRT, &rcWnd, nState);
+        }
+        else
+        {
+            COLORREF crBg = GetStyle().m_crBorder;
+            if (CR_INVALID != crBg)
+            {
+                pRT->FillSolidRect(&rcWnd, crBg);
+            }
+        }
+        pRT->PopClip();
+    }
+}
+
+static const int KWnd_MaxSize = 10000;
+void SWindow::GetDesiredSize(SIZE *psz, int nParentWid, int nParentHei)
+{
+    if (m_funSwndProc)
+    {
+        // Use a callback function to calculate the window Size
+        BOOL bRet = m_funSwndProc(this, UM_GETDESIREDSIZE, nParentHei, nParentHei, (LRESULT *)psz);
+        if (bRet)
+        {
+            return;
+        }
+    }
+    // Check the current window's MatchParent attribute and the container window's WrapContent attribute.
+    ILayoutParam *pLayoutParam = GetLayoutParam();
+    bool bSaveHorz = nParentWid == SIZE_WRAP_CONTENT && pLayoutParam->IsMatchParent(Horz);
+    bool bSaveVert = nParentHei == SIZE_WRAP_CONTENT && pLayoutParam->IsMatchParent(Vert);
+    if (bSaveHorz)
+        pLayoutParam->SetWrapContent(Horz);
+    if (bSaveVert)
+        pLayoutParam->SetWrapContent(Vert);
+
+    CSize szRet(KWnd_MaxSize, KWnd_MaxSize);
+    if (pLayoutParam->IsSpecifiedSize(Horz))
+    { // Check the set size
+        SLayoutSize layoutSize;
+        pLayoutParam->GetSpecifiedSize(Horz, &layoutSize);
+        szRet.cx = layoutSize.toPixelSize(GetScale());
+    }
+    else if (pLayoutParam->IsMatchParent(Horz) && nParentWid >= 0)
+    {
+        szRet.cx = nParentWid;
+    }
+
+    if (pLayoutParam->IsSpecifiedSize(Vert))
+    { // Check the set size
+        SLayoutSize layoutSize;
+        pLayoutParam->GetSpecifiedSize(Vert, &layoutSize);
+        szRet.cy = layoutSize.toPixelSize(GetScale());
+    }
+    else if (pLayoutParam->IsMatchParent(Vert) && nParentHei >= 0)
+    {
+        szRet.cy = nParentHei;
+    }
+
+    if (szRet.cx == KWnd_MaxSize || szRet.cy == KWnd_MaxSize)
+    {
+        int nTestDrawMode = GetTextAlign() & ~(DT_CENTER | DT_RIGHT | DT_VCENTER | DT_BOTTOM);
+
+        CRect rcPadding = GetStyle().GetPadding();
+        CRect rcMargin = GetStyle().GetMargin();
+
+        CSize szContent = MeasureContent(szRet.cx, szRet.cy);
+        CSize szChilds;
+        if (GetChildrenCount() > 0)
+        {
+            // Calculate child window size
+            CSize szParent(nParentWid, nParentHei);
+            if (nParentWid > 0)
+            {
+                szParent.cx -= rcMargin.left + rcPadding.left + rcMargin.right + rcPadding.right;
+                if (szParent.cx < 0)
+                    szParent.cx = 0;
+            }
+            if (nParentHei > 0)
+            {
+                szParent.cy -= rcMargin.top + rcPadding.top + rcMargin.bottom + rcPadding.bottom;
+                if (szParent.cy < 0)
+                    szParent.cy = 0;
+            }
+            szChilds = MeasureChildren(szParent.cx, szParent.cy);
+        }
+
+        CRect rcTest(0, 0, smax(szChilds.cx, szContent.cx), smax(szChilds.cy, szContent.cy));
+
+        rcTest.InflateRect(rcMargin);
+        rcTest.InflateRect(rcPadding);
+
+        if (pLayoutParam->IsWrapContent(Horz) || (pLayoutParam->IsMatchParent(Horz) && nParentWid < SIZE_WRAP_CONTENT))
+            szRet.cx = rcTest.Width();
+        if (pLayoutParam->IsWrapContent(Vert) || (pLayoutParam->IsMatchParent(Vert) && nParentHei < SIZE_WRAP_CONTENT))
+            szRet.cy = rcTest.Height();
+    }
+
+    if (bSaveHorz)
+        pLayoutParam->SetMatchParent(Horz);
+    if (bSaveVert)
+        pLayoutParam->SetMatchParent(Vert);
+
+    *psz = szRet;
+}
+
+SIZE SWindow::MeasureContent(int nParentWid, int nParentHei)
+{
+    ILayoutParam *pLayoutParam = GetLayoutParam();
+    CRect rcPadding = GetStyle().GetPadding();
+
+    // Compute text size
+    SStringT strText = GetWindowText(FALSE);
+    CRect rcTest4Text;
+    if (!strText.IsEmpty())
+    {
+        int nTestDrawMode = GetTextAlign() & ~(DT_CENTER | DT_RIGHT | DT_VCENTER | DT_BOTTOM);
+        rcTest4Text = CRect(0, 0, nParentWid, nParentHei);
+        int nMaxWid = pLayoutParam->IsWrapContent(Horz) ? m_nMaxWidth.toPixelSize(GetScale()) : nParentWid;
+        if (nMaxWid == SIZE_WRAP_CONTENT)
+        {
+            nMaxWid = KWnd_MaxSize;
+        }
+        else // if(nMaxWid >= SIZE_SPEC)
+        {
+            nMaxWid -= rcPadding.left + rcPadding.right;
+            nTestDrawMode |= DT_WORDBREAK;
+        }
+        rcTest4Text.right = smax(nMaxWid, 10);
+        SAutoRefPtr<IRenderTarget> pRT;
+        GETRENDERFACTORY->CreateRenderTarget(&pRT, 0, 0);
+        pRT->BeginDraw();
+        BeforePaintEx(pRT);
+        DrawText(pRT, strText, strText.GetLength(), rcTest4Text, nTestDrawMode | DT_CALCRECT);
+        pRT->EndDraw();
+    }
+    return rcTest4Text.Size();
+}
+
+SIZE SWindow::MeasureChildren(int nParentWid, int nParentHei)
+{
+    return GetLayout()->MeasureChildren(this, nParentWid, nParentHei);
+}
+
+void SWindow::GetTextRect(LPRECT pRect)
+{
+    CRect rcClient = GetClientRect();
+    rcClient.DeflateRect(GetStyle().GetPadding());
+    *pRect = rcClient;
+}
+
+void SWindow::DrawText(IRenderTarget *pRT, LPCTSTR pszBuf, int cchText, LPRECT pRect, UINT uFormat)
+{
+    pRT->DrawText(pszBuf, cchText, pRect, uFormat);
+}
+
+void SWindow::DrawFocus(IRenderTarget *pRT)
+{
+    CRect rcFocus;
+    GetTextRect(&rcFocus);
+    if (IsFocusable() && m_bDrawFocusRect)
+        DrawDefFocusRect(pRT, rcFocus);
+}
+
+void SWindow::DrawDefFocusRect(IRenderTarget *pRT, CRect rcFocus)
+{
+    rcFocus.DeflateRect(2, 2);
+    SAutoRefPtr<IPenS> pPen, oldPen;
+    pRT->CreatePen(PS_DOT, RGBA(88, 88, 88, 0xFF), 1, &pPen);
+    pRT->SelectObject(pPen, (IRenderObj **)&oldPen);
+    pRT->DrawRectangle(&rcFocus);
+    pRT->SelectObject(oldPen, NULL);
+}
+
+UINT SWindow::OnGetDlgCode() const
+{
+    return 0;
+}
+
+BOOL SWindow::IsFocusable() const
+{
+    return m_bFocusable;
+}
+
+void SWindow::OnShowWindow(BOOL bShow, UINT nStatus)
+{
+    if (nStatus == ParentShow)
+    {
+        if (bShow && !IsVisible(FALSE))
+            bShow = FALSE;
+    }
+    else
+    {
+        m_bVisible = bShow;
+    }
+    if (bShow && m_pParent)
+    {
+        bShow = m_pParent->IsVisible(TRUE);
+    }
+    if (bShow)
+    { // delay refresh layout of children.
+        UpdateLayout();
+    }
+    if (bShow)
+    {
+        ModifyState(0, WndState_Invisible);
+        accNotifyEvent(EVENT_OBJECT_SHOW);
+    }
+    else
+    {
+        ModifyState(WndState_Invisible, 0);
+        accNotifyEvent(EVENT_OBJECT_HIDE);
+    }
+
+    SWindow *pChild = m_pFirstChild;
+    while (pChild)
+    {
+        pChild->AddRef();
+        pChild->SSendMessage(WM_SHOWWINDOW, bShow, ParentShow);
+        SWindow *pNextChild = pChild->GetWindow(GSW_NEXTSIBLING);
+        ;
+        pChild->Release();
+        pChild = pNextChild;
+    }
+    if (!IsVisible(TRUE))
+    {
+        if (IsFocused() && GetContainer())
+            GetContainer()->OnSetSwndFocus(0); // The window automatically loses focus when hidden
+        if (GetCapture() == m_swnd)
+            ReleaseCapture(); // The window automatically loses Capture when hidden
+    }
+
+    if (!m_bDisplay)
+    {
+        RequestRelayout();
+    }
+
+    EventSwndVisibleChanged evtShow(this);
+    evtShow.bVisible = bShow;
+    FireEvent(evtShow);
+}
+
+void SWindow::OnEnable(BOOL bEnable, UINT nStatus)
+{
+    if (nStatus == ParentEnable)
+    {
+        if (bEnable && IsDisabled(FALSE))
+            bEnable = FALSE;
+    }
+    else
+    {
+        m_bDisable = !bEnable;
+    }
+    if (bEnable && m_pParent)
+    {
+        bEnable = !m_pParent->IsDisabled(TRUE);
+    }
+
+    if (bEnable)
+        ModifyState(0, WndState_Disable);
+    else
+        ModifyState(WndState_Disable, WndState_Hover);
+
+    SWindow *pChild = m_pFirstChild;
+    while (pChild)
+    {
+        pChild->SSendMessage(WM_ENABLE, bEnable, ParentEnable);
+        pChild = pChild->GetWindow(GSW_NEXTSIBLING);
+    }
+    if (IsDisabled(TRUE) && IsFocused() && GetContainer())
+    {
+        GetContainer()->OnSetSwndFocus(0);
+    }
+}
+
+void SWindow::OnLButtonDown(UINT nFlags, CPoint pt)
+{
+    if (m_bFocusable)
+        SetFocus();
+    SetCapture();
+    ModifyState(WndState_PushDown, 0, TRUE);
+}
+
+void SWindow::OnLButtonDbClick(UINT nFlags, CPoint point)
+{
+    OnLButtonDown(nFlags, point);
+}
+
+void SWindow::OnLButtonUp(UINT nFlags, CPoint pt)
+{
+    ReleaseCapture();
+
+    if (!(GetState() & WndState_PushDown))
+        return;
+
+    ModifyState(0, WndState_PushDown, TRUE);
+    if (!GetWindowRect().PtInRect(pt))
+        return;
+
+    FireCommand();
+}
+
+void SWindow::OnRButtonDown(UINT nFlags, CPoint point)
+{
+}
+
+void SWindow::OnRButtonUp(UINT nFlags, CPoint point)
+{
+    FireCtxMenu(point);
+}
+
+void SWindow::OnMouseMove(UINT nFlags, CPoint pt)
+{
+    EventSwndMouseMove evtMove(this);
+    evtMove.nFlags = nFlags;
+    evtMove.pt = pt;
+    FireEvent(evtMove);
+}
+
+void SWindow::OnMouseHover(UINT nFlags, CPoint ptPos)
+{
+    if (!m_bHoverAware)
+        return;
+    if (GetCapture() == m_swnd)
+        ModifyState(WndState_PushDown, 0, FALSE);
+    ModifyState(WndState_Hover, 0, TRUE);
+    _RedrawNonClient();
+    EventSwndMouseHover evtHover(this);
+    FireEvent(evtHover);
+}
+
+void SWindow::OnMouseLeave()
+{
+    if (!m_bHoverAware)
+        return;
+    if (GetCapture() == m_swnd)
+        ModifyState(0, WndState_PushDown, FALSE);
+    ModifyState(0, WndState_Hover, TRUE);
+    _RedrawNonClient();
+    EventSwndMouseLeave evtLeave(this);
+    FireEvent(evtLeave);
+}
+
+BOOL SWindow::OnMouseWheel(UINT nFlags, short zDelta, CPoint pt)
+{
+    BOOL bRet = FALSE;
+    if (m_pParent)
+        bRet = (BOOL)m_pParent->SSendMessage(WM_MOUSEWHEEL, MAKEWPARAM(nFlags, zDelta), MAKELPARAM(pt.x, pt.y));
+    return bRet;
+}
+
+LRESULT SWindow::OnMouseClick(UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    SetMsgHandled(FALSE);
+
+    EventMouseClick evt(this);
+    evt.clickId = MouseClickId(uMsg - WM_LBUTTONDOWN);
+    evt.uFlags = (UINT)wParam;
+    evt.pt.x = GET_X_LPARAM(lParam);
+    evt.pt.y = GET_Y_LPARAM(lParam);
+    evt.bHover = GetClientRect().PtInRect(evt.pt);
+    FireEvent(&evt);
+    return 0;
+}
+
+void SWindow::GetChildrenLayoutRect(RECT *prc) const
+{
+    CRect rcRet;
+    GetClientRect(rcRet);
+    rcRet.DeflateRect(GetStyle().GetPadding());
+    *prc = rcRet;
+}
+
+void SWindow::UpdateChildrenPosition()
+{
+    if (m_layoutDirty == dirty_self)
+    { // Re-layout all child windows of the current window
+        GetLayout()->LayoutChildren(this);
+
+        SWindow *pChild = GetWindow(GSW_FIRSTCHILD);
+        while (pChild)
+        {
+            if (pChild->m_bFloat)
+            {
+                RECT rcChild;
+                GetChildrenLayoutRect(&rcChild);
+                pChild->OnUpdateFloatPosition(rcChild);
+                if (pChild->m_layoutDirty != dirty_clean)
+                {
+                    pChild->UpdateChildrenPosition();
+                }
+            }
+            pChild = pChild->GetWindow(GSW_NEXTSIBLING);
+        }
+    }
+    else if (m_layoutDirty == dirty_child)
+    { // Only a few individual child windows need re-layout
+        SWindow *pChild = GetNextLayoutChild(NULL);
+        while (pChild)
+        {
+            if (pChild->IsLayoutDirty())
+            {
+                pChild->UpdateChildrenPosition();
+            }
+            pChild = GetNextLayoutChild(pChild);
+        }
+    }
+}
+
+void SWindow::RequestRelayout()
+{
+    RequestRelayout(m_swnd, TRUE); // Here bSourceResizable can be any value
+}
+
+void SWindow::RequestRelayout(SWND hSource, BOOL bSourceResizable)
+{
+    SASSERT(SWindowMgr::IsWindow(hSource));
+
+    if (bSourceResizable)
+    { // The source window size changed; re-layout all child windows of the current window
+        m_layoutDirty = dirty_self;
+    }
+
+    if (m_layoutDirty != dirty_self)
+    { // Need to check whether the current window is content-adaptive
+        m_layoutDirty = (hSource == m_swnd || GetLayoutParam()->IsWrapContent(Any)) ? dirty_self : dirty_child;
+    }
+
+    SWindow *pParent = GetParent();
+    if (pParent && pParent->IsVisible())
+    {
+        pParent->RequestRelayout(hSource, GetLayoutParam()->IsWrapContent(Any) || !IsDisplay());
+    }
+}
+
+void SWindow::UpdateLayout()
+{
+    if (m_layoutDirty != dirty_clean && GetChildrenCount())
+    {
+        UpdateChildrenPosition();
+        if (m_layoutDirty == dirty_child)
+            m_layoutDirty = dirty_clean;
+    }
+}
+
+IWindow *SWindow::GetNextLayoutIChild(THIS_ const IWindow *pCurChild) const
+{
+    return GetNextLayoutChild((const SWindow *)pCurChild);
+}
+
+void SWindow::OnSetFocus(SWND wndOld)
+{
+    InvalidateRect(GetWindowRect());
+    accNotifyEvent(EVENT_OBJECT_FOCUS);
+    EventSetFocus evt(this);
+    evt.wndOld = wndOld;
+    FireEvent(evt);
+    OnDecendantFocusChanged(m_swnd, TRUE);
+}
+
+void SWindow::OnKillFocus(SWND wndFocus)
+{
+    InvalidateRect(GetWindowRect());
+    EventKillFocus evt(this);
+    evt.wndFocus = wndFocus;
+    FireEvent(evt);
+    OnDecendantFocusChanged(m_swnd, FALSE);
+}
+
+void SWindow::OnDecendantFocusChanged(SWND swnd, BOOL bSet)
+{
+    SWindow *pParent = GetParent();
+    if (pParent)
+    {
+        pParent->OnDecendantFocusChanged(swnd, bSet);
+    }
+}
+
+void SWindow::OnKeyDown(UINT nChar, UINT nRepCnt, UINT nFlags)
+{
+    EventKeyDown evt(this);
+    evt.nChar = nChar;
+    evt.nRepCnt = nRepCnt;
+    evt.nFlags = nFlags;
+    FireEvent(evt);
+    SetMsgHandled(evt.handled > 0);
+}
+void SWindow::OnKeyUp(UINT nChar, UINT nFlagsCnt, UINT nFlags)
+{
+    EventKeyUp evt(this);
+    evt.nChar = nChar;
+    evt.nRepCnt = nFlagsCnt;
+    evt.nFlags = nFlags;
+    FireEvent(evt);
+    SetMsgHandled(evt.handled > 0);
+}
+void SWindow::OnChar(UINT nChar, UINT nFlagsCnt, UINT nFlags)
+{
+    EventChar evt(this);
+    evt.nChar = nChar;
+    evt.nRepCnt = nFlagsCnt;
+    evt.nFlags = nFlags;
+    FireEvent(evt);
+    SetMsgHandled(evt.handled > 0);
+}
+void SWindow::OnSysKeyDown(UINT nChar, UINT nRepCnt, UINT nFlags)
+{
+    EventSysKeyDown evt(this);
+    evt.nChar = nChar;
+    evt.nRepCnt = nRepCnt;
+    evt.nFlags = nFlags;
+    FireEvent(evt);
+    SetMsgHandled(evt.handled > 0);
+}
+void SWindow::OnSysKeyUp(UINT nChar, UINT nFlagsCnt, UINT nFlags)
+{
+    EventSysKeyUp evt(this);
+    evt.nChar = nChar;
+    evt.nRepCnt = nFlagsCnt;
+    evt.nFlags = nFlags;
+    FireEvent(evt);
+    SetMsgHandled(evt.handled > 0);
+}
+LRESULT SWindow::OnSetScale(UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    int nScale = (int)wParam;
+    OnScaleChanged(nScale);
+    return 0;
+}
+
+LRESULT SWindow::OnSetLanguage(UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    HRESULT hr = OnLanguageChanged();
+    if (hr == S_FALSE)
+        Invalidate();
+    else if (hr == S_OK)
+        RequestRelayout(m_swnd, TRUE);
+    return 0;
+}
+
+BOOL SWindow::IsLayeredWindow() const
+{
+    return m_bLayeredWindow || GetAlpha() != 0xFF;
+}
+
+/** Query which rendering layer the current window's content will be rendered onto; returns NULL when there is no rendering layer */
+SWindow *SWindow::_GetCurrentLayeredWindow()
+{
+    SWindow *pWnd = this;
+    while (pWnd)
+    {
+        if (pWnd->IsLayeredWindow())
+        {
+            break;
+        }
+        pWnd = pWnd->GetParent();
+    }
+
+    return pWnd;
+}
+
+IRenderTarget *SWindow::GetRenderTarget(LPCRECT pRc, GrtFlag gdcFlags /**< =GRT_NODRAW */, BOOL bClientRT /**< =TRUE */)
+{
+    CRect rcRT;
+    if (bClientRT)
+    {
+        GetClientRect(&rcRT);
+    }
+    else
+    {
+        GetWindowRect(&rcRT);
+    }
+    if (pRc)
+        rcRT.IntersectRect(pRc, &rcRT);
+
+    SAutoRefPtr<IRegionS> rgn;
+    GETRENDERFACTORY->CreateRegion(&rgn);
+    rgn->CombineRect(rcRT, RGN_COPY);
+
+    return GetRenderTarget(gdcFlags, rgn);
+}
+
+IRenderTarget *SWindow::GetRenderTarget(GrtFlag gdcFlags, IRegionS *pRgn)
+{
+    SASSERT(!m_pGetRTData);
+
+    BOOL bRenderValid = GetContainer() && IsVisible(TRUE) && !IsUpdateLocked(TRUE);
+    if (!bRenderValid)
+    { // return a empty render target
+        IRenderTarget *pRT = NULL;
+        GETRENDERFACTORY->CreateRenderTarget(&pRT, 0, 0);
+        return pRT;
+    }
+
+    GetContainer()->BuildWndTreeZorder();
+
+    CRect rcRT;
+    pRgn->GetRgnBox(&rcRT);
+    IRenderTarget *pRT = NULL;
+    m_pGetRTData = new GETRTDATA;
+    GETRENDERFACTORY->CreateRenderTarget(&pRT, rcRT.Width(), rcRT.Height());
+    pRT->BeginDraw();
+    pRT->OffsetViewportOrg(-rcRT.left, -rcRT.top, NULL);
+    BeforePaintEx(pRT);
+    pRT->PushClipRegion(pRgn, RGN_COPY);
+    pRT->ClearRect(&rcRT, 0);
+    m_pGetRTData->gdcFlags = gdcFlags;
+    m_pGetRTData->rcRT = rcRT;
+    m_pGetRTData->rgn = pRgn;
+    m_pGetRTData->rt = pRT;
+    return pRT;
+}
+
+void SWindow::ReleaseRenderTarget(IRenderTarget *pRT)
+{
+    pRT->Release();
+    if (!m_pGetRTData)
+        return;
+    if (m_pGetRTData->gdcFlags != GRT_NODRAW)
+    {
+        m_pGetRTData->rt->EndDraw();
+        SMatrix mtx;
+        SWindow *p = this;
+        while (p)
+        {
+            STransformation xform = p->GetTransformation();
+            if (xform.hasMatrix() && !xform.getMatrix().isIdentity())
+            {
+                SMatrix mtx2 = xform.getMatrix();
+                CRect rc = p->GetWindowRect();
+                mtx2.preTranslate((int)-rc.left, (int)-rc.top);
+                mtx2.postTranslate((int)rc.left, (int)rc.top);
+                mtx.preConcat(mtx2);
+            }
+            p = p->GetParent();
+        }
+
+        CRect rcRT = m_pGetRTData->rcRT;
+        if (!mtx.isIdentity())
+        {
+            SRect sRcRT = SRect::IMake(rcRT);
+            mtx.mapRect(&sRcRT);
+            rcRT = sRcRT.toRect();
+        }
+
+        SASSERT(GetContainer());
+        SWindow *pRoot = GetRoot();
+        SAutoRefPtr<IRegionS> rgn;
+        GETRENDERFACTORY->CreateRegion(&rgn);
+        if (!mtx.isIdentity())
+        {
+            SRect sRcRT = SRect::IMake(m_pGetRTData->rcRT);
+            SPoint quad[4];
+            mtx.mapRectToQuad(quad, sRcRT);
+            POINT pts[4];
+            for (int i = 0; i < 4; i++)
+            {
+                pts[i] = quad[i].toPoint();
+            }
+            rgn->CombinePolygon(pts, 4, WINDING, RGN_COPY);
+        }
+        else
+        {
+            rgn->CombineRect(rcRT, RGN_COPY);
+        }
+        if (mtx.isIdentity())
+        { // todo: if matrix transform existed, combine getrt.rgn to the root rgn will not work.
+            rgn->CombineRgn(m_pGetRTData->rgn, RGN_AND);
+        }
+        if (!rgn->IsEmpty())
+            GetContainer()->UpdateRegion(rgn);
+    }
+    delete m_pGetRTData;
+    m_pGetRTData = NULL;
+}
+
+bool SWindow::_ApplyMatrix(IRenderTarget *pRT, SMatrix &oriMtx)
+{
+    STransformation xform = GetTransformation();
+    if (!xform.hasMatrix() || xform.getMatrix().isIdentity())
+        return false;
+    pRT->GetTransform(oriMtx.fMat);
+    CRect rcWnd = GetWindowRect();
+    SMatrix mtx = xform.getMatrix();
+    mtx.preTranslate((int)-rcWnd.left, (int)-rcWnd.top);
+    mtx.postTranslate((int)rcWnd.left, (int)rcWnd.top);
+    mtx.preConcat(oriMtx);
+    pRT->SetTransform(mtx.fMat, NULL);
+    return true;
+}
+
+SMatrix SWindow::_GetMatrixEx() const
+{
+    SMatrix mtx;
+    const SWindow *p = this;
+    while (p)
+    {
+        STransformation xform = p->GetTransformation();
+        if (xform.hasMatrix() && !xform.getMatrix().isIdentity())
+        {
+            SMatrix &mtx2 = xform.getMatrix();
+            CRect rcWnd = p->GetWindowRect();
+            mtx2.preTranslate((int)-rcWnd.left, (int)-rcWnd.top);
+            mtx2.postTranslate((int)rcWnd.left, (int)rcWnd.top);
+            mtx.preConcat(mtx2);
+        }
+        p = p->GetParent();
+    }
+    return mtx;
+}
+
+SWND SWindow::GetCapture() const
+{
+    if (!GetContainer())
+        return 0;
+    return GetContainer()->OnGetSwndCapture();
+}
+
+void SWindow::OnCaptureChanged(BOOL bCaptured)
+{
+    EventSwndCaptureChanged evt(this);
+    evt.bCaptured = bCaptured;
+    FireEvent(&evt);
+}
+
+BOOL SWindow::CancelCaptureMode(int reason)
+{
+    if (GetCapture() == m_swnd)
+    {
+        ReleaseCapture();
+    }
+    ModifyState(0, WndState_PushDown | WndState_Hover, TRUE);
+    return TRUE;
+}
+
+SWND SWindow::SetCapture()
+{
+    if (!GetContainer())
+        return 0;
+    return GetContainer()->OnSetSwndCapture(m_swnd);
+}
+
+BOOL SWindow::ReleaseCapture()
+{
+    if (!GetContainer())
+        return FALSE;
+    return GetContainer()->OnReleaseSwndCapture();
+}
+
+/**
+ * Sets the next animation to play for this view.
+ * If you want the animation to play immediately, use
+ * {@link #startAnimation(android.view.animation.Animation)} instead.
+ * This method provides allows fine-grained
+ * control over the start time and invalidation, but you
+ * must make sure that 1) the animation has a start time set, and
+ * 2) the view's parent (which controls animations on its children)
+ * will be invalidated when the animation is supposed to
+ * start.
+ *
+ * @param animation The next animation, or null.
+ */
+
+void SWindow::SetAnimation(IAnimation *animation)
+{
+    if (m_isAnimating)
+    {
+        ClearAnimation();
+    }
+    m_animation = animation;
+    if (m_animation)
+    {
+        m_animation->setAnimationListener(this);
+        if (m_animation->getStartTime() == START_ON_FIRST_FRAME)
+        {
+            m_animation->startNow();
+        }
+        if (GetContainer())
+            GetContainer()->RegisterTimelineHandler(m_pAnimationHandler);
+    }
+}
+
+/**
+ * Get the animation currently associated with this view.
+ *
+ * @return The animation that is currently playing or
+ *         scheduled to play for this view.
+ */
+
+IAnimation *SWindow::GetAnimation() const
+{
+    return m_animation;
+}
+
+/**
+ * Start the specified animation now.
+ *
+ * @param animation the animation to start now
+ */
+
+void SWindow::StartAnimation(IAnimation *animation, BOOL bStartNow)
+{
+    SASSERT(animation);
+    animation->setStartTime(START_ON_FIRST_FRAME);
+    SetAnimation(animation);
+    if (bStartNow)
+    {
+        m_pAnimationHandler->OnNextFrame();
+    }
+}
+
+/** Cancels any animations for this view. */
+void SWindow::ClearAnimation()
+{
+    if (m_animation)
+    {
+        if (m_isAnimating)
+        {
+            m_animation->cancel();
+        }
+        if (GetContainer())
+        {
+            GetContainer()->UnregisterTimelineHandler(m_pAnimationHandler);
+        }
+        m_animation->setAnimationListener(NULL);
+        m_animation = NULL;
+        m_isAnimating = FALSE;
+    }
+}
+
+STransformation SWindow::GetTransformation() const
+{
+    STransformation ret = m_transform;
+    if (m_isAnimating || m_pAnimationHandler->getFillAfter())
+    {
+        ret.compose(m_pAnimationHandler->GetTransformation());
+    }
+    if (!m_pAnimatorHandler->IsEmpty())
+    {
+        ret.compose(m_pAnimatorHandler->GetTransformation());
+    }
+    return ret;
+}
+
+void SWindow::SetMatrix(const SMatrix &mtx, BOOL bInvalidate)
+{
+    if (bInvalidate)
+        InvalidateRect(NULL);
+    m_transform.setMatrix(mtx);
+    if (bInvalidate)
+        InvalidateRect(NULL);
+}
+
+void SWindow::SetAlpha(BYTE byAlpha)
+{
+    m_transform.SetAlpha(byAlpha);
+    InvalidateRect(NULL);
+}
+
+BYTE SWindow::GetAlpha() const
+{
+    return GetTransformation().GetAlpha();
+}
+
+void SWindow::SetMatrix(const IMatrix *mtx, BOOL bInvalidate)
+{
+    SMatrix smtx(mtx->Data()->fMat);
+    SetMatrix(smtx, bInvalidate);
+}
+
+void SWindow::GetMatrix(IMatrix *mtx) SCONST
+{
+    SMatrix smtx = m_transform.getMatrix();
+    memcpy(mtx->Data()->fMat, smtx.fMat, sizeof(smtx.fMat));
+}
+
+void SWindow::SetFocus()
+{
+    if (!IsVisible(TRUE) || IsDisabled(TRUE) || !IsFocusable())
+        return;
+    if (!GetContainer())
+        return;
+    GetContainer()->OnSetSwndFocus(m_swnd);
+}
+
+void SWindow::KillFocus()
+{
+    if (IsFocused())
+    {
+        if (!GetContainer())
+            return;
+        GetContainer()->OnSetSwndFocus(0);
+    }
+}
+
+BOOL SWindow::IsFocused() const
+{
+    if (!GetContainer())
+        return FALSE;
+
+    return GetContainer()->GetFocus() == m_swnd;
+}
+
+UINT SWindow::OnNcHitTest(const CPoint &pt)
+{
+    CRect rcClient = GetClientRect();
+    if (rcClient.PtInRect(pt))
+        return HTCLIENT;
+    CRect rcWnd = GetWindowRect();
+    if (!rcWnd.PtInRect(pt))
+        return HTNOWHERE;
+    if (rcClient.left < pt.x)
+        return HTLEFT;
+    if (rcClient.right > pt.x)
+        return HTRIGHT;
+    if (rcClient.top > pt.y)
+        return HTTOP;
+    if (rcClient.bottom < pt.y)
+        return HTBOTTOM;
+    return HTNOWHERE;
+}
+
+IWindow *SWindow::GetIWindow(int uCode) const
+{
+    return GetWindow(uCode);
+}
+
+IWindow *SWindow::GetIChild(int iChild) const
+{
+    if (iChild == CHILDID_SELF)
+        return (IWindow *)this;
+    IWindow *pChild = GetIWindow(GSW_FIRSTCHILD);
+    for (int i = 0; i < iChild - 1 && pChild; i++)
+    {
+        pChild = pChild->GetIWindow(GSW_NEXTSIBLING);
+        if (!pChild)
+            return NULL;
+    }
+
+    return pChild;
+}
+
+void SWindow::PaintBackground(IRenderTarget *pRT, LPRECT pRc)
+{
+    CRect rcDraw = GetWindowRect();
+    if (pRc)
+        rcDraw.IntersectRect(rcDraw, pRc);
+    pRT->PushClipRect(&rcDraw, RGN_AND);
+
+    SWindow *pTopWnd = GetRoot();
+    SAutoRefPtr<IRegionS> pRgn;
+    GETRENDERFACTORY->CreateRegion(&pRgn);
+    pRgn->CombineRect(&rcDraw, RGN_COPY);
+
+    pRT->ClearRect(&rcDraw, 0); // Clear residual alpha values
+
+    SASSERT(GetContainer());
+    GetContainer()->BuildWndTreeZorder();
+    pTopWnd->_PaintRegion(pRT, pRgn, ZORDER_MIN, m_uZorder);
+
+    pRT->PopClip();
+}
+
+void SWindow::PaintForeground(IRenderTarget *pRT, LPRECT pRc, SWindow *pStartFrom /**< =NULL */)
+{
+    CRect rcDraw = GetWindowRect();
+    if (pRc)
+        rcDraw.IntersectRect(rcDraw, pRc);
+    SAutoRefPtr<IRegionS> pRgn;
+    GETRENDERFACTORY->CreateRegion(&pRgn);
+    pRgn->CombineRect(&rcDraw, RGN_COPY);
+    pRT->PushClipRect(&rcDraw, RGN_AND);
+
+    SASSERT(GetContainer());
+    GetContainer()->BuildWndTreeZorder();
+    if (!pStartFrom)
+        pStartFrom = GetRoot();
+    pStartFrom->_PaintRegion(pRT, pRgn, (UINT)m_uZorder + 1, (UINT)ZORDER_MAX);
+
+    pRT->PopClip();
+}
+
+BOOL SWindow::FireCommand()
+{
+    EventCmd evt(this);
+    return FireEvent(evt);
+}
+
+BOOL SWindow::FireCtxMenu(POINT pt)
+{
+    EventCtxMenu evt(this);
+    evt.bCancel = FALSE;
+    evt.pt = pt;
+    FireEvent(evt);
+    return evt.bCancel;
+}
+
+bool SWindow::IsCacheDirty() const
+{
+    return m_bCacheDirty && IsDrawToCache();
+}
+
+void SWindow::MarkCacheDirty(bool bDirty)
+{
+    m_bCacheDirty = bDirty;
+}
+///////////////////////////////////////////////////////////////////////
+
+HRESULT SWindow::OnAttrVisible(const SStringW &strValue, BOOL bLoading)
+{
+    BOOL bVisible = STRINGASBOOL(strValue);
+    if (!bLoading)
+        SetVisible(bVisible, TRUE);
+    else
+        m_bVisible = bVisible;
+    return S_FALSE;
+}
+
+HRESULT SWindow::OnAttrEnable(const SStringW &strValue, BOOL bLoading)
+{
+    BOOL bEnable = STRINGASBOOL(strValue);
+    if (bLoading)
+    {
+        if (bEnable)
+            ModifyState(0, WndState_Disable);
+        else
+            ModifyState(WndState_Disable, WndState_Hover);
+    }
+    else
+    {
+        EnableWindow(bEnable, TRUE);
+    }
+    return S_FALSE;
+}
+
+HRESULT SWindow::OnAttrDisplay(const SStringW &strValue, BOOL bLoading)
+{
+    m_bDisplay = STRINGASBOOL(strValue);
+    if (bLoading)
+        return S_FALSE;
+
+    RequestRelayout();
+    return S_OK;
+}
+
+HRESULT SWindow::OnAttrSkin(const SStringW &strValue, BOOL bLoading)
+{
+    m_pBgSkin = GETSKIN(strValue, GetScale());
+    if (bLoading)
+        return S_FALSE;
+
+    if ((GetLayoutParam()->IsWrapContent(Vert) || GetLayoutParam()->IsWrapContent(Horz)))
+    {
+        RequestRelayout();
+    }
+    return S_OK;
+}
+
+HRESULT SWindow::OnAttrClass(const SStringW &strValue, BOOL bLoading)
+{
+    SXmlNode xmlStyle = GETSTYLE(strValue);
+    if (xmlStyle)
+    {
+        // Prioritize handling the layout attribute
+        SXmlAttr attrLayout = xmlStyle.attribute(L"layout");
+        if (attrLayout)
+        {
+            SetAttribute(attrLayout.name(), attrLayout.value(), bLoading);
+            MarkAttributeHandled(attrLayout, true);
+        }
+        for (SXmlAttr attr = xmlStyle.first_attribute(); attr; attr = attr.next_attribute())
+        { // Parse the attributes in style
+            if (_wcsicmp(attr.name(), L"class") == 0 || IsAttributeHandled(attr))
+                continue; // Prevent class from containing other class attributes, to avoid an infinite loop
+            SetAttribute(attr.name(), attr.value(), bLoading);
+        }
+        MarkAttributeHandled(attrLayout, false);
+    }
+    return S_FALSE;
+}
+
+HRESULT SWindow::OnAttrTrackMouseEvent(const SStringW &strValue, BOOL bLoading)
+{
+    GetStyle().m_bTrackMouseEvent = STRINGASBOOL(strValue);
+    if (!bLoading)
+    {
+        if (GetContainer())
+        {
+            if (GetStyle().m_bTrackMouseEvent)
+                GetContainer()->RegisterTrackMouseEvent(m_swnd);
+            else
+                GetContainer()->UnregisterTrackMouseEvent(m_swnd);
+        }
+    }
+    return S_FALSE;
+}
+
+HRESULT SWindow::OnAttrVideoCanvas(const SStringW &strValue, BOOL bLoading)
+{
+    GetStyle().m_bVideoCanvas = STRINGASBOOL(strValue);
+    if (!bLoading)
+    {
+        if (GetContainer())
+        {
+            if (GetStyle().m_bVideoCanvas)
+                GetContainer()->RegisterVideoCanvas(m_swnd);
+            else
+                GetContainer()->UnregisterVideoCanvas(m_swnd);
+        }
+    }
+    return S_FALSE;
+}
+
+void SWindow::OnSize(UINT nType, CSize size)
+{
+    if (IsDrawToCache())
+    {
+        if (!m_cachedRT)
+        {
+            GETRENDERFACTORY->CreateRenderTarget(&m_cachedRT, GetWindowRect().Width(), GetWindowRect().Height());
+        }
+        else
+        {
+            m_cachedRT->Resize(GetWindowRect().Size());
+        }
+        m_cachedRT->SetViewportOrg(-GetWindowRect().TopLeft());
+
+        MarkCacheDirty(true);
+    }
+
+    EventSwndSize evt(this);
+    evt.szWnd = size;
+    FireEvent(evt);
+}
+
+void SWindow::UpdateCacheMode()
+{
+    if (IsDrawToCache() && !m_cachedRT)
+    {
+        GETRENDERFACTORY->CreateRenderTarget(&m_cachedRT, GetWindowRect().Width(), GetWindowRect().Height());
+        MarkCacheDirty(true);
+    }
+    if (!IsDrawToCache() && m_cachedRT)
+    {
+        m_cachedRT = NULL;
+    }
+}
+
+HRESULT SWindow::OnAttrCache(const SStringW &strValue, BOOL bLoading)
+{
+    m_bCacheDraw = STRINGASBOOL(strValue);
+
+    if (!bLoading)
+    {
+        UpdateCacheMode();
+        InvalidateRect(NULL);
+    }
+    return S_FALSE;
+}
+
+HRESULT SWindow::OnAttrAlpha(const SStringW &strValue, BOOL bLoading)
+{
+    BYTE byAlpha = _wtoi(strValue);
+    SetAlpha(byAlpha);
+    return bLoading ? S_FALSE : S_OK;
+}
+
+HRESULT SWindow::OnAttrID(const SStringW &strValue, BOOL bLoading)
+{
+    static struct SystemID
+    {
+        int id;
+        LPCWSTR pszName;
+    } systemID[] = { IDOK, L"IDOK", IDCANCEL, L"IDCANCEL", IDCLOSE, L"IDCLOSE", IDHELP, L"IDHELP", IDABORT, L"IDABORT", IDYES, L"IDYES", IDNO, L"IDNO", IDRETRY, L"IDRETRY", IDIGNORE, L"IDIGNORE" };
+    if (!strValue.IsEmpty())
+    {
+        if (strValue.Left(2).CompareNoCase(L"ID") == 0)
+        {
+            for (int i = 0; i < ARRAYSIZE(systemID); i++)
+            {
+                if (strValue.CompareNoCase(systemID[i].pszName) == 0)
+                {
+                    m_nID = systemID[i].id;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            m_nID = SNcPainter::toNcBuiltinID(strValue);
+            if (m_nID == 0)
+                m_nID = _wtoi(strValue);
+        }
+    }
+    IAttrStorageFactory *pAttrFac = SApplication::getSingleton().GetAttrStorageFactory();
+    if (pAttrFac && !m_attrStorage)
+    {
+        pAttrFac->CreateAttrStorage(this, &m_attrStorage);
+    }
+
+    return S_FALSE;
+}
+
+HRESULT SWindow::OnAttrName(const SStringW &strValue, BOOL bLoading)
+{
+    m_strName = strValue;
+    if (m_nID == 0)
+    {
+        m_nID = STR2ID(strValue);
+    }
+    IAttrStorageFactory *pAttrFac = SApplication::getSingleton().GetAttrStorageFactory();
+    if (pAttrFac && !m_attrStorage)
+    {
+        pAttrFac->CreateAttrStorage(this, &m_attrStorage);
+    }
+    return S_FALSE;
+}
+
+HRESULT SWindow::OnAttrTip(const SStringW &strValue, BOOL bLoading)
+{
+    SetToolTipText(S_CW2T(GETSTRING(strValue)));
+    return S_FALSE;
+}
+
+SStringW SWindow::GetXmlText(const SXmlNode &xmlNode)
+{
+    SStringW strText = xmlNode.Text();
+    strText.TrimBlank();
+    if (strText.IsEmpty())
+    {
+        strText = xmlNode.child_value();
+        strText.TrimBlank();
+    }
+    return strText;
+}
+
+HRESULT SWindow::OnAttrText(const SStringW &strValue, BOOL bLoading)
+{
+    SStringW strText = GETSTRING(strValue);
+    SStringT strCvt2 = S_CW2T(strText);
+    m_strText.SetText(strCvt2);
+    if (!bLoading)
+        SetWindowText(strCvt2);
+    return S_OK;
+}
+
+HRESULT SWindow::OnAttrLayer(const SStringW &strValue, BOOL bLoading)
+{
+    int nLayer = _wtoi(strValue);
+    SetLayer(nLayer);
+    return S_OK;
+}
+
+SWindow *SWindow::GetSelectedChildInGroup()
+{
+    SWindow *pChild = GetWindow(GSW_FIRSTCHILD);
+    while (pChild)
+    {
+        if (pChild->IsSiblingsAutoGroupped())
+            break;
+        pChild = pChild->GetWindow(GSW_NEXTSIBLING);
+    }
+    if (!pChild)
+        return NULL;
+    return pChild->GetSelectedSiblingInGroup();
+}
+
+bool SWindow::IsDrawToCache() const
+{
+    return m_bCacheDraw || m_isAnimating || !m_pAnimatorHandler->IsEmpty();
+}
+
+void SWindow::OnStateChanging(DWORD dwOldState, DWORD dwNewState)
+{
+}
+
+void SWindow::OnStateChanged(DWORD dwOldState, DWORD dwNewState)
+{
+    EventSwndStateChanged evt(this);
+    evt.dwOldState = dwOldState;
+    evt.dwNewState = dwNewState;
+    FireEvent(evt);
+    accNotifyEvent(EVENT_OBJECT_STATECHANGE);
+}
+
+IScriptModule *SWindow::GetScriptModule()
+{
+    if (!GetContainer())
+        return NULL;
+    return GetContainer()->GetScriptModule();
+}
+
+HRESULT SWindow::DefAttributeProc(const SStringW &strAttribName, const SStringW &strValue, BOOL bLoading)
+{
+    HRESULT hr = E_FAIL;
+    if (GetScriptModule())
+    {
+        if (m_evtSet.setEventScriptHandler(strAttribName, S_CW2A(strValue, CP_UTF8)))
+        {
+            hr = S_FALSE;
+        }
+    }
+    if (m_attrStorage)
+    {
+        m_attrStorage->OnSetAttribute(&strAttribName, &strValue, false);
+    }
+
+    return hr;
+}
+
+///////////////////////////////////////////////////////////////////////
+/** caret functions */
+
+BOOL SWindow::CreateCaret(HBITMAP pBmp, int nWid, int nHeight)
+{
+    if (!GetContainer())
+        return FALSE;
+    if (!m_caret)
+    {
+        m_caret.Attach(new SCaret(GetContainer()));
+        SStringW strCaret;
+        EventGetCaret evt(this);
+        evt.strCaret = &strCaret;
+        FireEvent(&evt);
+        SXmlNode xmlCaret;
+        SXmlDoc xmlDoc;
+        if (!strCaret.IsEmpty())
+        {
+            if (xmlDoc.load_buffer_inplace(strCaret.GetBuffer(), strCaret.GetLength() * sizeof(wchar_t), xml_parse_default, sizeof(wchar_t) == 2 ? enc_utf16 : enc_utf32))
+                xmlCaret = xmlDoc.root().child(L"caret");
+            strCaret.ReleaseBuffer();
+        }
+        if (!xmlCaret)
+        {
+            xmlCaret = GETUIDEF->GetUiDef()->GetCaretInfo();
+        }
+        m_caret->InitFromXml(&xmlCaret);
+    }
+    return m_caret->Init(pBmp, nWid, nHeight);
+}
+
+void SWindow::ShowCaret(BOOL bShow)
+{
+    if (!m_caret)
+        return;
+    if (m_caret->SetVisible(bShow, m_swnd))
+    {
+        CRect rcCaret = m_caret->GetRect();
+        InvalidateRect(rcCaret);
+    }
+}
+
+void SWindow::SetCaretPos(int x, int y)
+{
+    if (!m_caret)
+        return;
+
+    if (m_caret->IsVisible())
+    {
+        {
+            CRect rcCaret = m_caret->GetRect();
+            InvalidateRect(rcCaret);
+        }
+        m_caret->SetPosition(x, y);
+        {
+            CRect rcCaret = m_caret->GetRect();
+            InvalidateRect(rcCaret);
+        }
+    }
+    else
+    {
+        m_caret->SetPosition(x, y);
+    }
+}
+
+BOOL SWindow::IsContainPoint(POINT pt, BOOL bClientOnly) const
+{
+    BOOL bRet = FALSE;
+    CRect rc = bClientOnly ? GetClientRect() : GetWindowRect();
+    bRet = rc.PtInRect(pt);
+    if (m_clipRgn)
+    {
+        CPoint ptTmp = pt;
+        ptTmp -= GetWindowRect().TopLeft();
+        bRet = m_clipRgn->PtInRegion(ptTmp);
+    }
+    return bRet;
+}
+
+void SWindow::SetWindowRgn(IRegionS *pRgn, BOOL bRedraw /**< =TRUE */)
+{
+    m_clipRgn = NULL;
+    if (pRgn)
+    {
+        GETRENDERFACTORY->CreateRegion(&m_clipRgn);
+        m_clipRgn->CombineRgn(pRgn, RGN_COPY);
+    }
+    if (bRedraw)
+        InvalidateRect(NULL);
+}
+
+IRegionS *SWindow::GetWindowRgn() const
+{
+    return m_clipRgn;
+}
+
+void SWindow::SetWindowPath(IPathS *pPath, BOOL bRedraw /**< =TRUE */)
+{
+    m_clipPath = pPath;
+    if (bRedraw)
+        InvalidateRect(NULL);
+}
+
+IPathS *SWindow::GetWindowPath() const
+{
+    return m_clipPath;
+}
+
+void SWindow::DoColorize(COLORREF cr)
+{
+    SDispatchMessage(UM_SETCOLORIZE, cr, 0);
+}
+
+LRESULT SWindow::OnSetColorize(UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    OnColorize((COLORREF)wParam);
+    return 0;
+}
+
+void SWindow::OnColorize(COLORREF cr)
+{
+    if (m_crColorize == cr)
+        return;
+    m_crColorize = cr;
+    if (m_pNcSkin)
+        m_pNcSkin->OnColorize(cr);
+    if (m_pBgSkin)
+        m_pBgSkin->OnColorize(cr);
+    InvalidateRect(NULL);
+}
+
+COLORREF SWindow::GetColorizeColor() const
+{
+    return m_crColorize;
+}
+
+LRESULT SWindow::OnUpdateFont(UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    OnRebuildFont();
+    return 0;
+}
+
+void SWindow::SetLayout(ILayout *pLayout)
+{
+    m_pLayout = pLayout;
+}
+
+HRESULT SWindow::OnAttrLayout(const SStringW &strValue, BOOL bLoading)
+{
+    ILayout *pLayout = (ILayout *)SApplication::getSingleton().CreateObject(strValue, Layout);
+    if (pLayout == NULL)
+        return E_INVALIDARG;
+    SetLayout(pLayout);
+    pLayout->Release();
+    return S_OK;
+}
+
+HRESULT SWindow::OnAttrOwnerLayout(const SStringW &strValue, BOOL bLoading)
+{
+    if (GetParent())
+        return E_INVALIDARG;
+    ILayout *pLayout = (ILayout *)SApplication::getSingleton().CreateObject(strValue, Layout);
+    if (!pLayout)
+        return E_INVALIDARG;
+    m_pLayoutParam.Attach(pLayout->CreateLayoutParam());
+    pLayout->Release();
+    return S_FALSE;
+}
+
+HRESULT SWindow::AfterAttribute(const SStringW &strAttribName, const SStringW &strValue, BOOL bLoading, HRESULT hr)
+{
+    if (m_attrStorage)
+    {
+        m_attrStorage->OnSetAttribute(&strAttribName, &strValue, true);
+    }
+    if ((hr & 0x0000ffff) == S_OK && !bLoading)
+    {
+        HRESULT hFlag = hr & 0xFFFF0000;
+        if ((hFlag & HRET_FLAG_LAYOUT_PARAM) || (hFlag & HRET_FLAG_LAYOUT))
+        { // The window's layout attribute was modified; request the parent window to re-layout
+            if (GetParent())
+            {
+                GetParent()->RequestRelayout();
+            }
+            else
+            {
+                InvalidateRect(NULL);
+            }
+        }
+        else if ((hr & 0x0000ffff) == S_OK)
+        {
+            InvalidateRect(NULL);
+        }
+    }
+    return hr;
+}
+
+BOOL SWindow::GetAttribute(LPCWSTR pszAttr, IStringW *strValue) const
+{
+    if (m_attrStorage)
+    {
+        SStringW strAttr(pszAttr);
+        return m_attrStorage->OnGetAttribute(&strAttr, strValue);
+    }
+    else
+    {
+        return __baseCls::GetAttribute(pszAttr, strValue);
+    }
+}
+
+HRESULT SWindow::OnLanguageChanged()
+{
+    m_strText.TranslateText();
+    m_strToolTipText.TranslateText();
+    return GetLayoutParam()->IsWrapContent(Any) ? S_OK : S_FALSE;
+}
+
+SStringT SWindow::GetToolTipText() const
+{
+    return m_strToolTipText.GetText(FALSE);
+}
+
+void SWindow::SetToolTipText(LPCTSTR pszText)
+{
+    m_strToolTipText.SetText(pszText, false);
+    if (!GetContainer())
+        return;
+    if (GetContainer()->GetHover() == m_swnd)
+    { // Request to update the displayed tip
+        GetContainer()->UpdateTooltip();
+    }
+}
+
+void SWindow::SetToolTipTextU8(LPCSTR pszText)
+{
+    SStringT str = S_CA2T(pszText, CP_UTF8);
+    return SetToolTipText(str);
+}
+
+LPCWSTR SWindow::GetTrCtx() const
+{
+    if (!m_strTrCtx.IsEmpty())
+        return m_strTrCtx;
+    if (GetParent())
+        return GetParent()->GetTrCtx();
+    else if (GetContainer())
+        return GetContainer()->GetTranslatorContext();
+    else
+        return NULL;
+}
+
+int SWindow::GetScale() const
+{
+    return GetStyle().GetScale();
+}
+
+void SWindow::OnScaleChanged(int scale)
+{
+    GetStyle().SetScale(scale);
+    GetScaleSkin(m_pNcSkin, scale);
+    GetScaleSkin(m_pBgSkin, scale);
+
+    // Mark layout dirty
+    m_layoutDirty = dirty_self;
+
+    if (m_animation && m_animation->hasEnded())
+    {
+        // In the animation-ended state, refresh the animation end position again
+        long tmDuration = m_animation->getDuration();
+        long tmOffset = m_animation->getStartOffset();
+        m_animation->setStartTime(STime::GetCurrentTimeMs() - tmDuration - tmOffset);
+        m_pAnimationHandler->OnNextFrame();
+    }
+}
+
+void SWindow::GetScaleSkin(SAutoRefPtr<ISkinObj> &pSkin, int nScale)
+{
+    if (!pSkin)
+        return;
+    SStringW strName = pSkin->GetName();
+    if (!strName.IsEmpty())
+    {
+        ISkinObj *pNewSkin = GETSKIN(strName, nScale);
+        if (pNewSkin)
+            pSkin = pNewSkin;
+    }
+}
+
+void SWindow::OnRebuildFont()
+{
+    m_style.UpdateFont();
+}
+
+/** Keep consistent with the declaration in Swnd.h: controlled by SOUI_ENABLE_ACC, also available on non-Windows platforms
+ * (swinx provides the MSAA surface). */
+#ifdef SOUI_ENABLE_ACC
+IAccessible *SWindow::GetAccessible()
+{
+    if (!m_pAcc)
+        m_pAcc.Attach(SApplication::getSingleton().CreateAccessible(this));
+    return m_pAcc;
+}
+#endif
+
+IAccProxy *SWindow::GetAccProxy()
+{
+#ifdef SOUI_ENABLE_ACC
+    if (!m_pAccProxy)
+    {
+        m_pAccProxy.Attach(SApplication::getSingleton().CreateAccProxy(this));
+    }
+    return m_pAccProxy;
+#else
+    return NULL;
+#endif
+}
+
+void SWindow::accNotifyEvent(DWORD dwEvt)
+{
+#ifdef SOUI_ENABLE_ACC
+    if (GetContainer())
+        NotifyWinEvent(dwEvt, GetContainer()->GetHostHwnd(), GetSwnd(), CHILDID_SELF);
+#endif
+}
+
+BOOL SWindow::SetLayoutParam(ILayoutParam *pLayoutParam)
+{
+    SWindow *pParent = GetParent();
+    if (!pParent)
+        return FALSE;
+    if (!pParent->GetLayout()->IsParamAcceptable(pLayoutParam))
+        return FALSE;
+    m_pLayoutParam = pLayoutParam;
+    return TRUE;
+}
+
+void SWindow::OnAnimationStart(THIS_ IAnimation *pAni)
+{
+    if (m_isAnimating)
+        return;
+    EventSwndAnimationStart evt(this);
+    evt.pAni = pAni;
+    FireEvent(&evt);
+    m_isAnimating = TRUE;
+    m_pAnimationHandler->OnAnimationStart();
+    UpdateCacheMode();
+}
+
+void SWindow::OnAnimationStop(THIS_ IAnimation *pAni)
+{
+    SASSERT(m_isAnimating);
+    if (GetContainer())
+        GetContainer()->UnregisterTimelineHandler(m_pAnimationHandler);
+    InvalidateRect(NULL);
+    pAni->setStartTime(START_ON_FIRST_FRAME);
+    m_pAnimationHandler->OnAnimationStop();
+    m_isAnimating = FALSE;
+    UpdateCacheMode();
+    EventSwndAnimationStop evt(this);
+    evt.pAni = pAni;
+    FireEvent(&evt);
+}
+
+void SWindow::OnAnimationRepeat(THIS_ IAnimation *pAni)
+{
+    EventSwndAnimationRepeat evt(this);
+    evt.pAni = pAni;
+    FireEvent(&evt);
+}
+
+void SWindow::OnAnimationInvalidate(bool bErase)
+{
+    InvalidateRect(NULL);
+}
+
+COLORREF SWindow::GetBkgndColor() const
+{
+    return GetStyle().m_crBg;
+}
+
+void SWindow::OnBeforeRemoveChild(SWindow *pChild)
+{
+}
+
+void SWindow::OnAfterInsertChild(SWindow *pChild)
+{
+}
+
+void SWindow::OnBeforeInsertChild(SWindow *pChild)
+{
+}
+
+void SWindow::OnAfterRemoveChild(SWindow *pChild)
+{
+}
+
+void SWindow::OnContainerChanged(ISwndContainer *pOldContainer, ISwndContainer *pNewContainer)
+{
+    if (pOldContainer)
+    {
+        if (IsFocused())
+            pOldContainer->OnSetSwndFocus(0);
+        if (GetStyle().m_bTrackMouseEvent)
+            pOldContainer->UnregisterTrackMouseEvent(m_swnd);
+        if (GetCapture() == m_swnd)
+            ReleaseCapture();
+        pOldContainer->UnregisterTimelineHandler(m_pAnimationHandler);
+        if (GetStyle().m_bVideoCanvas)
+            pOldContainer->UnregisterVideoCanvas(m_swnd);
+    }
+    m_pContainer = pNewContainer;
+    if (pNewContainer)
+    {
+        if (GetStyle().m_bTrackMouseEvent)
+            pNewContainer->RegisterTrackMouseEvent(m_swnd);
+        if (GetStyle().m_bVideoCanvas)
+            pNewContainer->RegisterVideoCanvas(m_swnd);
+    }
+}
+
+BOOL SWindow::IsFloat() const
+{
+    return m_bFloat;
+}
+
+BOOL SWindow::IsDisplay() const
+{
+    return m_bDisplay;
+}
+
+BOOL SWindow::IsSiblingsAutoGroupped() const
+{
+    return FALSE;
+}
+
+BOOL SWindow::IsClipClient() const
+{
+    return m_bClipClient;
+}
+
+BOOL SWindow::IsLayoutDirty() const
+{
+    return m_layoutDirty;
+}
+
+SWindow *SWindow::GetWindow(int uCode) const
+{
+    SWindow *pRet = NULL;
+    switch (uCode)
+    {
+    case GSW_FIRSTCHILD:
+        pRet = m_pFirstChild;
+        break;
+    case GSW_LASTCHILD:
+        pRet = m_pLastChild;
+        break;
+    case GSW_PREVSIBLING:
+        pRet = m_pPrevSibling;
+        break;
+    case GSW_NEXTSIBLING:
+        pRet = m_pNextSibling;
+        break;
+    case GSW_OWNER:
+        pRet = m_pOwner;
+        break;
+    case GSW_PARENT:
+        pRet = m_pParent;
+        break;
+    }
+    return pRet;
+}
+
+SWindow *SWindow::GetChild(int iChild) const
+{
+    return (SWindow *)GetIChild(iChild);
+}
+
+SWindow *SWindow::GetParent() const
+{
+    return m_pParent;
+}
+
+SWindow *SWindow::GetRoot() const
+{
+    SWindow *pParent = (SWindow *)this;
+    while (pParent->GetParent())
+        pParent = pParent->GetParent();
+    return pParent;
+}
+
+SWindow *SWindow::GetNextLayoutChild(const SWindow *pCurChild) const
+{
+    SWindow *pRet = NULL;
+    if (pCurChild == NULL)
+    {
+        pRet = GetWindow(GSW_FIRSTCHILD);
+    }
+    else
+    {
+        pRet = pCurChild->GetWindow(GSW_NEXTSIBLING);
+    }
+
+    if (pRet && (pRet->IsFloat() || (!pRet->IsDisplay() && !pRet->IsVisible(FALSE))))
+        return GetNextLayoutChild(pRet);
+    return pRet;
+}
+
+BOOL SWindow::IsDescendant(THIS_ const IWindow *pWnd) const
+{
+    if (!pWnd)
+        return FALSE;
+    const IWindow *pParent = GetIParent();
+    while (pParent)
+    {
+        if (pParent == pWnd)
+            return TRUE;
+        pParent = pParent->GetIParent();
+    }
+    return FALSE;
+}
+
+BOOL SWindow::AdjustIZOrder(THIS_ IWindow *pInsertAfter)
+{
+    return AdjustZOrder((SWindow *)pInsertAfter);
+}
+
+void SWindow::InsertIChild(THIS_ IWindow *pNewChild, IWindow *pInsertAfter /**< =ICWND_LAST */)
+{
+    return InsertChild((SWindow *)pNewChild, (SWindow *)pInsertAfter);
+}
+
+BOOL SWindow::RemoveIChild(THIS_ IWindow *pChild)
+{
+    return RemoveChild((SWindow *)pChild);
+}
+
+BOOL SWindow::DestroyIChild(THIS_ IWindow *pChild)
+{
+    return DestroyChild((SWindow *)pChild);
+}
+
+void SWindow::SetIOwner(THIS_ IWindow *pOwner)
+{
+    SetOwner((SWindow *)pOwner);
+}
+
+IWindow *SWindow::GetIOwner(THIS) const
+{
+    return GetOwner();
+}
+
+BOOL SWindow::SubscribeEvent(THIS_ DWORD evtId, const IEvtSlot *pSlot)
+{
+    return GetEventSet()->subscribeEvent(evtId, pSlot);
+}
+
+BOOL SWindow::UnsubscribeEvent(THIS_ DWORD evtId, const IEvtSlot *pSlot)
+{
+    return GetEventSet()->unsubscribeEvent(evtId, pSlot);
+}
+
+HRESULT SWindow::QueryInterface(THIS_ REFGUID id, IObjRef **ppRet)
+{
+    return E_NOINTERFACE;
+}
+
+void SWindow::OnCommitSurface(IRenderTarget *pRtDest, LPCRECT pRcDest, IRenderTarget *pRtSrc, LPCRECT pRcSrc, BYTE alpha)
+{
+    pRtDest->AlphaBlend(pRcDest, pRtSrc, pRcSrc, alpha);
+}
+
+IWindow *SWindow::GetISelectedSiblingInGroup(THIS)
+{
+    return GetSelectedSiblingInGroup();
+}
+
+IWindow *SWindow::GetISelectedChildInGroup(THIS)
+{
+    return GetSelectedChildInGroup();
+}
+
+BOOL SWindow::SwndProc(UINT uMsg, WPARAM wParam, LPARAM lParam, LRESULT *lResult)
+{
+    SASSERT(lResult);
+    BOOL bOldMsgHandle = IsMsgHandled(); // Back up the processing state of the previous message
+    BOOL bRet = FALSE;
+    if (m_funSwndProc)
+    {
+        bRet = m_funSwndProc(this, uMsg, wParam, lParam, lResult);
+    }
+    if (!bRet)
+    {
+        SetMsgHandled(FALSE);
+        bRet = ProcessSwndMessage(uMsg, wParam, lParam, *lResult);
+    }
+    SetMsgHandled(bOldMsgHandle); // Restore the processing state of the previous message
+
+    return bRet;
+}
+
+void SWindow::SetSwndProc(FunSwndProc swndProc)
+{
+    m_funSwndProc = swndProc;
+}
+
+HWND SWindow::GetHostHwnd(THIS) const
+{
+    return GetContainer()->GetHostHwnd();
+}
+
+ITimelineHandlersMgr *SWindow::GetTimelineHandlersMgr(THIS)
+{
+    return GetContainer();
+}
+
+BOOL SWindow::AddEvent(THIS_ DWORD dwEventID, LPCWSTR pszEventHandlerName)
+{
+    return m_evtSet.addEvent(dwEventID, pszEventHandlerName);
+}
+
+BOOL SWindow::RemoveEvent(THIS_ DWORD dwEventID)
+{
+    return m_evtSet.removeEvent(dwEventID);
+}
+
+void SWindow::GetVisibleRect(LPRECT prc) const
+{
+    SASSERT(prc);
+    CRect rcWnd;
+    *prc = rcWnd;
+    if (!IsVisible(TRUE))
+        return;
+    rcWnd = GetWindowRect();
+    SWindow *pParent = GetParent();
+    while (pParent)
+    {
+        CRect rcParent = pParent->GetClientRect();
+        rcWnd = rcWnd & rcParent;
+        if (rcWnd.IsRectEmpty())
+            break;
+        pParent = pParent->GetParent();
+    }
+    *prc = rcWnd;
+}
+
+BOOL SWindow::IsVideoCanvas(CTHIS) const
+{
+    return GetStyle().m_bVideoCanvas;
+}
+
+BOOL SWindow::RegisterDragDrop(THIS_ IDropTarget *pDragTarget)
+{
+    return GetContainer()->RegisterDragDrop(m_swnd, pDragTarget);
+}
+
+BOOL SWindow::UnregisterDragDrop(THIS)
+{
+    return GetContainer()->UnregisterDragDrop(m_swnd);
+}
+
+void SWindow::OnAnimationPauseChange(THIS_ IAnimation *animation, BOOL bPaused)
+{
+    if (bPaused)
+        GetContainer()->UnregisterTimelineHandler(m_pAnimationHandler);
+    else
+        GetContainer()->RegisterTimelineHandler(m_pAnimationHandler);
+}
+
+SNSEND

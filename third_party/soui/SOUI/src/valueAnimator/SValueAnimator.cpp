@@ -1,0 +1,753 @@
+#include <souistd.h>
+#include <valueAnimator/SValueAnimator.h>
+#include <animation/SInterpolatorImpl.h>
+#include <helper/STime.h>
+
+SNSBEGIN
+
+SValueAnimator::SValueAnimator()
+    : mContainer(NULL)
+    , m_pUserData(NULL)
+    , _this_for_callback(this)
+{
+    sDurationScale = 1.0f;
+    mStartTime = -1;
+
+    mStartTimeCommitted;
+
+    mSeekFraction = -1;
+
+    mReversing;
+    mOverallFraction = 0.f;
+
+    mCurrentFraction = 0.f;
+
+    mLastFrameTime = -1;
+
+    mFirstFrameTime = -1;
+
+    mRunning = false;
+
+    mStarted = false;
+
+    mStartListenersCalled = false;
+
+    mInitialized = false;
+
+    mAnimationEndRequested = false;
+
+    mDuration = 200;
+
+    mStartDelay = 0;
+
+    mRepeatCount = 0;
+
+    mRepeatMode = RESTART;
+    mInterpolator.Attach(new SLinearInterpolator());
+}
+
+SValueAnimator::~SValueAnimator()
+{
+}
+
+void SValueAnimator::addAnimationCallback()
+{
+    if (mContainer)
+        mContainer->RegisterValueAnimator(this); // this value animator will holded by mContainer.
+}
+
+void SValueAnimator::removeAnimationCallback()
+{
+    if (mContainer)
+    {
+        AddRef();
+        mContainer->UnregisterValueAnimator(this);
+        mContainer = NULL;
+        Release(); // may be call deconstructor here.
+    }
+}
+
+void SValueAnimator::OnNextFrame()
+{
+    commitAnimationFrame(STime::GetCurrentTimeMs());
+}
+
+void SValueAnimator::copy(const IValueAnimator *pSrc)
+{
+    SValueAnimator *pSrc2 = sobj_cast<SValueAnimator>(pSrc);
+    mDuration = pSrc2->mDuration;
+    mStartDelay = pSrc2->mStartDelay;
+    mRepeatCount = pSrc2->mRepeatCount;
+    mRepeatMode = pSrc2->mRepeatMode;
+    mInterpolator = pSrc2->mInterpolator;
+    m_strName = pSrc2->m_strName;
+    m_pUserData = pSrc2->m_pUserData;
+    m_nID = pSrc2->m_nID;
+}
+
+void SValueAnimator::animateValue(float fraction)
+{
+    fraction = mInterpolator->getInterpolation(fraction);
+    mCurrentFraction = fraction;
+    onEvaluateValue(fraction);
+    size_t numListeners = mUpdateListeners.GetCount();
+    for (size_t i = 0; i < numListeners; ++i)
+    {
+        mUpdateListeners[i]->onAnimationUpdate(_this_for_callback);
+    }
+}
+
+float SValueAnimator::getAnimatedFraction() const
+{
+    return mCurrentFraction;
+}
+
+bool SValueAnimator::isInitialized()
+{
+    return mInitialized;
+}
+
+void SValueAnimator::skipToEndValue(bool inReverse)
+{
+    float endFraction = inReverse ? 0.f : 1.f;
+    if (mRepeatCount % 2 == 1 && mRepeatMode == REVERSE)
+    {
+        // This would end on fraction = 0
+        endFraction = 0.f;
+    }
+    animateValue(endFraction);
+}
+
+void SValueAnimator::animateBasedOnPlayTime(long currentPlayTime, long lastPlayTime, bool inReverse)
+{
+    if (currentPlayTime < 0 || lastPlayTime < 0)
+    {
+        return; // error
+    }
+    // Check whether repeat callback is needed only when repeat count is non-zero
+    if (mRepeatCount > 0)
+    {
+        int iteration = (int)(currentPlayTime / mDuration);
+        int lastIteration = (int)(lastPlayTime / mDuration);
+
+        // Clamp iteration to [0, mRepeatCount]
+        iteration = smin(iteration, mRepeatCount);
+        lastIteration = smin(lastIteration, mRepeatCount);
+
+        if (iteration != lastIteration)
+        {
+            size_t numListeners = mListeners.GetCount();
+            for (size_t i = 0; i < numListeners; ++i)
+            {
+                mListeners[i]->onAnimationRepeat(_this_for_callback);
+            }
+        }
+    }
+
+    if (mRepeatCount != INFINITE && currentPlayTime >= (mRepeatCount + 1) * mDuration)
+    {
+        skipToEndValue(inReverse);
+    }
+    else
+    {
+        // Find the current fraction:
+        float fraction = currentPlayTime / (float)mDuration;
+        fraction = getCurrentIterationFraction(fraction, inReverse);
+        animateValue(fraction);
+    }
+}
+
+bool SValueAnimator::animateBasedOnTime(uint64_t currentTime)
+{
+    bool done = false;
+    if (mRunning)
+    {
+        long scaledDuration = getScaledDuration();
+        float fraction = scaledDuration > 0 ? (float)(currentTime - mStartTime) / scaledDuration : 1.f;
+        float lastFraction = mOverallFraction;
+        bool newIteration = (int)fraction > (int)lastFraction;
+        bool lastIterationFinished = (fraction >= mRepeatCount + 1) && (mRepeatCount != INFINITE);
+        if (scaledDuration == 0)
+        {
+            // 0 duration animator, ignore the repeat count and skip to the end
+            done = true;
+        }
+        else if (newIteration && !lastIterationFinished)
+        {
+            // Time to repeat
+            SArray<IAnimatorListener *> tmpListeners = mListeners;
+            for (UINT i = 0; i < tmpListeners.GetCount(); i++)
+            {
+                tmpListeners[i]->onAnimationRepeat(_this_for_callback);
+            }
+        }
+        else if (lastIterationFinished)
+        {
+            done = true;
+        }
+        mOverallFraction = clampFraction(fraction);
+        float currentIterationFraction = getCurrentIterationFraction(mOverallFraction, mReversing);
+        animateValue(currentIterationFraction);
+    }
+    return done;
+}
+
+BOOL SValueAnimator::commitAnimationFrame(uint64_t frameTime)
+{
+    if (mStartTime < 0)
+    {
+        // First frame. If there is start delay, start delay count down will happen *after* this
+        // frame.
+        mStartTime = mReversing ? frameTime : frameTime + (long)(mStartDelay * sDurationScale);
+    }
+
+    if (!mRunning)
+    {
+        // If not running, that means the animation is in the start delay phase of a forward
+        // running animation. In the case of reversing, we want to run start delay in the end.
+        if (mStartTime > frameTime && mSeekFraction == -1)
+        {
+            // This is when no seek fraction is set during start delay. If developers change the
+            // seek fraction during the delay, animation will start from the seeked position
+            // right away.
+            return false;
+        }
+        else
+        {
+            // If mRunning is not set by now, that means non-zero start delay,
+            // no seeking, not reversing. At this point, start delay has passed.
+            mRunning = true;
+            startAnimation();
+        }
+    }
+
+    if (mLastFrameTime < 0)
+    {
+        if (mSeekFraction >= 0)
+        {
+            long seekTime = (long)(getScaledDuration() * mSeekFraction);
+            mStartTime = frameTime - seekTime;
+            mSeekFraction = -1;
+        }
+        mStartTimeCommitted = false; // allow start time to be compensated for jank
+    }
+    mLastFrameTime = frameTime;
+    // The frame time might be before the start time during the first frame of
+    // an animation.  The "current time" must always be on or after the start
+    // time to avoid animating frames at negative time intervals.  In practice, this
+    // is very rare and only happens when seeking backwards.
+    uint64_t currentTime = smax(frameTime, mStartTime);
+    bool finished = animateBasedOnTime(currentTime);
+
+    if (finished)
+    {
+        endAnimation();
+    }
+    return finished;
+}
+
+bool SValueAnimator::isPulsingInternal()
+{
+    return mLastFrameTime >= 0;
+}
+
+void SValueAnimator::startAnimation()
+{
+    mAnimationEndRequested = false;
+    mRunning = true;
+    if (mSeekFraction >= 0)
+    {
+        mOverallFraction = mSeekFraction;
+    }
+    else
+    {
+        mOverallFraction = 0.f;
+    }
+    notifyStartListeners();
+}
+
+void SValueAnimator::endAnimation()
+{
+    if (mAnimationEndRequested)
+    {
+        return;
+    }
+
+    mAnimationEndRequested = true;
+    bool notify = (mStarted || mRunning);
+    if (notify && !mRunning)
+    {
+        // If it's not yet running, then start listeners weren't called. Call them now.
+        notifyStartListeners();
+    }
+    mRunning = false;
+    mStarted = false;
+
+    mStartListenersCalled = false;
+    mLastFrameTime = -1;
+    mFirstFrameTime = -1;
+    mStartTime = -1;
+    if (notify)
+    {
+        SArray<IAnimatorListener *> tmpListeners = mListeners;
+        size_t numListeners = tmpListeners.GetCount();
+        for (size_t i = 0; i < numListeners; ++i)
+        {
+            tmpListeners[i]->onAnimationEnd(_this_for_callback);
+        }
+    }
+    mReversing = false;
+    removeAnimationCallback();
+}
+
+bool SValueAnimator::canReverse()
+{
+    return true;
+}
+
+void SValueAnimator::reverse()
+{
+    if (isPulsingInternal())
+    {
+        uint64_t currentTime = STime::GetCurrentTimeMs();
+        uint64_t currentPlayTime = currentTime - mStartTime;
+        uint64_t timeLeft = getScaledDuration() - currentPlayTime;
+        mStartTime = currentTime - timeLeft;
+        mStartTimeCommitted = true; // do not allow start time to be compensated for jank
+        mReversing = !mReversing;
+    }
+    else if (mStarted)
+    {
+        mReversing = !mReversing;
+        end();
+    }
+    else
+    {
+        start(true);
+    }
+}
+
+BOOL SValueAnimator::isStarted() const
+{
+    return mStarted;
+}
+
+BOOL SValueAnimator::isRunning() const
+{
+    return mRunning;
+}
+
+void SValueAnimator::end()
+{
+    if (!mStarted)
+        return;
+    if (!mRunning)
+    {
+        // Special case if the animation has not yet started; get it ready for ending
+        startAnimation();
+    }
+    animateValue(shouldPlayBackward(mRepeatCount, mReversing) ? 0.f : 1.f);
+    endAnimation();
+}
+
+void SValueAnimator::start(ITimelineHandlersMgr *pContainer)
+{
+    mContainer = pContainer;
+    start(false);
+}
+
+void SValueAnimator::start(bool playBackwards)
+{
+    SASSERT(mInterpolator);
+    mReversing = playBackwards;
+    // Special case: reversing from seek-to-0 should act as if not seeked at all.
+    if (playBackwards && mSeekFraction != -1 && mSeekFraction != 0)
+    {
+        if (mRepeatCount == INFINITE)
+        {
+            // Calculate the fraction of the current iteration.
+            float fraction = (float)(mSeekFraction - floor(mSeekFraction));
+            mSeekFraction = 1 - fraction;
+        }
+        else
+        {
+            mSeekFraction = 1 + mRepeatCount - mSeekFraction;
+        }
+    }
+    mStarted = true;
+
+    mRunning = false;
+    mAnimationEndRequested = false;
+    // Resets mLastFrameTime when start() is called, so that if the animation was running,
+    // calling start() would put the animation in the
+    // started-but-not-yet-reached-the-first-frame phase.
+    mLastFrameTime = -1;
+    mFirstFrameTime = -1;
+    mStartTime = -1;
+    addAnimationCallback();
+
+    if (mStartDelay == 0 || mSeekFraction >= 0 || mReversing)
+    {
+        // If there's no start delay, init the animation and notify start listeners right away
+        // to be consistent with the previous behavior. Otherwise, postpone this until the first
+        // frame after the start delay.
+        startAnimation();
+        if (mSeekFraction == -1)
+        {
+            // No seek, start at play time 0. Note that the reason we are not using fraction 0
+            // is because for animations with 0 duration, we want to be consistent with pre-N
+            // behavior: skip to the value immediately.
+            setCurrentPlayTime(0);
+        }
+        else
+        {
+            setCurrentFraction(mSeekFraction);
+        }
+    }
+}
+
+void SValueAnimator::notifyStartListeners()
+{
+    AddRef();
+    SArray<IAnimatorListener *> tmpListeners = mListeners;
+    size_t numListeners = tmpListeners.GetCount();
+    for (size_t i = 0; i < numListeners; ++i)
+    {
+        tmpListeners[i]->onAnimationStart(_this_for_callback);
+    }
+    mStartListenersCalled = true;
+    Release();
+}
+
+void SValueAnimator::removeListener(IAnimatorListener *p)
+{
+    int iFind = mListeners.Find(p);
+    if (iFind != -1)
+    {
+        mListeners.RemoveAt(iFind);
+    }
+}
+
+ITimelineHandler *SValueAnimator::GetTimelineHandler() const
+{
+    return const_cast<SValueAnimator *>(this);
+}
+
+LPVOID SValueAnimator::GetUserData() const
+{
+    return m_pUserData;
+}
+
+void SValueAnimator::SetUserData(LPVOID pUserData)
+{
+    m_pUserData = pUserData;
+}
+
+void SValueAnimator::addListener(IAnimatorListener *p)
+{
+    mListeners.Add(p);
+}
+
+IInterpolator *SValueAnimator::getInterpolator() const
+{
+    return mInterpolator;
+}
+
+void SValueAnimator::setInterpolator(IInterpolator *value)
+{
+    mInterpolator = value;
+}
+
+void SValueAnimator::removeUpdateListener(IAnimatorUpdateListener *listener)
+{
+    int iFind = mUpdateListeners.Find(listener);
+    if (iFind != -1)
+        mUpdateListeners.RemoveAt(iFind);
+}
+
+void SValueAnimator::removeAllUpdateListeners()
+{
+    mUpdateListeners.RemoveAll();
+}
+
+void SValueAnimator::addUpdateListener(IAnimatorUpdateListener *listener)
+{
+    mUpdateListeners.Add(listener);
+}
+
+RepeatMode SValueAnimator::getRepeatMode() const
+{
+    return mRepeatMode;
+}
+
+void SValueAnimator::setRepeatMode(RepeatMode value)
+{
+    mRepeatMode = value;
+}
+
+int SValueAnimator::getRepeatCount() const
+{
+    return mRepeatCount;
+}
+
+void SValueAnimator::setRepeatCount(int value)
+{
+    mRepeatCount = value;
+}
+
+void SValueAnimator::setStartDelay(long startDelay)
+{
+    // Clamp start delay to non-negative range.
+    if (startDelay < 0)
+    {
+        startDelay = 0;
+    }
+    mStartDelay = startDelay;
+}
+
+long SValueAnimator::getStartDelay() const
+{
+    return mStartDelay;
+}
+
+long SValueAnimator::getCurrentPlayTime()
+{
+    if (!mInitialized || (!mStarted && mSeekFraction < 0))
+    {
+        return 0;
+    }
+    if (mSeekFraction >= 0)
+    {
+        return (long)(mDuration * mSeekFraction);
+    }
+    return (long)((STime::GetCurrentTimeMs() - mStartTime) / sDurationScale);
+}
+
+bool SValueAnimator::shouldPlayBackward(int iteration, bool inReverse)
+{
+    if (iteration > 0 && mRepeatMode == REVERSE && (iteration < (mRepeatCount + 1) || mRepeatCount == -1))
+    {
+        // if we were seeked to some other iteration in a reversing animator,
+        // figure out the correct direction to start playing based on the iteration
+        if (inReverse)
+        {
+            return (iteration % 2) == 0;
+        }
+        else
+        {
+            return (iteration % 2) != 0;
+        }
+    }
+    else
+    {
+        return inReverse;
+    }
+}
+
+float SValueAnimator::clampFraction(float fraction)
+{
+    if (fraction < 0)
+    {
+        fraction = 0;
+    }
+    else if (mRepeatCount != INFINITE)
+    {
+        fraction = smin(fraction, mRepeatCount + 1);
+    }
+    return fraction;
+}
+
+float SValueAnimator::getCurrentIterationFraction(float fraction, bool inReverse)
+{
+    fraction = clampFraction(fraction);
+    int iteration = getCurrentIteration(fraction);
+    float currentFraction = fraction - iteration;
+    return shouldPlayBackward(iteration, inReverse) ? 1.f - currentFraction : currentFraction;
+}
+
+int SValueAnimator::getCurrentIteration(float fraction)
+{
+    fraction = clampFraction(fraction);
+    // If the overall fraction is a positive integer, we consider the current iteration to be
+    // complete. In other words, the fraction for the current iteration would be 1, and the
+    // current iteration would be overall fraction - 1.
+    double iteration = floor(fraction);
+    if (fraction == iteration && fraction > 0)
+    {
+        iteration--;
+    }
+    return (int)iteration;
+}
+
+void SValueAnimator::setCurrentFraction(float fraction)
+{
+    fraction = clampFraction(fraction);
+    mStartTimeCommitted = true; // do not allow start time to be compensated for jank
+    if (isPulsingInternal())
+    {
+        long seekTime = (long)(getScaledDuration() * fraction);
+        uint64_t currentTime = STime::GetCurrentTimeMs();
+        // Only modify the start time when the animation is running. Seek fraction will ensure
+        // non-running animations skip to the correct start time.
+        mStartTime = currentTime - seekTime;
+    }
+    else
+    {
+        // If the animation loop hasn't started, or during start delay, the startTime will be
+        // adjusted once the delay has passed based on seek fraction.
+        mSeekFraction = fraction;
+    }
+    mOverallFraction = fraction;
+    float currentIterationFraction = getCurrentIterationFraction(fraction, mReversing);
+    animateValue(currentIterationFraction);
+}
+
+void SValueAnimator::setCurrentPlayTime(long playTime)
+{
+    float fraction = mDuration > 0 ? (float)playTime / mDuration : 1;
+    setCurrentFraction(fraction);
+}
+
+long SValueAnimator::getTotalDuration() const
+{
+    if (mRepeatCount == -1)
+    {
+        return 100000; // todo: DURATION_INFINITE;
+    }
+    else
+    {
+        return mStartDelay + (mDuration * (mRepeatCount + 1));
+    }
+}
+
+long SValueAnimator::getDuration() const
+{
+    return mDuration;
+}
+
+long SValueAnimator::getScaledDuration()
+{
+    return (long)(mDuration * sDurationScale);
+}
+
+void SValueAnimator::setDuration(long duration)
+{
+    if (duration >= 0)
+    {
+        mDuration = duration;
+    }
+}
+
+IValueAnimator *SValueAnimator::clone(THIS) const
+{
+    IValueAnimator *pRet = SApplication::getSingletonPtr()->CreateValueAnimatorByName(GetObjectClass());
+    pRet->copy(this);
+    return pRet;
+}
+
+///////////////////////////////////////////////////////////////////////
+
+HRESULT SColorAnimator::OnAttrFrom(const SStringW &strValue, BOOL bLoading)
+{
+    COLORREF crStart = GETCOLOR(strValue);
+    mValueEvaluator.setStart(crStart);
+    return S_FALSE;
+}
+HRESULT SColorAnimator::OnAttrTo(const SStringW &strValue, BOOL bLoading)
+{
+    COLORREF crEnd = GETCOLOR(strValue);
+    mValueEvaluator.setEnd(crEnd);
+    return S_FALSE;
+}
+
+///////////////////////////////////////////////////////////////////////
+SAnimatorGroup::SAnimatorGroup(int nID)
+    : m_listener(NULL)
+    , m_nID(nID)
+{
+}
+
+SAnimatorGroup::~SAnimatorGroup()
+{
+    SPOSITION pos = m_lstAnimator.GetStartPosition();
+    while (pos)
+    {
+        IValueAnimator *ani = m_lstAnimator.GetNextKey(pos);
+        ani->removeListener(this);
+        ani->Release();
+    }
+    m_lstAnimator.RemoveAll();
+}
+
+BOOL SAnimatorGroup::AddAnimator(IValueAnimator *ani)
+{
+    AnimatorStateMap::CPair *it = m_lstAnimator.Lookup(ani);
+    if (it)
+        return FALSE;
+
+    AniState state = idle;
+    if (ani->isRunning())
+        state = running;
+    else if (ani->isStarted())
+        state = started;
+    else
+        state = idle;
+    m_lstAnimator[ani] = state;
+    ani->addListener(this);
+    ani->AddRef();
+    return TRUE;
+}
+
+BOOL SAnimatorGroup::RemoveAnimator(IValueAnimator *ani)
+{
+    if (!m_lstAnimator.RemoveKey(ani))
+        return FALSE;
+    ani->removeListener(this);
+    ani->Release();
+    return TRUE;
+}
+
+void SAnimatorGroup::onAnimationStart(THIS_ IValueAnimator *pAnimator)
+{
+    AnimatorStateMap::CPair *it = m_lstAnimator.Lookup(pAnimator);
+    if (!it)
+    {
+        SSLOGW() << "onAnimationStart error, animator is not found!";
+        return;
+    }
+    it->m_value = running;
+}
+
+void SAnimatorGroup::onAnimationEnd(THIS_ IValueAnimator *pAnimator)
+{
+    AnimatorStateMap::CPair *it = m_lstAnimator.Lookup(pAnimator);
+    if (!it)
+    {
+        SSLOGW() << "onAnimationStart error, animator is not found!";
+        return;
+    }
+    it->m_value = idle;
+    bool bAllStop = true;
+    SPOSITION pos = m_lstAnimator.GetStartPosition();
+    while (pos)
+    {
+        AniState state = m_lstAnimator.GetNextValue(pos);
+        if (state != idle)
+        {
+            bAllStop = false;
+            break;
+        }
+    }
+
+    if (bAllStop && m_listener)
+    {
+        m_listener->OnAnimatorGroupEnd(this, m_nID);
+    }
+}
+
+void SAnimatorGroup::SetListener(THIS_ IAnimatorGroupListerer *listener)
+{
+    m_listener = listener;
+}
+
+SNSEND

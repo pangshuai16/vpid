@@ -1,0 +1,57 @@
+cmake_minimum_required(VERSION 3.16)
+
+project(swinx)
+set(CMAKE_CXX_STANDARD 11)
+
+add_compile_options(-Wno-deprecated-declarations)
+add_compile_options(-Wno-unused-result)
+
+add_subdirectory(thirdparty)
+
+if(SOUI_ENABLE_ACC)
+    add_definitions(-DSOUI_ENABLE_ACC)
+endif()
+if(CMAKE_SYSTEM_NAME MATCHES "OHOS|OpenHarmony|HarmonyOS|Android")
+include(mobile.cmake)
+elseif(CMAKE_SYSTEM_NAME MATCHES "iOS")
+include(ios.cmake)
+elseif(CMAKE_SYSTEM_NAME MATCHES Darwin)
+include(macos.cmake)
+else()
+include(linux.cmake)
+endif()
+
+if(SOUI_ENABLE_CORE_LIB)
+target_compile_options(swinx PRIVATE -fPIC)
+endif()
+
+# Stricter warnings for the swinx module itself (PRIVATE scope keeps
+# thirdparty unaffected). GCC/Clang only; swinx is not built with MSVC.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(swinx PRIVATE -Wall -Wextra)
+endif()
+set_target_properties (swinx PROPERTIES
+    FOLDER swinx
+)
+
+set(SOUI_SWINX swinx CACHE INTERNAL "swinx_lib")
+
+install(TARGETS swinx
+    CONFIGURATIONS Release
+    RUNTIME DESTINATION bin/Release
+    LIBRARY DESTINATION lib/Release
+    ARCHIVE DESTINATION lib/Release
+)
+
+
+install(TARGETS swinx
+    CONFIGURATIONS Debug
+    RUNTIME DESTINATION bin/Debug
+    LIBRARY DESTINATION lib/Debug
+    ARCHIVE DESTINATION lib/Debug
+)
+
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include" DESTINATION include/swinx)
+
+
+

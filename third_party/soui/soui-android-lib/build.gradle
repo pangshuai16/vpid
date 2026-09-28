@@ -1,0 +1,39 @@
+plugins {
+    id 'com.android.library'
+}
+// SOUI 根目录路径
+def souiRootDir = "${projectDir.absolutePath.replace('\\', '/')}/.."
+android {
+    namespace 'com.soui.android'
+    compileSdk 34
+
+    defaultConfig {
+        minSdk 28
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+
+        // 注：本模块不再编译 native。SOUI 核心与 Android JNI 桥（libsoui4android.so）
+        // 由各业务 app 在其自己的 CMake 中通过 soui4_android.cmake 统一编译，
+        // 以避免跨模块的 .so 产物依赖。
+        ndk {
+            abiFilters 'x86', 'arm64-v8a', 'x86_64', 'armeabi-v7a'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+}

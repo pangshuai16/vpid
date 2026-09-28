@@ -1,0 +1,64 @@
+cmake_minimum_required(VERSION 3.10)
+set(CMAKE_CXX_STANDARD 11)
+include_directories(${SOUI_ROOT_DIR}/utilities/include)
+include_directories(${SOUI_ROOT_DIR}/SOUI/include)
+
+file(GLOB HEADERS src/*.h)
+file(GLOB SOURCES src/*.cpp)
+
+source_group("Header Files" FILES ${HEADERS})
+source_group("Source Files" FILES ${SOURCES})
+
+project(ws)
+include_directories(${SOUI_ROOT_DIR}/include)
+
+if (NOT SOUI_ENABLE_COM_LIB)
+    add_library(${PROJECT_NAME} SHARED ${SOURCES} ${HEADERS} ws.rc)
+else()
+    add_library(${PROJECT_NAME} STATIC ${SOURCES})
+endif()
+target_link_libraries(${PROJECT_NAME} PUBLIC  websockets utilities4)
+if(NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
+    target_link_libraries(${PROJECT_NAME} PUBLIC swinx)
+endif()
+
+get_target_property(websockets_includes websockets INTERFACE_INCLUDE_DIRECTORIES)
+
+target_include_directories(${PROJECT_NAME} PRIVATE ${websockets_includes})
+
+set(COM_LIBS ${COM_LIBS} ${PROJECT_NAME} CACHE INTERNAL "com_lib")
+
+set_target_properties (${PROJECT_NAME} PROPERTIES
+    FOLDER components
+)
+
+install(TARGETS ${PROJECT_NAME}
+    CONFIGURATIONS Release
+    RUNTIME DESTINATION bin/Release
+    LIBRARY DESTINATION lib/Release
+    ARCHIVE DESTINATION lib/Release
+)
+
+install(TARGETS ${PROJECT_NAME}
+    CONFIGURATIONS Debug
+    RUNTIME DESTINATION bin/Debug
+    LIBRARY DESTINATION lib/Debug
+    ARCHIVE DESTINATION lib/Debug
+)
+
+
+if(0)
+project(ServerTest)
+add_executable(${PROJECT_NAME} test/ServerTest.cpp)
+if(NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
+    target_link_libraries(${PROJECT_NAME} swinx)
+endif()
+
+project(ClientTest)
+add_executable(${PROJECT_NAME} test/ClientTest.cpp)
+if(NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
+    target_link_libraries(${PROJECT_NAME} swinx)
+endif()
+endif()
+
+

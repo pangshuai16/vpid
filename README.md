@@ -122,7 +122,7 @@ platform/
 src/platform/legacy/         # 旧 UI 回退（可选，非默认）
     win32/main.cpp            # MinGW 原生 Win32 UI
     gtk/main.cpp              # Linux GTK3 UI
-third_party/soui/             # SOUI5 vendored 源码（含 swinx submodule + XP 兼容补丁）
+third_party/soui/             # SOUI5 vendored 源码（含 swinx 跨平台兼容层 + XP 兼容补丁）
 build_msvc_soui.bat           # MSVC+SOUI 一键构建（VS2017 x86）
 assets/                       # 仓库文档 / 发布用图标
 .github/workflows/

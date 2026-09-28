@@ -1,0 +1,58 @@
+add_definitions(-DSTBIW_WINDOWS_UTF8)
+set(imgdecoder-stb_header
+	imgdecoder-stb.h
+	${SOUI_ROOT_DIR}/third-part/stb/stb_image.h
+    ${SOUI_ROOT_DIR}/third-part/pbl_aupng/include/upng.h
+)
+
+set(imgdecoder-stb_src
+    imgdecoder-stb.cpp
+)
+
+source_group("Header Files" FILES ${imgdecoder-stb_header})
+source_group("Source Files" FILES ${imgdecoder-stb_src})
+
+if (NOT SOUI_ENABLE_COM_LIB)
+    set (imgdecoder-stb_src  ${imgdecoder-stb_src} imgdecoder-stb.rc)
+    add_library(imgdecoder-stb SHARED ${imgdecoder-stb_src} ${imgdecoder-stb_header})
+else()
+    add_library(imgdecoder-stb STATIC ${imgdecoder-stb_src} ${imgdecoder-stb_header})
+    target_compile_definitions(imgdecoder-stb
+      PUBLIC SOUI_IMAGE_DECODER_USE_STB_STATIC
+    )
+endif()
+target_link_libraries(imgdecoder-stb utilities4 aupng)
+if(SOUI_ENABLE_COM_LIB)
+    set(COM_DEP_LIBS ${COM_DEP_LIBS} aupng CACHE INTERNAL "com_dep_libs")
+endif()
+
+target_compile_definitions(imgdecoder-stb
+  PUBLIC SOUI_IMAGE_DECODER_USE_STB
+)
+
+target_include_directories(imgdecoder-stb
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+  PRIVATE ${SOUI_ROOT_DIR}/utilities/include
+  PRIVATE ${SOUI_ROOT_DIR}/SOUI/include
+  PRIVATE ${SOUI_ROOT_DIR}/third-part/stb
+  PRIVATE ${SOUI_ROOT_DIR}/third-part/pbl_aupng/include
+)
+
+set(COM_LIBS ${COM_LIBS} imgdecoder-stb CACHE INTERNAL "com_lib")
+set_target_properties (imgdecoder-stb PROPERTIES
+    FOLDER components/imgdecoder
+)
+
+install(TARGETS imgdecoder-stb
+    CONFIGURATIONS Release
+    RUNTIME DESTINATION bin/Release
+    LIBRARY DESTINATION lib/Release
+    ARCHIVE DESTINATION lib/Release
+)
+
+install(TARGETS imgdecoder-stb
+    CONFIGURATIONS Debug
+    RUNTIME DESTINATION bin/Debug
+    LIBRARY DESTINATION lib/Debug
+    ARCHIVE DESTINATION lib/Debug
+)

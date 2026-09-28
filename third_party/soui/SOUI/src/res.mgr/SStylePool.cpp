@@ -1,0 +1,76 @@
+﻿#include "souistd.h"
+#include "res.mgr/SStylePool.h"
+
+SNSBEGIN
+
+///////////////////////////////////////////////////////////////////////
+/** SStylePool */
+
+/** Get style object from pool by class name */
+SXmlNode SStylePool::GetStyle(const SStringW &strName)
+{
+    if (!HasKey(strName))
+        return SXmlNode();
+    return GetKeyObject(strName);
+}
+
+/** Load style-pool from xml tree */
+BOOL SStylePool::Init(SXmlNode xmlStyleRoot)
+{
+    if (!xmlStyleRoot)
+        return FALSE;
+
+    xmlStyleRoot = m_xmlDoc.root().append_copy(xmlStyleRoot);
+
+    for (SXmlNode xmlChild = xmlStyleRoot.first_child(); xmlChild; xmlChild = xmlChild.next_sibling())
+    {
+        SStringW strClsName = xmlChild.name();
+        if (strClsName.CompareNoCase(L"class") == 0)
+        {
+            strClsName = xmlChild.attribute(L"name").value();
+            if (strClsName.IsEmpty())
+                continue;
+            xmlChild.remove_attribute(L"name"); // Remove the name attribute to prevent it from being processed
+        }
+        SASSERT(!xmlChild.attribute(L"name"));
+        AddKeyObject(strClsName, xmlChild);
+    }
+
+    return TRUE;
+}
+
+//////////////////////////////////////////////////////////////////
+BOOL STemplatePool::Init(SXmlNode xmlNode)
+{
+    if (!xmlNode)
+        return FALSE;
+    for (SXmlNode xmlChild = xmlNode.first_child(); xmlChild; xmlChild = xmlChild.next_sibling())
+    {
+        SStringW strTempName = xmlChild.name();
+        SXmlNode xmlNode = xmlChild.first_child();
+        SStringW strValue;
+        while (xmlNode)
+        {
+            SStringW strXml;
+            xmlNode.ToString(&strXml);
+            strValue += strXml;
+            xmlNode = xmlNode.next_sibling();
+        }
+        AddKeyObject(strTempName, strValue);
+    }
+    m_templateDoc.root().append_copy(xmlNode);
+    return TRUE;
+}
+
+SStringW STemplatePool::GetTemplateString(const SStringW &strName) const
+{
+    SStringW strRet;
+    GetKeyObject(strName, strRet);
+    return strRet;
+}
+
+SXmlNode STemplatePool::GetTemplate(const SStringW &strName) const
+{
+    return m_templateDoc.root().first_child().child(strName);
+}
+SNSEND

@@ -1,0 +1,4881 @@
+#include "SConnection.h"
+#include "xcb_event32.h"
+#include <assert.h>
+#include <functional>
+#include <xcb/xcb_icccm.h>
+#include <xcb/render.h>
+#include <xcb/xcb_renderutil.h>
+#include <xcb/xcb_image.h>
+#include <xcb/xcb_aux.h>
+#include <xcb/shape.h>
+#include <xcb/xfixes.h>
+#include <xcb/randr.h>
+#include <algorithm>
+#include <sstream>
+#include <string>
+#include <math.h>
+#include <linux/input.h>
+#include <sys/ioctl.h>
+#include <dirent.h>
+#include <unistd.h>      // For pipe(), read(), write(), close()
+#include <poll.h>        // For poll()
+#include <errno.h>       // For errno
+#include "cursormgr.h"
+#include "uimsg.h"
+#include "keyboard.h"
+#include "SClipboard.h"
+#include "SDragdrop.h"
+#include "gdi/cairo/FontFallback.h"
+#include "tostring.h"
+#include "clsmgr.h"
+#include "wndobj.h"
+#include <fontconfig/fontconfig.h>
+#include "log.h"
+#define kLogTag "SConnection"
+
+static SConnMgr *s_connMgr = NULL;
+
+#if defined(SOUI_ENABLE_ACC) && !defined(__ANDROID__) && !defined(__OHOS__) && !defined(OHOS)
+/* AT-SPI 无障碍桥的入口（swinx/src/platform/linux/SAtSpi.cpp）。桌面 Linux 上
+ * SAtSpi.cpp 与本文件同属 swinx 目标，直接链接即可。不编译 SAtSpi.cpp 的平台
+ * （OpenHarmony 走 mobile.cmake）同时 SOUI_ENABLE_ACC 也被强制为 OFF，本段
+ * 代码整体裁掉，不存在链接问题。 */
+extern "C" void SwinxAtSpiInit(void);
+#define SWINX_CONN_ACC_EAGER_INIT 1
+#endif
+
+static std::recursive_mutex s_cs;
+typedef std::lock_guard<std::recursive_mutex> SAutoLock;
+
+using namespace swinx;
+
+// xcb-icccm 3.8 support
+#ifdef XCB_ICCCM_NUM_WM_SIZE_HINTS_ELEMENTS
+#define xcb_get_wm_hints_reply         xcb_icccm_get_wm_hints_reply
+#define xcb_get_wm_hints               xcb_icccm_get_wm_hints
+#define xcb_get_wm_hints_unchecked     xcb_icccm_get_wm_hints_unchecked
+#define xcb_set_wm_hints               xcb_icccm_set_wm_hints
+#define xcb_set_wm_normal_hints        xcb_icccm_set_wm_normal_hints
+#define xcb_size_hints_set_base_size   xcb_icccm_size_hints_set_base_size
+#define xcb_size_hints_set_max_size    xcb_icccm_size_hints_set_max_size
+#define xcb_size_hints_set_min_size    xcb_icccm_size_hints_set_min_size
+#define xcb_size_hints_set_position    xcb_icccm_size_hints_set_position
+#define xcb_size_hints_set_resize_inc  xcb_icccm_size_hints_set_resize_inc
+#define xcb_size_hints_set_size        xcb_icccm_size_hints_set_size
+#define xcb_size_hints_set_win_gravity xcb_icccm_size_hints_set_win_gravity
+#define xcb_wm_hints_set_iconic        xcb_icccm_wm_hints_set_iconic
+#define xcb_wm_hints_set_normal        xcb_icccm_wm_hints_set_normal
+#define xcb_wm_hints_set_input         xcb_icccm_wm_hints_set_input
+#define xcb_wm_hints_t                 xcb_icccm_wm_hints_t
+#define XCB_WM_STATE_ICONIC            XCB_ICCCM_WM_STATE_ICONIC
+#define XCB_WM_STATE_WITHDRAWN         XCB_ICCCM_WM_STATE_WITHDRAWN
+#endif
+
+SConnMgr *SConnMgr::instance()
+{
+    if (!s_connMgr)
+    {
+        bool bCreated = false;
+        {
+            SAutoLock lock(s_cs);
+            if (!s_connMgr)
+            {
+                static SConnMgr inst;
+                s_connMgr = &inst;
+                bCreated = true;
+            }
+        }
+#ifdef SWINX_CONN_ACC_EAGER_INIT
+        /* ACC 桥的主动初始化必须放在 inst 完整构造之后、且不持有 s_cs：
+         * 桥内 EnsureInit 会经 SetTimer(NULL,...)（wnd.cpp）回到 instance()，
+         * 若仍在 `static SConnMgr inst` 的初始化守卫（__cxa_guard）动态范围内
+         * 递归进入，对同一 guard 的第二次 acquire 将永久阻塞——C++ 静态局部
+         * 变量的初始化守卫不可重入（与 s_cs 的 recursive_mutex 无关，leak.log
+         * 曾捕获此死锁栈）。此时 s_connMgr 已就位，重入路径直接返回；桥内
+         * 还可能触发 getConnection 建连，不应在持锁状态下进行。 */
+        if (bCreated)
+            SwinxAtSpiInit();
+#endif
+    }
+    return s_connMgr;
+}
+
+//----------------------------------------------------------
+SConnMgr::SConnMgr()
+{
+    m_hHeap = HeapCreate(0, 0, 0);
+    // kick off the background system-font enumeration for glyph fallback so
+    // the first text draws never wait for a fontconfig scan
+    SwinXFontFallbackPrefetch();
+    /* 注意：不要在构造函数里调用 SwinxAtSpiInit()——见 instance() 内的注释，
+     * ACC 桥初始化会重入 instance()，与静态局部变量的初始化守卫冲突。
+     * ACC 的主动初始化已移至 instance() 首次创建完成后执行。 */
+}
+
+SConnMgr::~SConnMgr()
+{
+    SAutoWriteLock autoLock(m_rwLock);
+    auto it = m_conns.begin();
+    while (it != m_conns.end())
+    {
+        delete it->second;
+        it++;
+    }
+    m_conns.clear();
+    CloseHandle(m_hHeap);
+
+    // Release cairo and fontconfig global caches so valgrind does not report
+    // their one-shot allocations as leaks at process exit.
+    // Safe now: every SConnection finished its cairo device BEFORE
+    // xcb_disconnect, which closed the xcb fonts (freeing glyph sets while
+    // the X connection was valid) and detached their privates from cached
+    // scaled fonts. Resetting cairo static data therefore no longer touches
+    // the X connection.
+    // Join the font enumeration thread and free its patterns first: its
+    // FcPattern objects must be released while fontconfig is still alive.
+    SwinXFontFallbackShutdown();
+    cairo_debug_reset_static_data();
+    FcFini();
+}
+
+void SConnMgr::removeConn(SConnection *pObj)
+{
+    SAutoWriteLock autoLock(m_rwLock);
+    tid_t tid = (tid_t)pthread_self();
+    auto it = m_conns.find(tid);
+    if (it == m_conns.end())
+    {
+        return;
+    }
+    assert(it->second == pObj);
+    delete it->second;
+    m_conns.erase(it);
+}
+
+SConnection *SConnMgr::getConnection(tid_t tid_, int screenNum)
+{
+    tid_t tid = tid_ != 0 ? tid_ : (tid_t)pthread_self();
+    {
+        SAutoReadLock autoLock(m_rwLock);
+        auto it = m_conns.find(tid);
+        if (it != m_conns.end())
+        {
+            return it->second;
+        }
+        if (tid_ != 0)
+            return nullptr;
+    }
+    {
+        // new connection for this thread
+        SAutoWriteLock autoLock(m_rwLock);
+        SConnection *state = new SConnection(screenNum);
+        m_conns[tid] = state;
+        return state;
+    }
+}
+
+uint32_t SConnection::GetDoubleClickSpan()
+{
+    uint32_t ret = 400;
+    
+    if (!screen)
+    {
+        SLOG_STMW() << "Screen is NULL, using default double click span";
+        return ret;
+    }
+    
+    xcb_window_t root_window = screen->root;
+
+    xcb_get_property_cookie_t cookie = xcb_get_property(connection, 0, root_window, atoms._NET_DOUBLE_CLICK_TIME, XCB_ATOM_CARDINAL, 0, 1024);
+    xcb_get_property_reply_t *reply = xcb_get_property_reply(connection, cookie, NULL);
+    if (reply == NULL)
+    {
+        fprintf(stderr, "Failed to get property value\n");
+        return ret;
+    }
+
+    if (reply->value_len == 1)
+    {
+        ret = *((uint32_t *)xcb_get_property_value(reply));
+    }
+    free(reply);
+    return ret;
+}
+
+void SConnection::xim_forward_event(xcb_xim_t *im __attribute__((unused)), xcb_xic_t ic __attribute__((unused)), xcb_key_press_event_t *event, void *user_data)
+{
+    SConnection *conn = (SConnection *)user_data;
+    conn->pushEvent((xcb_generic_event_t *)event);
+}
+
+void SConnection::xim_commit_string(xcb_xim_t *im, xcb_xic_t ic __attribute__((unused)), uint32_t flag __attribute__((unused)), char *str, uint32_t length, uint32_t *keysym __attribute__((unused)), size_t nKeySym __attribute__((unused)), void *user_data)
+{
+    SConnection *conn = (SConnection *)user_data;
+    const char *utf8 = nullptr;
+    if (xcb_xim_get_encoding(im) == XCB_XIM_UTF8_STRING)
+    {
+        utf8 = str;
+    }
+    else if (xcb_xim_get_encoding(im) == XCB_XIM_COMPOUND_TEXT)
+    {
+        size_t newLength = 0;
+        utf8 = xcb_compound_text_to_utf8(str, length, &newLength);
+        length = newLength;
+    }
+    if (utf8)
+    {
+        // SLOG_FMTI("key commit: %.*s\n", l, utf8);
+        std::wstring buf;
+        towstring(utf8, length, buf);
+        for (int i = 0; i < (int)buf.length(); i++)
+        {
+            SLOG_STMI() << "commit text " << i << " is " << buf.c_str()[i];
+            Msg *pMsg = new Msg;
+            pMsg->hwnd = conn->m_hFocus;
+            pMsg->message = WM_IME_CHAR;
+            pMsg->wParam = buf.c_str()[i];
+            pMsg->lParam = 0;
+            pMsg->time = GetTickCount();
+            conn->postMsg(pMsg);
+        }
+    }
+}
+
+void SConnection::xim_logger(const char *fmt, ...)
+{
+    va_list argp, argp2;
+    va_start(argp, fmt);
+    va_copy(argp2, argp);
+    int len = vsnprintf(NULL, 0, fmt, argp);
+    char *buf = (char *)malloc(len + 1);
+    vsnprintf(buf, len + 1, fmt, argp2);
+    SLOG_STMD() << "xim_logger:" << buf;
+    free(buf);
+    va_end(argp);
+}
+
+void SConnection::xim_create_ic_callback(xcb_xim_t *im, xcb_xic_t new_ic, void *user_data)
+{
+    HWND hWnd = (HWND)user_data;
+    WndObj wndObj = WndMgr::fromHwnd(hWnd);
+    if (!wndObj)
+        return;
+    HIMC hIMC = ImmGetContext(hWnd);
+
+    hIMC->xic = new_ic;
+    if (new_ic && wndObj->mConnection->GetFocus() == hWnd)
+    {
+        // delay set ic focus
+        xcb_xim_set_ic_focus(im, new_ic);
+    }
+    ImmReleaseContext(hWnd, hIMC);
+}
+
+void SConnection::xim_open_callback(xcb_xim_t *im, void *user_data)
+{
+    HWND hWnd = (HWND)user_data;
+    WndObj wndObj = WndMgr::fromHwnd(hWnd);
+    if (!wndObj)
+        return;
+    uint32_t input_style = XCB_IM_PreeditPosition | XCB_IM_StatusArea;
+    xcb_point_t spot;
+    spot.x = wndObj->mConnection->m_caretInfo.x;
+    spot.y = wndObj->mConnection->m_caretInfo.y + wndObj->mConnection->m_caretInfo.nHeight;
+    HIMC hIMC = ImmGetContext(hWnd);
+    if (!hIMC)
+        return;
+    xcb_xim_nested_list nested = xcb_xim_create_nested_list(im, XCB_XIM_XNSpotLocation, &spot, NULL);
+    xcb_window_t wnd = (xcb_window_t)hWnd;
+    if (0 && hIMC->xic)
+    {
+        xcb_xim_set_ic_values(im, hIMC->xic, nullptr, NULL, XCB_XIM_XNInputStyle, &input_style, XCB_XIM_XNClientWindow, &wnd, XCB_XIM_XNFocusWindow, &wnd, XCB_XIM_XNPreeditAttributes, &nested, NULL);
+        xcb_xim_set_ic_focus(im, hIMC->xic);
+    }
+    else
+    {
+        xcb_xim_create_ic(im, xim_create_ic_callback, user_data, XCB_XIM_XNInputStyle, &input_style, XCB_XIM_XNClientWindow, &wnd, XCB_XIM_XNFocusWindow, &wnd, XCB_XIM_XNPreeditAttributes, &nested, NULL);
+    }
+    free(nested.data);
+    ImmReleaseContext(hWnd, hIMC);
+}
+
+SConnection::SConnection(int screenNum)
+    : m_hook_table(nullptr)
+    , connection(nullptr)
+    , m_keyboard(nullptr)
+    , m_xim(nullptr)
+{
+    connection = xcb_connect(nullptr, &screenNum);
+    if (int errCode = xcb_connection_has_error(connection) > 0)
+    {
+        printf("XCB Error: %d\n", errCode);
+        SLOG_STME()<<"xcb_connect failed, error="<<errCode;
+        connection = NULL;
+        return;
+    }
+
+    /* Get the screen whose number is screenNum */
+
+    m_setup = xcb_get_setup(connection);
+    xcb_screen_iterator_t iter = xcb_setup_roots_iterator(m_setup);
+
+    // we want the screen at index screenNum of the iterator
+    for (int i = 0; i < screenNum; ++i)
+    {
+        xcb_screen_next(&iter);
+    }
+    if (!iter.data)
+    {
+        // get the first screen
+        iter = xcb_setup_roots_iterator(m_setup);
+    }
+    screen = iter.data;
+    if(screen){
+        xcb_depth_iterator_t depth_iter = xcb_screen_allowed_depths_iterator(screen);
+        for (; depth_iter.rem && rgba_visual == 0; xcb_depth_next(&depth_iter))
+        {
+            if (depth_iter.data->depth == 32)
+            {
+                xcb_visualtype_iterator_t visual_iter = xcb_depth_visuals_iterator(depth_iter.data);
+                for (; visual_iter.rem; xcb_visualtype_next(&visual_iter))
+                {
+                    xcb_visualtype_t *visual_type = visual_iter.data;
+                    if (visual_type->_class == XCB_VISUAL_CLASS_TRUE_COLOR && visual_type->red_mask == 0xFF0000 && visual_type->green_mask == 0x00FF00 && visual_type->blue_mask == 0x0000FF)
+                    {
+                        rgba_visual = visual_type;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    readXResources();
+    initializeXFixes();
+    atoms.Init(connection, screenNum);
+    if (rgba_visual)
+    { // get composited for screen
+        char szAtom[50];
+        sprintf(szAtom, "_NET_WM_CM_S%d", screenNum);
+        xcb_atom_t atom = SAtoms::registerAtom(szAtom,connection);
+        xcb_get_selection_owner_cookie_t owner_cookie = xcb_get_selection_owner(connection, atom);
+        xcb_get_selection_owner_reply_t *owner_reply = xcb_get_selection_owner_reply(connection, owner_cookie, NULL);
+        m_bComposited = owner_reply->owner != 0;
+        free(owner_reply);
+//        SLOG_STMI() << "enable composite=" << m_bComposited;
+    }
+    m_tid = GetCurrentThreadId();
+
+    do{//init settings owner
+        xcb_get_selection_owner_cookie_t selection_cookie = xcb_get_selection_owner(connection, atoms._XSETTINGS_S0);
+        xcb_generic_error_t *error = nullptr;
+        xcb_get_selection_owner_reply_t *selection_result = xcb_get_selection_owner_reply(connection, selection_cookie, &error);
+        if (error) {
+            free(error);
+            break;
+        }
+        m_setting_owner = selection_result->owner;
+        free(selection_result);
+        if (!m_setting_owner) {
+            break;
+        }
+        const uint32_t event = XCB_CW_EVENT_MASK;
+        const uint32_t event_mask[] = { XCB_EVENT_MASK_STRUCTURE_NOTIFY|XCB_EVENT_MASK_PROPERTY_CHANGE };
+        xcb_change_window_attributes(connection,m_setting_owner,event,event_mask);
+    }while(0);
+
+
+    m_tsDoubleSpan = GetDoubleClickSpan();
+
+    m_bQuit = false;
+    m_msgPeek = nullptr;
+    m_bMsgNeedFree = false;
+    m_hWndCapture = 0;
+    m_hWndActive = 0;
+    m_hFocus = 0;
+    m_hWndLastMouseMove = 0;
+    m_bBlockTimer = false;
+
+    // Initialize desktop DC and bitmap with fallback for NULL screen
+    m_deskDC = new _SDC(screen?screen->root:0);
+    if (screen)
+    {
+        m_rcWorkArea.right = screen->width_in_pixels;
+        m_rcWorkArea.bottom = screen->height_in_pixels;
+    }
+    else
+    {
+        // Fallback: use default values when screen is NULL
+        SLOG_STMW() << "Screen is NULL, using fallback values for desktop DC and work area";
+        m_rcWorkArea.right = 1920;  // Default width
+        m_rcWorkArea.bottom = 1080; // Default height
+    }
+    
+    m_deskBmp = CreateCompatibleBitmap(m_deskDC, 1, 1);
+    SelectObject(m_deskDC, m_deskBmp);
+    memset(&m_caretInfo, 0, sizeof(m_caretInfo));
+    m_rcWorkArea.left = m_rcWorkArea.top = 0;
+
+    m_evtSync = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    
+    // Create pipe for waking up event reader thread (works without screen)
+    if (pipe(m_wakeupPipe) != 0)
+    {
+        SLOG_STME() << "Failed to create wakeup pipe: " << strerror(errno);
+        m_wakeupPipe[0] = m_wakeupPipe[1] = -1;
+    }
+    else
+    {
+        // Set non-blocking mode for read end
+        int flags = fcntl(m_wakeupPipe[0], F_GETFL, 0);
+        fcntl(m_wakeupPipe[0], F_SETFL, flags | O_NONBLOCK);
+    }
+    m_trdEvtReader = std::move(std::thread(std::bind(&readProc, this)));
+
+    xcb_compound_text_init();
+    m_xim = xcb_xim_create(connection, screenNum, NULL);
+
+    xcb_xim_im_callback xim_callback = {};
+    xim_callback.forward_event = &SConnection::xim_forward_event;
+    xim_callback.commit_string = &SConnection::xim_commit_string;
+    xcb_xim_set_im_callback(m_xim, &xim_callback, this);
+    xcb_xim_set_log_handler(m_xim, xim_logger);
+    xcb_xim_set_use_compound_text(m_xim, true);
+    xcb_xim_set_use_utf8_string(m_xim, true);
+
+    m_keyboard = new SKeyboard(this);
+    m_trayIconMgr = new STrayIconMgr(this);
+    m_clipboard = new SClipboard(this);
+}
+
+SConnection::~SConnection()
+{
+    if (!connection)
+    {
+        return;
+    }
+    if (m_xim)
+    {
+        xcb_xim_close(m_xim);
+        xcb_xim_destroy(m_xim);
+        m_xim = nullptr;
+    }
+
+    delete m_keyboard;
+    delete m_clipboard;
+    delete m_trayIconMgr;
+    delete m_deskDC;
+    clearSystemCursor();
+    DeleteObject(m_deskBmp);
+    DestroyCaret();
+
+    // Wake up event reader thread using pipe (works without screen)
+    m_bQuit = true;
+    if (m_wakeupPipe[1] >= 0)
+    {
+        char dummy = 1;
+        write(m_wakeupPipe[1], &dummy, 1);
+    }
+    
+    // Join the event reader thread
+    if (m_trdEvtReader.joinable())
+    {
+        m_trdEvtReader.join();
+    }
+    
+    // Close pipe file descriptors
+    if (m_wakeupPipe[0] >= 0)
+        close(m_wakeupPipe[0]);
+    if (m_wakeupPipe[1] >= 0)
+        close(m_wakeupPipe[1]);
+    m_wakeupPipe[0] = m_wakeupPipe[1] = -1;
+
+    // Finish the cairo xcb device BEFORE disconnecting the X connection:
+    // cairo_device_finish runs the xcb backend's finish which closes cached
+    // xcb fonts (render_free_glyph_set) and finishes every screen (freeing
+    // glyph/pattern/solid-picture caches). Doing this while the connection
+    // is still valid is safe; doing it after xcb_disconnect is a
+    // use-after-free. Scaled fonts cached in cairo's static font map have
+    // their xcb privates detached here, so freeing them later (via
+    // cairo_debug_reset_static_data in ~SConnMgr) no longer touches the X
+    // connection.
+    if (m_cairoDevice)
+    {
+        cairo_device_finish(m_cairoDevice);
+        cairo_device_destroy(m_cairoDevice);
+        m_cairoDevice = nullptr;
+    }
+    xcb_disconnect(connection);
+
+    for (auto it : m_msgQueue)
+    {
+        delete it;
+    }
+    m_msgQueue.clear();
+    if (m_msgPeek && m_bMsgNeedFree)
+    {
+        delete m_msgPeek;
+        m_msgPeek = nullptr;
+        m_bMsgNeedFree = false;
+    }
+    for (auto it = m_msgStack.rbegin(); it != m_msgStack.rend(); it++)
+    {
+        delete *it;
+    }
+    m_msgStack.clear();
+
+    CloseHandle(m_evtSync);
+}
+
+void SConnection::readXResources()
+{
+    if (!screen)
+    {
+        SLOG_STMW() << "Screen is NULL, cannot read X resources";
+        return;
+    }
+    
+    int offset = 0;
+    std::stringstream resources;
+    while (1)
+    {
+        xcb_get_property_reply_t *reply = xcb_get_property_reply(connection, xcb_get_property_unchecked(connection, false, screen->root, XCB_ATOM_RESOURCE_MANAGER, XCB_ATOM_STRING, offset / 4, 8192), NULL);
+        bool more = false;
+        if (reply && reply->format == 8 && reply->type == XCB_ATOM_STRING)
+        {
+            int len = xcb_get_property_value_length(reply);
+            resources << std::string((const char *)xcb_get_property_value(reply), len);
+            offset += len;
+            more = reply->bytes_after != 0;
+        }
+
+        if (reply)
+            free(reply);
+
+        if (!more)
+            break;
+    }
+
+    std::string line;
+    static const char kDpiDesc[] = "Xft.dpi:\t";
+    while (std::getline(resources, line, '\n'))
+    {
+        if (line.length() > ARRAYSIZE(kDpiDesc) - 1 && strncmp(line.c_str(), kDpiDesc, ARRAYSIZE(kDpiDesc) - 1) == 0)
+        {
+            m_forceDpi = atoi(line.c_str() + ARRAYSIZE(kDpiDesc) - 1);
+            break;
+        }
+    }
+}
+
+void SConnection::initializeXFixes()
+{
+    xcb_generic_error_t *error = 0;
+    const xcb_query_extension_reply_t *reply = xcb_get_extension_data(connection, &xcb_xfixes_id);
+    if (!reply || !reply->present)
+        return;
+
+    xfixes_first_event = reply->first_event;
+    xcb_xfixes_query_version_cookie_t xfixes_query_cookie = xcb_xfixes_query_version(connection, XCB_XFIXES_MAJOR_VERSION, XCB_XFIXES_MINOR_VERSION);
+    xcb_xfixes_query_version_reply_t *xfixes_query = xcb_xfixes_query_version_reply(connection, xfixes_query_cookie, &error);
+    if (!xfixes_query || error || xfixes_query->major_version < 2)
+    {
+        SLOG_STMW() << "SConnection: Failed to initialize XFixes";
+        free(error);
+        xfixes_first_event = 0;
+    }
+    free(xfixes_query);
+//    SLOG_STMI() << "hasXFixes()=" << hasXFixes();
+}
+
+void SConnection::clearSystemCursor()
+{
+    for (auto it : m_sysCursor)
+    {
+        xcb_free_cursor(connection, it.second);
+    }
+    m_sysCursor.clear();
+}
+
+bool SConnection::event2Msg(bool bTimeout, int elapse, uint64_t ts)
+{
+    if (m_bQuit)
+        return false;
+    bool bRet = false;
+    if (!bTimeout)
+    {
+        std::unique_lock<std::mutex> lock(m_mutex4Evt);
+        for (auto it : m_evtQueue)
+        {
+            bool accepted = false;
+            if (m_clipboard->processIncr())
+                m_clipboard->incrTransactionPeeker(it, accepted);
+            if (!accepted)
+            {
+                if (!xcb_xim_filter_event(m_xim, it))
+                {
+                    bool bForward = false;
+                    uint8_t event_code = it->response_type & 0x7f;
+                    if (event_code == XCB_KEY_PRESS || event_code == XCB_KEY_RELEASE)
+                    {
+                        HIMC hIMC = ImmGetContext(m_hFocus);
+                        if (hIMC && hIMC->xic)
+                        {
+                            bForward = xcb_xim_forward_event(m_xim, hIMC->xic, (xcb_key_press_event_t *)it);
+                        }
+                        if (hIMC) {
+                            ImmReleaseContext(m_hFocus, hIMC);
+                        }
+                    }
+                    if (!bForward)
+                        pushEvent(it);
+                }
+            }
+            free(it);
+        }
+        bRet = !m_evtQueue.empty();
+        m_evtQueue.clear();
+    }
+    if (!m_bBlockTimer)
+    {
+        static const int kMaxDalayMsg = 5; // max delay ms for a timer.
+        std::unique_lock<CountMutex> lock(m_mutex4Msg);
+        int msgQueueSize = (int)m_msgQueue.size();
+        int elapse2 = elapse + std::min(msgQueueSize, kMaxDalayMsg);
+        POINT pt;
+        GetCursorPos(&pt);
+        for (auto &it : m_lstTimer)
+        {
+            if ((int)it.fireRemain <= elapse2)
+            {
+                // fire timer event
+                Msg *pMsg = new Msg;
+                pMsg->hwnd = it.hWnd;
+                pMsg->message = WM_TIMER;
+                pMsg->wParam = it.id;
+                pMsg->lParam = (LPARAM)it.proc;
+                pMsg->time = ts;
+                pMsg->pt = pt;
+                m_msgQueue.push_back(pMsg);
+                it.fireRemain = it.elapse;
+                bRet = true;
+            }
+            else
+            {
+                it.fireRemain -= elapse;
+            }
+        }
+    }
+    return bRet;
+}
+
+bool SConnection::waitMsg(UINT timeOut )
+{
+    if (!m_bBlockTimer)
+    {
+        std::unique_lock<CountMutex> lock(m_mutex4Msg);
+        for (auto &it : m_lstTimer)
+        {
+            timeOut = std::min(timeOut, it.fireRemain);
+        }
+    }
+    bool bTimeout = WaitForSingleObject(m_evtSync, timeOut) == WAIT_TIMEOUT;
+    uint64_t ts = GetTickCount64();
+    UINT elapse = m_tsLastMsg == (uint64_t)-1 ? 0 : (ts - m_tsLastMsg);
+    m_tsLastMsg = ts;
+    event2Msg(bTimeout, elapse, ts);
+    return !m_msgQueue.empty();
+}
+
+DWORD SConnection::GetMsgPos() const
+{ // todo:hjx
+    if (m_msgPeek)
+    {
+        return MAKELONG(m_msgPeek->pt.x, m_msgPeek->pt.y);
+    }
+    return 0;
+}
+
+LONG SConnection::GetMsgTime() const
+{
+    if (m_msgPeek)
+    {
+        return m_msgPeek->time;
+    }
+    return GetTickCount();
+}
+
+DWORD SConnection::GetQueueStatus(UINT flags)
+{
+    std::unique_lock<CountMutex> lock(m_mutex4Msg);
+    if((flags & QS_ALLINPUT) == QS_ALLINPUT)
+    {
+        return MAKELONG(m_msgQueue.size(), 0);
+    }
+    DWORD ret = 0;
+    for (auto it : m_msgQueue)
+    {
+        switch (it->message)
+        {
+        case WM_PAINT:
+        case UM_MAPNOTIFY:
+            if (flags & QS_PAINT)
+            {
+                ret = MAKELONG(0, it->message);
+            }
+            break;
+        case WM_KEYDOWN:
+        case WM_KEYUP:
+        case WM_SYSKEYDOWN:
+        case WM_SYSKEYUP:
+            if (flags & QS_KEY)
+            {
+                ret = MAKELONG(0, it->message);
+            }
+            break;
+        case WM_MOUSEMOVE:
+        case WM_MOUSEHOVER:
+        case WM_MOUSELEAVE:
+        case UM_XDND_DRAG_ENTER:
+        case UM_XDND_DRAG_OVER:
+        case UM_XDND_DRAG_LEAVE:
+        case UM_XDND_DRAG_DROP:
+        case UM_XDND_FINISH:
+        case UM_XDND_STATUS:
+            if (flags & QS_MOUSEMOVE)
+            {
+                ret = MAKELONG(0, it->message);
+            }
+            break;
+        case WM_TIMER:
+            if (flags & QS_TIMER)
+            {
+                ret = MAKELONG(0, it->message);
+            }
+            break;
+        default:
+            if (it->message >= WM_LBUTTONDOWN && it->message <= WM_XBUTTONDBLCLK && (flags & QS_MOUSEBUTTON))
+            {
+                ret = MAKELONG(0, it->message);
+            }
+            if (it->msgReply)
+            {
+                if (it->msgReply->GetType() == MT_POST && flags & QS_POSTMESSAGE)
+                {
+                    ret = MAKELONG(0, it->message);
+                }
+                else if (it->msgReply->GetType() == MT_SEND && flags & QS_SENDMESSAGE)
+                {
+                    ret = MAKELONG(0, it->message);
+                }
+            }
+            if (flags & (QS_ALLPOSTMESSAGE))
+            {
+                ret = MAKELONG(0, it->message);
+            }
+            break;
+        }
+        if (ret != 0)
+            break;
+    }
+    return ret;
+}
+
+class DefEvtChecker : public IEventChecker {
+  public:
+    int type;
+    DefEvtChecker(int _type)
+        : type(_type)
+    {
+    }
+
+    bool checkEvent(xcb_generic_event_t *e) const
+    {
+        return e->response_type == type;
+    }
+};
+xcb_generic_event_t *SConnection::checkEvent(int type)
+{
+    DefEvtChecker checker(type);
+    return checkEvent(&checker);
+}
+
+xcb_generic_event_t *SConnection::checkEvent(IEventChecker *checker)
+{
+    std::unique_lock<std::mutex> lock(m_mutex4Evt);
+    for (auto it = m_evtQueue.begin(); it != m_evtQueue.end(); it++)
+    {
+        if (checker->checkEvent(*it))
+        {
+            xcb_generic_event_t *ret = *it;
+            m_evtQueue.erase(it);
+            return ret;
+        }
+    }
+    return nullptr;
+}
+
+int SConnection::_waitMutliObjectAndMsg(const HANDLE *handles, int nCount, DWORD to, DWORD dwWaitMask)
+{
+    for (;;)
+    {
+        UINT timeOut = to;
+        if (!m_bBlockTimer)
+        {
+            std::unique_lock<CountMutex> lock(m_mutex4Msg);
+            for (auto &it : m_lstTimer)
+            {
+                timeOut = std::min(timeOut, it.fireRemain);
+            }
+        }
+
+        uint64_t ts1 = GetTickCount64();
+        int ret = WaitForMultipleObjects(nCount, handles, FALSE, timeOut);
+        uint64_t ts2 = GetTickCount64();
+        UINT elapse = ts2 - ts1;
+        if (ret == (int)WAIT_TIMEOUT || ret == (int)(WAIT_OBJECT_0 + nCount - 1))
+        {
+            // the last handle is m_evtSync
+            if (m_bQuit)
+                return WAIT_FAILED;
+            event2Msg(ret == WAIT_TIMEOUT, elapse, ts2);
+            if (dwWaitMask != 0)
+            {
+
+                if (GetQueueStatus(dwWaitMask)!=0)
+                    return WAIT_OBJECT_0 + nCount - 1;
+            }
+            if (to != INFINITE)
+            {
+                if (to <= elapse)
+                    return WAIT_TIMEOUT;
+                to -= elapse;
+            }
+        }
+        else
+        {
+            return ret;
+        }
+    }
+}
+
+int SConnection::waitMutliObjectAndMsg(const HANDLE *handles, int nCount, DWORD to, BOOL fWaitAll, DWORD dwWaitMask)
+{
+    if(nCount == 0 && (dwWaitMask&QS_ALLINPUT) == QS_ALLINPUT)
+    {
+        return waitMsg(to) ? WAIT_OBJECT_0 : WAIT_TIMEOUT;
+    }
+    if (nCount >= MAXIMUM_WAIT_OBJECTS)
+        return -1;
+    HANDLE hs[MAXIMUM_WAIT_OBJECTS] = { 0 };
+    for (int i = 0; i < nCount; i++)
+    {
+        hs[i] = AddHandleRef(handles[i]);
+    }
+    hs[nCount] = m_evtSync;
+    int nSignals = 0;
+    bool hasMsg = false;
+    int ret = 0;
+    for (;;)
+    {
+        ret = _waitMutliObjectAndMsg(hs, nCount + 1, to, dwWaitMask);
+        if (!fWaitAll)
+        {
+            break;
+        }
+        if (ret == (int)WAIT_TIMEOUT || ret == (int)WAIT_FAILED)
+            break;
+        if (ret == (int)(WAIT_OBJECT_0 + nCount))
+            hasMsg = true;
+        else
+        {
+            CloseHandle(hs[ret - WAIT_OBJECT_0]);
+            hs[ret - WAIT_OBJECT_0] = INVALID_HANDLE_VALUE;
+            nSignals++;
+        }
+        if (nSignals == nCount && hasMsg)
+        { // all handles were signaled.
+            ret = WAIT_OBJECT_0;
+            break;
+        }
+    }
+    for (int i = 0; i < nCount; i++)
+    {
+        CloseHandle(hs[i]);
+    }
+    return ret;
+}
+
+SHORT SConnection::GetKeyState(int vk)
+{
+    return m_keyboard->getKeyState((BYTE)vk);
+}
+
+BOOL SConnection::GetKeyboardState(PBYTE lpKeyState)
+{
+    m_keyboard->getKeyboardState(lpKeyState);
+    return TRUE;
+}
+
+SHORT SConnection::GetAsyncKeyState(int vk)
+{
+    return m_keyboard->getKeyState((BYTE)vk);
+}
+
+UINT SConnection::MapVirtualKey(UINT uCode, UINT uMapType) const
+{
+    return m_keyboard->mapVirtualKey(uCode, uMapType);
+}
+
+BOOL SConnection::TranslateMessage(const MSG *pMsg)
+{
+    if (pMsg->message == WM_KEYDOWN || pMsg->message == WM_SYSKEYDOWN)
+    {
+        char c = m_keyboard->scanCodeToAscii(HIWORD(pMsg->lParam));
+        if (c != 0 && !GetKeyState(VK_CONTROL) && !GetKeyState(VK_MENU))
+        {
+            std::unique_lock<CountMutex> lock(m_mutex4Msg);
+            Msg *msg = new Msg;
+            msg->message = pMsg->message == WM_KEYDOWN ? WM_CHAR : WM_SYSCHAR;
+            msg->hwnd = pMsg->hwnd;
+            msg->wParam = c;
+            msg->lParam = pMsg->lParam;
+            GetCursorPos(&msg->pt);
+            postMsg(msg);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+BOOL SConnection::peekMsg(THIS_ LPMSG pMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax, UINT wRemoveMsg)
+{
+    bool bTimeout = WaitForSingleObject(m_evtSync, 0) != WAIT_OBJECT_0;
+    uint64_t ts = GetTickCount64();
+    UINT elapse = m_tsLastMsg == (uint64_t)-1 ? 0 : (ts - m_tsLastMsg);
+    m_tsLastMsg = ts;
+    event2Msg(bTimeout, elapse, ts);
+
+    std::unique_lock<CountMutex> lock(m_mutex4Msg);
+    { // test for callback task
+        auto it = m_lstCallbackTask.begin();
+        while (it != m_lstCallbackTask.end())
+        {
+            auto cur = it++;
+            if ((*cur)->TestEvent())
+            {
+                (*cur)->Release();
+                m_lstCallbackTask.erase(cur);
+            }
+        }
+    }
+    auto it = m_msgQueue.begin();
+    while(it != m_msgQueue.end())
+    {
+        BOOL bMatch = TRUE;
+        Msg *msg = (*it);
+        do
+        {
+            if (msg->message == WM_QUIT)
+                break;
+            if (msg->message == WM_TIMER && msg->lParam == 0)
+                break;
+            if (msg->hwnd != hWnd && hWnd != 0)
+            {
+                bMatch = FALSE;
+                break;
+            }
+            if (wMsgFilterMin == 0 && wMsgFilterMax == 0)
+                break;
+            if (wMsgFilterMin <= msg->message && wMsgFilterMax >= msg->message)
+                break;
+            bMatch = FALSE;
+        } while (false);
+        if(msg->hwnd){
+            WndObj wndObj = WndMgr::fromHwnd(msg->hwnd);
+            if(!wndObj || wndObj->bDestroyed)
+            {// window destroyed or destroying. don't process the message.
+                it = m_msgQueue.erase(it);
+                delete msg;
+                continue;
+            }
+        }
+        if (bMatch)
+            break;
+        it ++;
+    }
+    if (it != m_msgQueue.end())
+    {
+        Msg *msg = (*it);
+        if (m_msgPeek && m_bMsgNeedFree)
+        {
+            delete m_msgPeek;
+            m_msgPeek = nullptr;
+            m_bMsgNeedFree = false;
+        }
+        if (msg->message == WM_TIMER && msg->lParam)
+        {
+            // SetTimer with callback, call it now.
+            TIMERPROC proc = (TIMERPROC)msg->lParam;
+            m_msgQueue.erase(it);
+            //free lock before call timer proc.
+            LONG preLock = m_mutex4Msg.FreeLock();
+            proc(msg->hwnd, WM_TIMER, msg->wParam, msg->time);
+            m_mutex4Msg.RestoreLock(preLock);
+            delete msg;
+            return peekMsg(pMsg, hWnd, wMsgFilterMin, wMsgFilterMax, wRemoveMsg);
+        }
+        else if(msg->message == WM_TIMER && msg->wParam == (WPARAM)TM_DELAY){
+            // delay timer for paint
+            HWND hWnd = msg->hwnd;
+            m_msgQueue.erase(it);
+            KillTimer(msg->hwnd, msg->wParam);
+            delete msg;
+            SendExposeEvent(hWnd,NULL,TRUE);
+            return peekMsg(pMsg, hWnd, wMsgFilterMin, wMsgFilterMax, wRemoveMsg);
+        }
+        m_msgPeek = msg;
+        if (wRemoveMsg == PM_NOREMOVE)
+        { // the peeked message should not be dispatch.
+            m_bMsgNeedFree = false;
+        }
+        else
+        {
+            m_msgQueue.erase(it);
+            m_bMsgNeedFree = true;
+        }
+        memcpy(pMsg, (MSG *)m_msgPeek, sizeof(MSG));
+        if(pMsg->message == WM_MOUSEMOVE)
+            m_hWndLastMouseMove = pMsg->hwnd;
+        if (!m_msgQueue.empty()) // wake up the next waitMsg.
+            SetEvent(m_evtSync);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+BOOL SConnection::getMsg(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax)
+{
+    BOOL bRet = FALSE;
+    for (; !bRet && !m_bQuit;)
+    {
+        bRet = peekMsg(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax, PM_REMOVE);
+        if (!bRet)
+        {
+            waitMsg();
+        }else if(lpMsg->message == WM_QUIT)
+        {
+            bRet = FALSE;
+            break;
+        }
+    }
+
+    return bRet;
+}
+
+void SConnection::postMsg(HWND hWnd, UINT message, WPARAM wp, LPARAM lp)
+{
+    Msg *pMsg = new Msg(new MsgReply);
+    pMsg->hwnd = hWnd;
+    pMsg->message = message;
+    pMsg->wParam = wp;
+    pMsg->lParam = lp;
+    GetCursorPos(&pMsg->pt);
+    postMsg(pMsg);
+}
+
+void SConnection::postMsg(Msg *pMsg)
+{
+    std::unique_lock<CountMutex> lock(m_mutex4Msg);
+    m_msgQueue.push_back(pMsg);
+    SetEvent(m_evtSync);
+}
+
+void SConnection::postMsg2(BOOL bWideChar, HWND hWnd, UINT message, WPARAM wp, LPARAM lp, MsgReply *reply)
+{
+    if (!bWideChar)
+    {
+        Msg *pMsg = new Msg(reply);
+        pMsg->hwnd = hWnd;
+        pMsg->message = message;
+        pMsg->wParam = wp;
+        pMsg->lParam = lp;
+        GetCursorPos(&pMsg->pt);
+        postMsg(pMsg);
+    }
+    else
+    {
+        MsgW2A *pMsg = new MsgW2A(reply);
+        pMsg->orgMsg.message = message;
+        pMsg->orgMsg.wParam = wp;
+        pMsg->orgMsg.lParam = lp;
+        pMsg->hwnd = hWnd;
+        GetCursorPos(&pMsg->pt);
+        postMsg(pMsg);
+    }
+}
+
+void SConnection::postCallbackTask(CbTask *pTask)
+{
+    std::unique_lock<CountMutex> lock(m_mutex4Msg);
+    m_lstCallbackTask.push_back(pTask);
+    pTask->AddRef();
+}
+
+BOOL SConnection::CreateCaret(HWND hWnd, HBITMAP hBitmap, int nWidth, int nHeight)
+{
+    DestroyCaret();
+    m_caretInfo.hOwner = hWnd;
+    if (hBitmap == (HBITMAP)1) // windows api support hBitmap set to 1 to indicator a gray caret, ignore it.
+        hBitmap = nullptr;
+    m_caretInfo.hBmp = RefGdiObj(hBitmap);
+    m_caretInfo.nWidth = nWidth;
+    m_caretInfo.nHeight = nHeight;
+    m_caretInfo.nVisible = 0;
+    return TRUE;
+}
+
+BOOL SConnection::DestroyCaret()
+{
+    if (m_caretInfo.nVisible > 0)
+    {
+        KillTimer(m_caretInfo.hOwner, TM_CARET);
+    }
+    DeleteObject(m_caretInfo.hBmp);
+    m_caretInfo.hBmp = NULL;
+    m_caretInfo.nHeight = 0;
+    m_caretInfo.nWidth = 0;
+    m_caretInfo.hOwner = 0;
+    m_caretInfo.nVisible = 0;
+    return TRUE;
+}
+
+BOOL SConnection::ShowCaret(HWND hWnd)
+{
+    if (hWnd && hWnd != m_caretInfo.hOwner)
+        return FALSE;
+    m_caretInfo.nVisible++;
+    if (m_caretInfo.nVisible == 1)
+    {
+        SetTimer(hWnd, TM_CARET, m_caretBlinkTime, NULL);
+    }
+    return TRUE;
+}
+
+BOOL SConnection::HideCaret(HWND hWnd)
+{
+    if (hWnd && hWnd != m_caretInfo.hOwner)
+        return FALSE;
+    m_caretInfo.nVisible--;
+
+    if (m_caretInfo.nVisible == 0)
+    {
+        KillTimer(hWnd, TM_CARET);
+    }
+    return TRUE;
+}
+
+BOOL SConnection::SetCaretPos(int X, int Y)
+{
+    if (!m_hFocus)
+        return FALSE;
+    m_caretInfo.x = X;
+    m_caretInfo.y = Y;
+    HIMC hIMC = ImmGetContext(m_hFocus);
+    if (hIMC && hIMC->xic)
+    {
+        xcb_point_t spot = { (int16_t)X, (int16_t)(Y + m_caretInfo.nHeight) };
+        xcb_xim_nested_list nested = xcb_xim_create_nested_list(m_xim, XCB_XIM_XNSpotLocation, &spot, NULL);
+        xcb_xim_set_ic_values(m_xim, hIMC->xic, nullptr, nullptr, XCB_XIM_XNPreeditAttributes, &nested, nullptr);
+        free(nested.data);
+    }
+    ImmReleaseContext(m_hFocus, hIMC);
+    return TRUE;
+}
+
+BOOL SConnection::GetCaretPos(LPPOINT lpPoint)
+{
+    if (!lpPoint)
+        return FALSE;
+    lpPoint->x = m_caretInfo.x;
+    lpPoint->y = m_caretInfo.y;
+    return TRUE;
+}
+
+void SConnection::SetCaretBlinkTime(UINT blinkTime)
+{
+    m_caretBlinkTime = blinkTime;
+}
+
+void SConnection::EnableDragDrop(HWND hWnd, BOOL enable)
+{
+    if (enable)
+    {
+        xcb_atom_t atm = SDragDrop::xdnd_version;
+        xcb_change_property(connection, XCB_PROP_MODE_REPLACE, hWnd, atoms.XdndAware, XCB_ATOM_ATOM, 32, 1, &atm);
+    }
+    else
+    {
+        xcb_delete_property(connection, hWnd, atoms.XdndAware);
+    }
+}
+
+void SConnection::SendXdndStatus(HWND hTarget, HWND hSource, BOOL accept, DWORD dwEffect)
+{
+    xcb_client_message_event_t response = {};
+    response.response_type = XCB_CLIENT_MESSAGE;
+    response.sequence = 0;
+    response.window = hSource;
+    response.format = 32;
+    response.type = atoms.XdndStatus;
+    response.data.data32[0] = hTarget;
+    response.data.data32[1] = accept ? 1 : 0;              // flags
+    response.data.data32[2] = 0;                           // x, y
+    response.data.data32[3] = 0;                           // w, h
+    response.data.data32[4] = XdndEffect2Action(dwEffect); // action
+    xcb_send_event32(connection, false, hSource, XCB_EVENT_MASK_NO_EVENT, response);
+}
+
+void SConnection::SendXdndFinish(HWND hTarget, HWND hSource, BOOL accept, DWORD dwEffect)
+{
+    xcb_client_message_event_t response = {};
+    response.response_type = XCB_CLIENT_MESSAGE;
+    response.sequence = 0;
+    response.window = hSource;
+    response.format = 32;
+    response.type = atoms.XdndFinished;
+    response.data.data32[0] = hTarget;
+    response.data.data32[1] = accept ? 1 : 0;              // flags
+    response.data.data32[2] = XdndEffect2Action(dwEffect); // action
+    xcb_send_event32(connection, false, hSource, XCB_EVENT_MASK_NO_EVENT, response);
+}
+
+xcb_atom_t SConnection::clipFormat2Atom(UINT uFormat)
+{
+    switch (uFormat)
+    {
+    case CF_TEXT:
+        return atoms.CLIPF_UTF8;
+    case CF_UNICODETEXT:
+        return atoms.CLIPF_UNICODETEXT;
+    case CF_BITMAP:
+        return atoms.CLIPF_BITMAP;
+    case CF_WAVE:
+        return atoms.CLIPF_WAVE;
+    case CF_HDROP:
+        return atoms.CLIPF_HDROP;
+    default:
+        // for registered format
+        if (uFormat > CF_MAX)
+        {
+            return uFormat - CF_MAX;
+        }
+    }
+    return 0;
+}
+
+uint32_t SConnection::atom2ClipFormat(xcb_atom_t atom)
+{
+    if (atom == atoms.CLIPF_UNICODETEXT)
+        return CF_UNICODETEXT;
+    else if (atom == atoms.CLIPF_BITMAP)
+        return CF_BITMAP;
+    else if (atom == atoms.CLIPF_WAVE)
+        return CF_WAVE;
+    else if(atom == atoms.CLIPF_HDROP)
+        return CF_HDROP;
+    else{
+        auto txtAtoms = atoms.textAtoms();
+        for(auto it : txtAtoms){
+            if(it == atom)
+                return CF_TEXT;
+        }
+        return CF_MAX + atom; // for registed format
+    }
+}
+
+std::shared_ptr<std::vector<char>> SConnection::readSelection(bool bXdnd, uint32_t fmt)
+{
+    if(fmt == CF_TEXT){
+        //mutiple clip atom were mapped to CF_TEXT
+        auto txtAtoms = atoms.textAtoms();
+        for(auto atom : txtAtoms){
+            auto ret = m_clipboard->getDataInFormat(bXdnd ? atoms.XdndSelection : atoms.CLIPBOARD, atom, SClipboard::kWaitTimeout);
+            if(ret && !ret->empty()) 
+                return ret;
+        }
+        return nullptr;
+    }else{
+        return m_clipboard->getDataInFormat(bXdnd ? atoms.XdndSelection : atoms.CLIPBOARD, clipFormat2Atom(fmt), SClipboard::kWaitTimeout);
+    }
+}
+
+struct MotifWmHints
+{
+    uint32_t flags, functions, decorations;
+    uint32_t input_mode;
+    uint32_t status;
+};
+
+enum
+{
+    MWM_HINTS_FUNCTIONS = (1L << 0),
+
+    MWM_FUNC_ALL = (1L << 0),
+    MWM_FUNC_RESIZE = (1L << 1),
+    MWM_FUNC_MOVE = (1L << 2),
+    MWM_FUNC_MINIMIZE = (1L << 3),
+    MWM_FUNC_MAXIMIZE = (1L << 4),
+    MWM_FUNC_CLOSE = (1L << 5),
+
+    MWM_HINTS_DECORATIONS = (1L << 1),
+
+    MWM_DECOR_ALL = (1L << 0),
+    MWM_DECOR_BORDER = (1L << 1),
+    MWM_DECOR_RESIZEH = (1L << 2),
+    MWM_DECOR_TITLE = (1L << 3),
+    MWM_DECOR_MENU = (1L << 4),
+    MWM_DECOR_MINIMIZE = (1L << 5),
+    MWM_DECOR_MAXIMIZE = (1L << 6),
+
+    MWM_HINTS_INPUT_MODE = (1L << 2),
+
+    MWM_INPUT_MODELESS = 0L,
+    MWM_INPUT_PRIMARY_APPLICATION_MODAL = 1L,
+    MWM_INPUT_FULL_APPLICATION_MODAL = 3L
+};
+
+enum QX11EmbedInfoFlags
+{
+    XEMBED_VERSION = 0,
+    XEMBED_MAPPED = (1 << 0),
+};
+
+static void setMotifWmHints(SConnection *c, HWND window, const MotifWmHints &hints)
+{
+    if (hints.flags != 0l)
+    {
+        xcb_change_property(c->connection, XCB_PROP_MODE_REPLACE, window, c->atoms._MOTIF_WM_HINTS, c->atoms._MOTIF_WM_HINTS, 32, 5, &hints);
+    }
+    else
+    {
+        xcb_delete_property(c->connection, window, c->atoms._MOTIF_WM_HINTS);
+    }
+}
+
+static void setMotifWindowFlags(SConnection *c, HWND hWnd, DWORD dwStyle, DWORD dwExStyle __attribute__((unused)))
+{
+    MotifWmHints mwmhints;
+    mwmhints.flags = MWM_HINTS_DECORATIONS | MWM_HINTS_FUNCTIONS;
+    mwmhints.functions = MWM_FUNC_RESIZE | MWM_FUNC_MOVE | MWM_FUNC_MINIMIZE | MWM_FUNC_MAXIMIZE;
+    mwmhints.decorations = 0;
+    mwmhints.input_mode = 0L;
+    mwmhints.status = 0L;
+
+    if (dwStyle & WS_CAPTION)
+    {
+        mwmhints.flags |= MWM_HINTS_DECORATIONS;
+        mwmhints.functions = MWM_FUNC_CLOSE | MWM_FUNC_MOVE;
+        mwmhints.decorations |= MWM_DECOR_TITLE;
+        if (dwStyle & WS_MINIMIZEBOX)
+        {
+            mwmhints.decorations |= MWM_DECOR_MINIMIZE;
+        }
+        if (dwStyle & WS_MAXIMIZEBOX)
+        {
+            mwmhints.decorations |= MWM_DECOR_MAXIMIZE;
+        }
+        if (dwStyle & WS_SYSMENU)
+        {
+            mwmhints.decorations |= MWM_DECOR_MENU;
+        }
+        if (dwStyle & WS_SIZEBOX)
+        {
+            mwmhints.decorations |= MWM_DECOR_RESIZEH;
+        }
+    }
+    setMotifWmHints(c, hWnd, mwmhints);
+}
+
+HWND SConnection::_QueryActiveWindow()
+{
+    xcb_get_input_focus_cookie_t cookie = xcb_get_input_focus(connection);
+    xcb_get_input_focus_reply_t *reply = xcb_get_input_focus_reply(connection, cookie, nullptr);
+    HWND hFocus = reply ? reply->focus : 0;
+    free(reply);
+    return hFocus;
+}
+
+HWND SConnection::OnWindowCreate(_Window *pWnd, CREATESTRUCT *cs, int depth)
+{
+    if(!screen)
+        return 0;
+    
+    HWND hWnd = xcb_generate_id(connection);
+    xcb_colormap_t cmap = xcb_generate_id(connection);
+    xcb_create_colormap(connection, XCB_COLORMAP_ALLOC_NONE, cmap, screen->root, pWnd->visualId);
+
+    const uint32_t evt_mask = XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_PROPERTY_CHANGE  | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_LEAVE_WINDOW |XCB_EVENT_MASK_FOCUS_CHANGE | XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE;
+    const uint32_t mask = XCB_CW_BACK_PIXMAP | XCB_CW_BORDER_PIXEL | XCB_CW_OVERRIDE_REDIRECT | XCB_CW_SAVE_UNDER | XCB_CW_EVENT_MASK | XCB_CW_COLORMAP;
+
+    const uint32_t values[] = {
+        XCB_NONE,                                    // XCB_CW_BACK_PIXMAP
+        0,                                           // XCB_CW_BORDER_PIXEL
+        (cs->dwExStyle & WS_EX_TOOLWINDOW) ? 1u : 0, // XCB_CW_OVERRIDE_REDIRECT
+        0,                                           // XCB_CW_SAVE_UNDER
+        evt_mask,                                    // XCB_CW_EVENT_MASK
+        cmap                                         // XCB_CW_COLORMAP
+    };
+    xcb_window_class_t wndCls = XCB_WINDOW_CLASS_INPUT_OUTPUT;
+    HWND hParent = pWnd->parent;
+    if (hParent == HWND_MESSAGE)
+    {
+        hParent = screen->root;
+        wndCls = XCB_WINDOW_CLASS_INPUT_ONLY;
+    }
+    else if (!(cs->style & WS_CHILD) || !hParent)
+        hParent = screen->root;
+    xcb_void_cookie_t cookie = xcb_create_window_checked(connection, depth, hWnd, hParent, cs->x, cs->y, std::max(cs->cx, 1u), std::max(cs->cy, 1u), 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, pWnd->visualId, mask, values);
+
+    xcb_generic_error_t *err = xcb_request_check(connection, cookie);
+    if (err)
+    {
+        SLOG_FMTE("xcb_create_window failed, errcode=%d", err->error_code);
+        free(err);
+        xcb_free_colormap(connection, cmap);
+        return 0;
+    }
+    pWnd->cmap = cmap;
+    xcb_change_window_attributes(connection, hWnd, mask, values);
+    xcb_atom_t protocols[] = { atoms.WM_DELETE_WINDOW};
+    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, hWnd, atoms.WM_PROTOCOLS, XCB_ATOM_ATOM, 32, ARRAYSIZE(protocols), protocols);
+
+    // set the PID to let the WM kill the application if unresponsive
+    uint32_t pid = getpid();
+    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, hWnd, atoms._NET_WM_PID, XCB_ATOM_CARDINAL, 32, 1, &pid);
+    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, hWnd, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, pWnd->title.length(), pWnd->title.c_str());
+
+    updateWmclass(hWnd,pWnd);
+    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, hWnd, atoms.WM_CLASS_ATOM, XCB_ATOM_CARDINAL, 32, 1, &pWnd->clsAtom);
+    setMotifWindowFlags(this, hWnd, pWnd->dwStyle, pWnd->dwExStyle);
+    {
+        /* Add XEMBED info; this operation doesn't initiate the embedding. */
+        uint32_t data[] = { XEMBED_VERSION, XEMBED_MAPPED };
+        xcb_change_property(connection, XCB_PROP_MODE_REPLACE, hWnd, atoms._XEMBED_INFO, atoms._XEMBED_INFO, 32, 2, (void *)data);
+    }
+    if (!(pWnd->dwStyle & WS_EX_TOOLWINDOW) && wndCls == XCB_WINDOW_CLASS_INPUT_OUTPUT)
+    {
+        pWnd->hIMC = ImmCreateContext();
+        pWnd->hIMC->xim = m_xim;
+    }
+    PaintInfo *pi = new PaintInfo;
+    pi->bDelayPaint=false;
+    pi->tsPaint = -1;
+    pWnd->pPrivData = pi;
+    xcb_flush(connection);
+    return hWnd;
+}
+
+void SConnection::OnWindowDestroy(HWND hWnd, _Window *wnd)
+{
+    PaintInfo *pi = (PaintInfo*)wnd->pPrivData;
+    delete pi;
+    wnd->pPrivData = nullptr;
+    KillWindowTimer(hWnd);
+    if (GetCapture() == hWnd)
+    {
+        ReleaseCapture();
+    }
+    if (GetCaretInfo()->hOwner == hWnd)
+    {
+        DestroyCaret();
+    }
+    if (m_hFocus == hWnd)
+    {
+        m_mapFocus.erase(m_hWndActive);
+        m_hFocus = 0;
+    }
+    if (m_hWndActive == hWnd)
+    {
+        m_mapFocus.erase(m_hWndActive);
+        m_hWndActive = 0;
+    }
+
+    if (wnd->hIMC)
+    {
+        ImmDestroyContext(wnd->hIMC);
+        wnd->hIMC = nullptr;
+    }
+    m_wndCursor.erase(hWnd);
+    xcb_destroy_window(connection, hWnd);
+    if (wnd->cmap)
+    {
+        xcb_free_colormap(connection, wnd->cmap);
+        wnd->cmap = 0;
+    }
+
+    xcb_flush(connection);
+}
+
+void SConnection::SetWindowVisible(HWND hWnd, _Window *wndObj, BOOL bVisible, int nCmdShow)
+{
+    if (bVisible)
+    {
+        if (wndObj->dwStyle & WS_VISIBLE)
+            return; // already visible.
+        RECT rc= wndObj->rc;
+        BOOL bActive = nCmdShow != SW_SHOWNOACTIVATE && nCmdShow != SW_SHOWNA;
+        xcb_icccm_wm_hints_t hints = {};
+        xcb_icccm_wm_hints_set_input(&hints, bActive);
+        xcb_icccm_set_wm_hints(connection, hWnd, &hints);
+
+        xcb_map_window(connection, hWnd);
+        wndObj->dwStyle |= WS_VISIBLE;
+        InvalidateRect(hWnd, nullptr, TRUE);
+        if (bActive && !(wndObj->dwStyle & WS_CHILD) && wndObj->mConnection->GetActiveWnd() == 0)
+        {
+            //auto active top level window.
+            SetActiveWindow(hWnd);
+        }    
+        sync();
+        if (!(wndObj->dwStyle & WS_CHILD)){
+            //to avoid the position might been changed by linux window manage, reset window pos again.
+            SetWindowPos(hWnd,rc.left,rc.top);
+        }
+    }
+    else
+    {
+        xcb_unmap_window(connection, hWnd);
+        wndObj->dwStyle &= ~WS_VISIBLE;
+        if (!(wndObj->dwStyle & WS_CHILD))
+        {
+            // send synthetic UnmapNotify event according to icccm 4.1.4
+            // xcb_unmap_notify_event_t 只有 16 字节，必须 `= {}` 补零并交给
+            // xcb_send_event32() 发送（见 xcb_event.h：xcb_send_event() 固定
+            // 拷贝 32 字节，直接传结构体地址会读过其尾部）。
+            xcb_unmap_notify_event_t event = {};
+            event.response_type = XCB_UNMAP_NOTIFY;
+            event.event = screen->root;
+            event.window = hWnd;
+            event.from_configure = false;
+            xcb_send_event32(connection, false, event.event, XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY | XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT, event);
+        }
+    }
+    xcb_flush(connection);
+}
+
+void SConnection::SetParent(HWND hWnd, _Window *wndObj, HWND hParent)
+{
+    if (wndObj)
+    {
+        if (!hParent)
+        {
+            if (m_hWndActive)
+                hWnd = m_hWndActive;
+            else
+                hParent = screen->root;
+        }
+
+        if (!(wndObj->dwStyle & WS_CHILD))
+        {
+            xcb_icccm_set_wm_transient_for(connection, hWnd, hParent);
+        }
+        else if (hParent)
+        {
+            xcb_reparent_window(connection, hWnd, hParent, 0, 0);
+        }
+    }
+    else
+    {
+        // hwnd for other process.
+        xcb_reparent_window(connection, hWnd, hParent ? hParent : screen->root, 0, 0);
+    }
+    xcb_flush(connection);
+}
+
+void SConnection::SendExposeEvent(HWND hWnd, LPCRECT rc __attribute__((unused)),BOOL bForce)
+{
+    WndObj wndObj = WndMgr::fromHwnd(hWnd);
+    if(!wndObj)
+        return;
+    if ((wndObj->dwStyle & WS_VISIBLE) == 0)
+        return;
+    PaintInfo *pi = (PaintInfo*)wndObj->pPrivData;
+    uint64_t now = GetTickCount64();
+    if(!bForce){
+        const static int kMinInterval = 16; // 60 fps
+        uint64_t elapsed = now - pi->tsPaint;
+        if(pi->tsPaint != (uint64_t)-1 && elapsed < (uint64_t)kMinInterval){
+            //avoid send too many expose event in a short time.
+            if(!pi->bDelayPaint)
+            {
+                pi->bDelayPaint = true;
+                SetTimer(hWnd, TM_DELAY, kMinInterval-elapsed, NULL);
+            }
+            return;
+        }
+    }
+    
+    pi->bDelayPaint = false;
+    pi->tsPaint = now;
+
+    xcb_expose_event_t expose_event = {};
+    expose_event.response_type = XCB_EXPOSE;
+    expose_event.window = hWnd;
+    expose_event.x = 0;
+    expose_event.y = 0;
+    expose_event.width = 0;
+    expose_event.height = 0;
+    xcb_send_event32(connection, false, hWnd, XCB_EVENT_MASK_EXPOSURE, expose_event);
+    xcb_flush(connection);
+}
+
+void SConnection::SetWindowMsgTransparent(HWND hWnd, _Window *wndObj, BOOL bTransparent)
+{
+    BOOL transparent = (wndObj->dwExStyle & WS_EX_TRANSPARENT) != 0;
+    if (!(transparent ^ bTransparent) || !wndObj->mConnection->hasXFixes())
+        return;
+
+    xcb_rectangle_t rectangle;
+
+    xcb_rectangle_t *rect = nullptr;
+    int nrect = 0;
+
+    if (!bTransparent)
+    {
+        rectangle.x = 0;
+        rectangle.y = 0;
+        rectangle.width = wndObj->rc.right - wndObj->rc.left;
+        rectangle.height = wndObj->rc.bottom - wndObj->rc.top;
+        rect = &rectangle;
+        nrect = 1;
+    }
+
+    xcb_xfixes_region_t region = xcb_generate_id(wndObj->mConnection->connection);
+    xcb_xfixes_create_region(wndObj->mConnection->connection, region, nrect, rect);
+    xcb_xfixes_set_window_shape_region_checked(wndObj->mConnection->connection, hWnd, XCB_SHAPE_SK_INPUT, 0, 0, region);
+    xcb_xfixes_destroy_region(wndObj->mConnection->connection, region);
+
+    if (bTransparent)
+        wndObj->dwExStyle |= WS_EX_TRANSPARENT;
+    else
+        wndObj->dwExStyle &= ~WS_EX_TRANSPARENT;
+}
+
+void SConnection::AssociateHIMC(HWND hWnd, _Window *wndObj, HIMC hIMC)
+{
+    wndObj->hIMC = hIMC;
+    if (hIMC)
+    {
+        hIMC->xim = m_xim;
+    }
+    if (GetFocus() == hWnd)
+    {
+        xcb_xim_open(m_xim, xim_open_callback, true, (void *)hWnd);
+    }
+}
+
+DWORD SConnection::GetWndProcessId(HWND hWnd)
+{
+    DWORD pid=0;
+    xcb_get_property_cookie_t cookie = xcb_get_property(connection, 0, hWnd, atoms._NET_WM_PID, XCB_ATOM_CARDINAL, 0, 1);
+        xcb_get_property_reply_t *reply = xcb_get_property_reply(connection, cookie, NULL);
+        if (reply != NULL)
+        {
+            pid = *(DWORD *)xcb_get_property_value(reply);
+            free(reply);
+        }
+    return pid;
+}
+
+
+static void XcbGeo2Rect(xcb_get_geometry_reply_t *geo, RECT *rc)
+{
+    rc->left = geo->x;
+    rc->top = geo->y;
+    rc->right = geo->x + geo->width;
+    rc->bottom = geo->y + geo->height;
+}
+
+static HWND _WindowFromPoint(xcb_connection_t *connection, xcb_window_t parent, POINT pt)
+{
+    xcb_query_tree_reply_t *tree;
+    xcb_query_tree_cookie_t tree_cookie;
+    xcb_window_t *children;
+    HWND ret = XCB_NONE;
+    int children_num;
+
+    tree_cookie = xcb_query_tree(connection, parent);
+    tree = xcb_query_tree_reply(connection, tree_cookie, NULL);
+
+    if (!tree)
+    {
+        return XCB_NONE;
+    }
+    xcb_get_geometry_reply_t *geoParent = xcb_get_geometry_reply(connection, xcb_get_geometry(connection, parent), NULL);
+    if (!geoParent)
+        return XCB_NONE;
+    RECT rcParent;
+    XcbGeo2Rect(geoParent, &rcParent);
+    free(geoParent);
+    if (!PtInRect(&rcParent, pt))
+        return XCB_NONE;
+    children = xcb_query_tree_children(tree);
+    children_num = xcb_query_tree_children_length(tree);
+
+    for (int i = children_num - 1; i >= 0; i--)
+    {
+        if (!IsWindowVisible(children[i]))
+            continue;
+        xcb_get_geometry_reply_t *geo = xcb_get_geometry_reply(connection, xcb_get_geometry(connection, children[i]), NULL);
+        if (!geo)
+            continue;
+        RECT rc;
+        XcbGeo2Rect(geo, &rc);
+        free(geo);
+        if (PtInRect(&rc, pt))
+        {
+            ret = children[i];
+            break;
+        }
+    }
+    free(tree);
+    if (ret != XCB_NONE)
+    {
+        pt.x -= rcParent.left;
+        pt.y -= rcParent.top;
+        ret = _WindowFromPoint(connection, ret, pt);
+    }
+    else
+    {
+        ret = parent;
+    }
+    return ret;
+}
+
+HWND SConnection::WindowFromPoint(POINT pt)
+{
+    return _WindowFromPoint(connection, screen->root, pt);
+}
+
+BOOL SConnection::GetClientRect(HWND hWnd, RECT *pRc)
+{
+    xcb_get_geometry_cookie_t cookie = xcb_get_geometry(connection, hWnd);
+    xcb_get_geometry_reply_t *reply = xcb_get_geometry_reply(connection, cookie, NULL);
+    if (!reply)
+        return FALSE;
+    pRc->left = pRc->top = 0;
+    pRc->right = reply->width;
+    pRc->bottom = reply->height;
+    free(reply);
+    return TRUE;
+}
+
+void SConnection::BeforeProcMsg(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (m_msgPeek && m_bMsgNeedFree && m_msgPeek->hwnd == hWnd && m_msgPeek->message == msg && m_msgPeek->wParam == wp && m_msgPeek->lParam == lp)
+    {
+        m_msgStack.push_back(m_msgPeek);
+        m_msgPeek = nullptr;
+        m_bMsgNeedFree = false;
+    }
+}
+
+void SConnection::AfterProcMsg(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT res)
+{
+    if (m_msgStack.empty() || m_bMsgNeedFree)
+        return;
+    Msg *lastMsg = m_msgStack.back();
+
+    if (lastMsg->hwnd == hWnd && lastMsg->message == msg && lastMsg->wParam == wp && lastMsg->lParam == lp)
+    {
+        lastMsg->SetResult(res);
+        m_msgStack.pop_back();
+        delete lastMsg;
+    }
+}
+
+class PropertyNotifyEvent : public IEventChecker {
+  public:
+    PropertyNotifyEvent(xcb_window_t win, xcb_atom_t property)
+        : window(win)
+        , type(XCB_PROPERTY_NOTIFY)
+        , atom(property)
+    {
+    }
+    xcb_window_t window;
+    int type;
+    xcb_atom_t atom;
+    bool checkEvent(xcb_generic_event_t *event) const
+    {
+        if (!event)
+            return false;
+        if ((event->response_type & ~0x80) != type)
+        {
+            return false;
+        }
+        else
+        {
+            xcb_property_notify_event_t *pn = (xcb_property_notify_event_t *)event;
+            if ((pn->window == window) && (pn->atom == atom))
+                return true;
+        }
+        return false;
+    }
+};
+
+xcb_timestamp_t SConnection::getSectionTs()
+{
+    return m_tsSelection;
+}
+
+bool SConnection::existTimer(HWND hWnd, UINT_PTR id) const{
+    std::unique_lock<CountMutex> lock(m_mutex4Msg);
+    for (const auto &it : m_lstTimer)
+    {
+        if (it.hWnd == hWnd && it.id == id)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+UINT_PTR SConnection::SetTimer(HWND hWnd, UINT_PTR id, UINT uElapse, TIMERPROC proc)
+{
+    std::unique_lock<CountMutex> lock(m_mutex4Msg);
+    if (hWnd)
+    {
+        // find exist timer.
+        for (auto &it : m_lstTimer)
+        {
+            if (it.hWnd != hWnd)
+                continue;
+            if (it.id == id)
+            {
+                it.fireRemain = uElapse;
+                it.proc = proc;
+                return id;
+            }
+        }
+        TimerInfo timer;
+        timer.id = id;
+        timer.fireRemain = uElapse;
+        timer.hWnd = hWnd;
+        timer.proc = proc;
+        timer.elapse = uElapse;
+        m_lstTimer.push_back(timer);
+        SetEvent(m_evtSync);//wake up event loop to check timer.
+        return id;
+    }
+    else
+    {
+        UINT_PTR newId = 0;
+        for (auto &it : m_lstTimer)
+        {
+            if (it.hWnd)
+                continue;
+            newId = std::max(it.id, newId);
+        }
+        TimerInfo timer;
+        timer.id = newId + 1;
+        timer.fireRemain = uElapse;
+        timer.hWnd = 0;
+        timer.proc = proc;
+        timer.elapse = uElapse;
+        m_lstTimer.push_back(timer);
+        SetEvent(m_evtSync);//wake up event loop to check timer.
+        return timer.id;
+    }
+}
+
+BOOL SConnection::KillTimer(HWND hWnd, UINT_PTR id)
+{
+    BOOL bRet = FALSE;
+    std::unique_lock<CountMutex> lock(m_mutex4Msg);
+    for (auto it = m_lstTimer.begin(); it != m_lstTimer.end(); it++)
+    {
+        if (it->hWnd == hWnd && it->id == id)
+        {
+            m_lstTimer.erase(it);
+            bRet = TRUE;
+            break;
+        }
+    }
+
+    if (bRet)
+    {
+        // remove timer from message queue.
+        auto it = m_msgQueue.begin();
+        while (it != m_msgQueue.end())
+        {
+            auto it2 = it++;
+            Msg *msg = *it2;
+            if (msg->hwnd == hWnd && msg->message == WM_TIMER && msg->wParam == id)
+            {
+                m_msgQueue.erase(it2);
+                delete msg;
+            }
+        }
+    }
+    return bRet;
+}
+
+HDC SConnection::GetDC()
+{
+    return m_deskDC;
+}
+
+BOOL SConnection::ReleaseDC(HDC hdc __attribute__((unused)))
+{
+    // todo:hjx
+    return TRUE;
+}
+
+HWND SConnection::SetCapture(HWND hCapture)
+{
+    HWND ret = m_hWndCapture;
+    if (hCapture == m_hWndCapture)
+        return ret;
+    xcb_grab_pointer_cookie_t cookie = xcb_grab_pointer(connection,
+                                                        1, // 这个标志位表示不使用对子窗口的事件
+                                                        hCapture, XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_POINTER_MOTION,
+                                                        XCB_GRAB_MODE_ASYNC, // 异步捕获
+                                                        XCB_GRAB_MODE_ASYNC,
+                                                        XCB_NONE,        // 捕获事件的窗口
+                                                        XCB_NONE,        // 使用默认光标
+                                                        XCB_CURRENT_TIME // 立即开始捕获
+    );
+    xcb_grab_pointer_reply_t *reply = xcb_grab_pointer_reply(connection, cookie, NULL);
+    bool result = false;
+    if (reply)
+    {
+        result = reply->status == XCB_GRAB_STATUS_SUCCESS;
+        if (!result)
+            SLOG_STMI() << "set capture: reply->status=" << reply->status;
+        free(reply);
+    }
+    if (result)
+    {
+        m_hWndCapture = hCapture;
+    }
+    xcb_flush(connection);
+    return ret;
+}
+
+BOOL SConnection::ReleaseCapture()
+{
+    if (!m_hWndCapture)
+        return FALSE;
+    m_hWndCapture = 0;
+    xcb_ungrab_pointer(connection, XCB_CURRENT_TIME);
+    xcb_flush(connection);
+    return TRUE;
+}
+
+HWND SConnection::GetCapture() const
+{
+    return m_hWndCapture;
+}
+
+xcb_cursor_t SConnection::createXcbCursor(HCURSOR cursor)
+{
+    xcb_generic_error_t *error = 0;
+    xcb_render_query_pict_formats_cookie_t formatsCookie = xcb_render_query_pict_formats(connection);
+    xcb_render_query_pict_formats_reply_t *formatsReply = xcb_render_query_pict_formats_reply(connection, formatsCookie, &error);
+    if (!formatsReply || error)
+    {
+        // qWarning("qt_xcb_createCursorXRender: query_pict_formats failed");
+        free(formatsReply);
+        free(error);
+        return XCB_NONE;
+    }
+    xcb_render_pictforminfo_t *fmt = xcb_render_util_find_standard_format(formatsReply, XCB_PICT_STANDARD_ARGB_32);
+    if (!fmt)
+    {
+        // qWarning("qt_xcb_createCursorXRender: Failed to find format PICT_STANDARD_ARGB_32");
+        free(formatsReply);
+        return XCB_NONE;
+    }
+    xcb_cursor_t xcb_cursor = XCB_NONE;
+    BITMAP bm;
+    ICONINFO info = {};
+    GetIconInfo(cursor, &info);
+    assert(info.fIcon == 0);
+    if (!info.hbmColor)
+        goto end;
+    GetObject(info.hbmColor, sizeof(bm), &bm);
+    if (bm.bmBitsPixel != 32)
+    {
+        goto end;
+    }
+
+    do
+    {
+        if (!screen)
+        {
+            SLOG_STMW() << "Screen is NULL, cannot create cursor pixmap";
+            break;
+        }
+        
+        xcb_pixmap_t pix = xcb_generate_id(connection);
+        xcb_create_pixmap(connection, 32, pix, screen->root, bm.bmWidth, bm.bmHeight);
+
+        xcb_render_picture_t pic = xcb_generate_id(connection);
+        xcb_render_create_picture(connection, pic, pix, fmt->id, 0, 0);
+
+        xcb_gcontext_t gc = xcb_generate_id(connection);
+
+        xcb_image_t *xi = xcb_image_create(bm.bmWidth, bm.bmHeight, XCB_IMAGE_FORMAT_Z_PIXMAP, 32, 32, 32, 32,
+                                           XCB_IMAGE_ORDER_LSB_FIRST, // todo:hjx
+                                           XCB_IMAGE_ORDER_MSB_FIRST, 0, 0, 0);
+        if (!xi)
+        {
+            // qWarning("qt_xcb_createCursorXRender: xcb_image_create failed");
+            break;
+        }
+        xi->data = (uint8_t *)malloc(xi->stride * bm.bmHeight);
+        if (!xi->data)
+        {
+            // qWarning("qt_xcb_createCursorXRender: Failed to malloc() image data");
+            xcb_image_destroy(xi);
+            break;
+        }
+        memcpy(xi->data, bm.bmBits, bm.bmWidth * 4 * bm.bmHeight);
+
+        xcb_create_gc(connection, gc, pix, 0, 0);
+        xcb_image_put(connection, pix, gc, xi, 0, 0, 0);
+        xcb_free_gc(connection, gc);
+
+        xcb_cursor = xcb_generate_id(connection);
+        xcb_render_create_cursor(connection, xcb_cursor, pic, info.xHotspot, info.yHotspot);
+
+        free(xi->data);
+        xcb_image_destroy(xi);
+        xcb_render_free_picture(connection, pic);
+        xcb_free_pixmap(connection, pix);
+
+    } while (false);
+
+    free(formatsReply);
+end:
+    if (info.hbmColor)
+        DeleteObject(info.hbmColor);
+    if (info.hbmMask)
+        DeleteObject(info.hbmMask);
+
+    return xcb_cursor;
+}
+
+HCURSOR SConnection::GetCursor()
+{
+    HWND hWnd = GetActiveWnd();
+    auto it = m_wndCursor.find(hWnd);
+    if (it == m_wndCursor.end())
+        return 0;
+    return it->second;
+}
+
+HCURSOR SConnection::SetCursor(HWND hWnd,HCURSOR cursor)
+{
+    HCURSOR ret = cursor;
+    if (!hWnd){
+        hWnd = m_hWndLastMouseMove;
+    }
+    if(!hWnd)
+        return ret;
+    auto it = m_wndCursor.find(hWnd);
+    if (it != m_wndCursor.end())
+    {
+        ret = it->second;
+    }
+    xcb_cursor_t xcbCursor = getXcbCursor(cursor);
+    if (xcbCursor){
+        xcb_change_window_attributes(connection, hWnd, XCB_CW_CURSOR, &xcbCursor);
+        m_wndCursor[hWnd] = cursor; // update window cursor    
+    }
+    return ret;
+}
+
+xcb_cursor_t SConnection::getXcbCursor(HCURSOR cursor)
+{
+    if (!cursor)
+        cursor = ::LoadCursor(nullptr, IDC_ARROW);
+    assert(cursor);
+    xcb_cursor_t xcbCursor = 0;
+    auto it = m_sysCursor.find(cursor);
+    if (it != m_sysCursor.end())
+    {
+        xcbCursor = it->second;
+    }
+    else
+    {
+        xcbCursor = createXcbCursor(cursor);
+        if (!xcbCursor)
+        {
+            SLOG_STMW() << "create xcb cursor failed!";
+            return 0;
+        }
+        m_sysCursor.insert(std::make_pair(cursor, xcbCursor));
+    }
+    return xcbCursor;
+}
+
+BOOL SConnection::DestroyCursor(HCURSOR cursor)
+{
+    for (auto &it : m_wndCursor)
+    {
+        if (it.second == cursor)
+            return FALSE;
+    }
+    // look for sys cursor
+    auto it = m_sysCursor.find(cursor);
+    if (it == m_sysCursor.end())
+        return FALSE;
+    xcb_free_cursor(connection, it->second);
+    m_sysCursor.erase(cursor);
+    return TRUE;
+}
+
+static uint32_t TsSpan(uint32_t t1, uint32_t t2)
+{
+    if (t2 == -1u)
+        return -1u;
+    if (t1 > t2)
+    {
+        return t1 - t2;
+    }
+    else
+    {
+        return t1 + (-1u - t2);
+    }
+}
+
+static WPARAM ButtonState2Mask(uint16_t state)
+{
+    WPARAM wp = 0;
+    if (state & XCB_KEY_BUT_MASK_SHIFT)
+        wp |= MK_SHIFT;
+    if (state & XCB_KEY_BUT_MASK_CONTROL)
+        wp |= MK_CONTROL;
+    if(state & XCB_KEY_BUT_MASK_MOD_1)
+        wp |= MK_ALT;
+    if(state & XCB_KEY_BUT_MASK_MOD_4)
+        wp |= MK_WINDOW;
+    if (state & XCB_BUTTON_MASK_1)
+        wp |= MK_LBUTTON;
+    if (state & XCB_BUTTON_MASK_2)
+        wp |= MK_MBUTTON;
+    if (state & XCB_BUTTON_MASK_3)
+        wp |= MK_RBUTTON;
+    return wp;
+}
+
+HWND SConnection::GetActiveWnd() const
+{
+    return m_hWndActive;
+}
+
+BOOL SConnection::SetActiveWindow(HWND hWnd){
+    if(hWnd == m_hWndActive)
+        return TRUE;
+    if(hWnd){
+        WndObj wndObj = WndMgr::fromHwnd(hWnd);
+        if (!wndObj)
+            return FALSE;
+        if(wndObj->dwStyle & (WS_CHILD|WS_DISABLED))
+            return FALSE;
+        if (!(wndObj->dwStyle & WS_VISIBLE))
+            return FALSE;
+        if(wndObj->dwExStyle & (WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE))
+            return FALSE;
+    }
+    HWND hFocus = hWnd ? hWnd : screen->root;
+    xcb_set_input_focus(connection, XCB_INPUT_FOCUS_POINTER_ROOT, hFocus, XCB_CURRENT_TIME);
+    xcb_flush(connection);
+    if (_QueryActiveWindow() == hWnd)
+        OnActiveChange(hWnd);
+    return TRUE;
+}
+
+
+BOOL SConnection::IsWindow(HWND hWnd) const
+{
+    xcb_get_geometry_cookie_t cookie = xcb_get_geometry(connection, hWnd);
+    xcb_get_geometry_reply_t *reply = xcb_get_geometry_reply(connection, cookie, NULL);
+    if (!reply)
+        return FALSE;
+    free(reply);
+    return TRUE;
+}
+
+void SConnection::SetWindowPos(HWND hWnd, int x, int y) const
+{
+    uint32_t coords[] = { static_cast<uint32_t>(x), static_cast<uint32_t>(y) };
+    xcb_configure_window(connection, hWnd, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, coords);
+    xcb_size_hints_t hints;
+    memset(&hints, 0, sizeof(hints));
+    xcb_size_hints_set_position(&hints, true, x, y);
+    xcb_size_hints_set_win_gravity(&hints, XCB_GRAVITY_STATIC);
+    xcb_set_wm_normal_hints(connection, hWnd, &hints);
+}
+
+void SConnection::SetWindowSize(HWND hWnd, int cx, int cy) const
+{
+    if (cx < 1)
+        cx = 1;
+    if (cy < 1)
+        cy = 1;
+    uint32_t coords[] = { static_cast<uint32_t>(cx), static_cast<uint32_t>(cy) };
+    xcb_configure_window(connection, hWnd, XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, coords);
+
+    xcb_size_hints_t hints;
+    memset(&hints, 0, sizeof(hints));
+    xcb_size_hints_set_size(&hints, true, cx, cy);
+    xcb_set_wm_normal_hints(connection, hWnd, &hints);
+}
+
+BOOL SConnection::MoveWindow(HWND hWnd, int x, int y, int cx, int cy) const
+{
+    if (!IsWindow(hWnd))
+        return FALSE;
+    SetWindowPos(hWnd, x, y);
+    SetWindowSize(hWnd, cx, cy);
+    xcb_flush(connection);
+    return TRUE;
+}
+
+HWND SConnection::WindowFromPoint(POINT pt, HWND hWnd) const
+{
+    if (!hWnd)
+        hWnd = screen->root;
+    xcb_query_tree_reply_t *reply = xcb_query_tree_reply(connection, xcb_query_tree(connection, hWnd), 0);
+
+    xcb_window_t *children = xcb_query_tree_children(reply);
+    int num_children = xcb_query_tree_children_length(reply);
+    xcb_window_t result = XCB_WINDOW_NONE;
+
+    for (int i = 0; i < num_children; i++)
+    {
+        xcb_get_geometry_reply_t *geometry = xcb_get_geometry_reply(connection, xcb_get_geometry(connection, children[i]), NULL);
+        if (!geometry)
+            continue;
+
+        if (pt.x >= geometry->x && pt.x < (geometry->x + geometry->width) && pt.y >= geometry->y && pt.y < (geometry->y + geometry->height))
+        {
+            result = children[i];
+        }
+        free(geometry);
+        if (result != XCB_WINDOW_NONE)
+            break;
+    }
+    free(reply);
+    if (!result)
+        return hWnd;
+    else
+        return WindowFromPoint(pt, result);
+}
+
+BOOL SConnection::GetCursorPos(LPPOINT ppt) const
+{
+    if (!screen)
+    {
+        SLOG_STMW() << "Screen is NULL, cannot get cursor position";
+        ppt->x = 0;
+        ppt->y = 0;
+        return FALSE;
+    }
+    
+    // Get current mouse position
+    xcb_query_pointer_cookie_t pointer_cookie = xcb_query_pointer(connection, screen->root);
+    xcb_query_pointer_reply_t *pointer_reply = xcb_query_pointer_reply(connection, pointer_cookie, NULL);
+    if (!pointer_reply)
+    {
+        fprintf(stderr, "Failed to get mouse position\n");
+        ppt->x = 0;
+        ppt->y = 0;
+        return FALSE;
+    }
+    ppt->x = pointer_reply->root_x;
+    ppt->y = pointer_reply->root_y;
+    // Free resources
+    free(pointer_reply);
+    return TRUE;
+}
+
+int SConnection::GetDpi(BOOL bx) const
+{
+    if (!screen)
+    {
+        SLOG_STMW() << "Screen is NULL, using default DPI value";
+        return 96; // Default DPI
+    }
+    
+    if (m_forceDpi != -1)
+    {
+        return m_forceDpi;
+    }
+    
+    if (bx)
+    {
+        // Check for division by zero
+        if (screen->width_in_millimeters == 0)
+        {
+            SLOG_STMW() << "Screen width in millimeters is 0, using default DPI";
+            return 96;
+        }
+        return floor(25.4 * screen->width_in_pixels / screen->width_in_millimeters + 0.5f);
+    }
+    else
+    {
+        // Check for division by zero
+        if (screen->height_in_millimeters == 0)
+        {
+            SLOG_STMW() << "Screen height in millimeters is 0, using default DPI";
+            return 96;
+        }
+        return floor(25.4 * screen->height_in_pixels / screen->height_in_millimeters + 0.5f);
+    }
+}
+
+void SConnection::KillWindowTimer(HWND hWnd)
+{
+    std::unique_lock<CountMutex> lock(m_mutex4Msg);
+    auto it = m_lstTimer.begin();
+    while (it != m_lstTimer.end())
+    {
+        auto cur = it++;
+        if (cur->hWnd == hWnd)
+        {
+            m_lstTimer.erase(cur);
+        }
+    }
+}
+
+HWND SConnection::GetForegroundWindow()
+{
+    return GetActiveWnd();
+}
+
+BOOL SConnection::SetForegroundWindow(HWND hWnd)
+{
+    BringWindowToTop(hWnd);
+    return SetActiveWindow(hWnd);
+}
+
+BOOL SConnection::BringWindowToTop(HWND hWnd)
+{
+    if (!IsWindow(hWnd))
+        return FALSE;
+    uint32_t values[] = { XCB_STACK_MODE_ABOVE };
+    xcb_configure_window(connection, hWnd, XCB_CONFIG_WINDOW_STACK_MODE, values);
+    xcb_flush(connection);
+    return TRUE;
+}
+
+BOOL SConnection::SetWindowOpacity(HWND hWnd, BYTE byAlpha)
+{
+    uint32_t opacity = (0xffffffff / 0xff) * byAlpha;
+
+    if (opacity == 0xffffffff)
+        xcb_delete_property(connection, hWnd, atoms._NET_WM_WINDOW_OPACITY);
+    else
+        xcb_change_property(connection, XCB_PROP_MODE_REPLACE, hWnd, atoms._NET_WM_WINDOW_OPACITY, XCB_ATOM_CARDINAL, 32, 1, &opacity);
+    xcb_flush(connection);
+    return TRUE;
+}
+
+BOOL SConnection::SetWindowRgn(HWND hWnd, HRGN hRgn)
+{
+    if (hRgn)
+    {
+        std::vector<xcb_rectangle_t> rects;
+        DWORD len = GetRegionData(hRgn, 0, nullptr);
+        if (!len)
+            return FALSE;
+        RGNDATA *pData = (RGNDATA *)malloc(len);
+        GetRegionData(hRgn, len, pData);
+        rects.resize(pData->rdh.nCount);
+        xcb_rectangle_t *dst = rects.data();
+        RECT *src = (RECT *)pData->Buffer;
+        for (DWORD i = 0; i < pData->rdh.nCount; i++)
+        {
+            dst->x = src->left;
+            dst->y = src->top;
+            dst->width = src->right - src->left;
+            dst->height = src->bottom - src->top;
+            src++;
+            dst++;
+        }
+        free(pData);
+        xcb_shape_rectangles(connection, XCB_SHAPE_SO_SET, XCB_SHAPE_SK_BOUNDING, XCB_CLIP_ORDERING_UNSORTED, hWnd, 0, 0, rects.size(), &rects[0]);
+    }
+    else
+    {
+        xcb_shape_mask(connection, XCB_SHAPE_SO_SET, XCB_SHAPE_SK_BOUNDING, hWnd, 0, 0, XCB_NONE);
+    }
+    return TRUE;
+}
+
+HKL SConnection::GetKeyboardLayout(DWORD idThread __attribute__((unused)))
+{
+    // m_hkl == 0 表示尚未与 XKB 当前 group 同步
+    if (!m_hkl && m_keyboard)
+        m_hkl = (HKL)((DWORD)m_keyboard->getActiveGroup() + SWINX_HKL_BASE);
+    return m_hkl;
+}
+
+UINT SConnection::GetKeyboardLayoutList(int nBuff, HKL *lpList)
+{
+    if (!m_keyboard)
+        return 0;
+    const unsigned count = (unsigned)m_keyboard->getLayoutCount();
+    if (lpList && nBuff > 0)
+    {
+        const int n = (nBuff < (int)count) ? nBuff : (int)count;
+        for (int i = 0; i < n; ++i)
+            lpList[i] = (HKL)((DWORD)i + SWINX_HKL_BASE);
+    }
+    return (UINT)count;
+}
+
+HKL SConnection::ActivateKeyboardLayout(HKL hKl)
+{
+    HKL prev = GetKeyboardLayout(0);
+    if (!m_keyboard)
+        return prev;
+    const unsigned count = (unsigned)m_keyboard->getLayoutCount();
+    if (count <= 1)
+    {
+        m_hkl = (HKL)SWINX_HKL_BASE;
+        return prev;
+    }
+    unsigned group = (unsigned)m_keyboard->getActiveGroup();
+    // Win32 魔法值 HKL_NEXT(1) / HKL_PREV(0) 做循环切换，其余按布局句柄解码索引
+    if (hKl == (HKL)HKL_NEXT)
+        group = (group + 1) % count;
+    else if (hKl == (HKL)HKL_PREV)
+        group = (group + count - 1) % count;
+    else
+    {
+        const DWORD idx = (DWORD)hKl;
+        // 非法句柄（含未加偏移的裸索引）不改变当前 group
+        if (idx >= SWINX_HKL_BASE && (idx - SWINX_HKL_BASE) < count)
+            group = (unsigned)(idx - SWINX_HKL_BASE);
+    }
+    m_keyboard->setActiveGroup((xkb_layout_index_t)group);
+    m_hkl = (HKL)((DWORD)group + SWINX_HKL_BASE);
+    return prev;
+}
+
+void SConnection::OnFocusChanged(HWND hFocus)
+{
+    if (hFocus == m_hFocus)
+        return;
+    if (m_hFocus)
+    {
+        HIMC hIMC = ImmGetContext(m_hFocus);
+        if (hIMC)
+        {
+            if (hIMC->xic)
+            {
+                xcb_xim_close(m_xim);
+            }
+            ImmReleaseContext(m_hFocus, hIMC);
+        }
+        Msg *pMsg = new Msg;
+        pMsg->hwnd = m_hFocus;
+        pMsg->message = WM_KILLFOCUS;
+        pMsg->wParam = (WPARAM)hFocus;
+        pMsg->lParam = 0;
+        postMsg(pMsg);
+    }
+    HWND hOldFocus = m_hFocus;
+    m_hFocus = hFocus;
+    if (hFocus)
+    {
+        HIMC hIMC = ImmGetContext(hFocus);
+        if (hIMC)
+        {
+            xcb_xim_open(m_xim, xim_open_callback, true, (void *)hFocus);
+            ImmReleaseContext(hFocus, hIMC);
+        }
+        Msg *pMsg = new Msg;
+        pMsg->hwnd = m_hFocus;
+        pMsg->message = WM_SETFOCUS;
+        pMsg->wParam = (WPARAM)hOldFocus;
+        pMsg->lParam = 0;
+        postMsg(pMsg);
+    }
+}
+
+BOOL SConnection::SetFocus(HWND hWnd)
+{
+    if(m_hFocus == hWnd)
+        return TRUE;
+    if(_GetRoot(hWnd) != m_hWndActive)
+        return FALSE;
+    OnFocusChanged(hWnd);
+    return TRUE;
+}
+
+uint32_t SConnection::netWmStates(HWND hWnd)
+{
+    uint32_t result =0;
+
+    xcb_get_property_cookie_t get_cookie = xcb_get_property_unchecked(connection, 0, hWnd, atoms._NET_WM_STATE, XCB_ATOM_ATOM, 0, 1024);
+
+    xcb_get_property_reply_t *reply = xcb_get_property_reply(connection, get_cookie, NULL);
+
+    if (reply && reply->format == 32 && reply->type == XCB_ATOM_ATOM)
+    {
+        const xcb_atom_t *states = static_cast<const xcb_atom_t *>(xcb_get_property_value(reply));
+        for (int i = 0; i < (int)reply->length; i++)
+        {
+            if (states[i] == atoms._NET_WM_STATE_ABOVE)
+                result |= NetWmStateAbove;
+            if (states[i] == atoms._NET_WM_STATE_BELOW)
+                result |= NetWmStateBelow;
+            if (states[i] == atoms._NET_WM_STATE_FULLSCREEN)
+                result |= NetWmStateFullScreen;
+            if (states[i] == atoms._NET_WM_STATE_MAXIMIZED_HORZ)
+                result |= NetWmStateMaximizedHorz;
+            if (states[i] == atoms._NET_WM_STATE_MAXIMIZED_VERT)
+                result |= NetWmStateMaximizedVert;
+            if (states[i] == atoms._NET_WM_STATE_STAYS_ON_TOP)
+                result |= NetWmStateStaysOnTop;
+            if (states[i] == atoms._NET_WM_STATE_DEMANDS_ATTENTION)
+                result |= NetWmStateDemandsAttention;
+            if (states[i] == atoms._NET_WM_STATE_FOCUSED)
+                result |= NetWMStateFocus;
+        }
+    }
+    else
+    {
+#ifdef NET_WM_STATE_DEBUG
+        SLOG_FMTI("getting net wm state (%x), empty", m_window);
+#endif
+    }
+    if (reply)
+    {
+        free(reply);
+    }
+
+    return result;
+}
+
+void SConnection::updateWmclass(HWND hWnd, _Window *pWnd)
+{
+    char szPath[MAX_PATH];
+    GetModuleFileNameA(nullptr, szPath, MAX_PATH);
+    char *szName = strrchr(szPath, '/') + 1;
+    int nNameLen = strlen(szName);
+    int nLen = nNameLen + 1 + pWnd->title.length() + 1;
+    char *pszCls = new char[nLen];
+    strcpy(pszCls, szName);
+    strcpy(pszCls + nNameLen + 1, pWnd->title.c_str());
+    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, hWnd, atoms.WM_CLASS, XCB_ATOM_STRING, 8, nLen, pszCls);
+    delete[] pszCls;
+
+    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, hWnd, atoms._NET_WM_NAME, atoms.UTF8_STRING, 8, pWnd->title.length(), pWnd->title.c_str());
+    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, hWnd, XCB_ATOM_WM_NAME, atoms.UTF8_STRING, 8, pWnd->title.length(), pWnd->title.c_str());
+
+}
+
+DWORD SConnection::XdndAction2Effect(xcb_atom_t action)
+{
+    if (action == atoms.XdndActionMove)
+    {
+        return DROPEFFECT_MOVE;
+    }
+    else if (action == atoms.XdndActionCopy)
+    {
+        return DROPEFFECT_COPY;
+    }
+    else if (action == atoms.XdndActionLink)
+    {
+        return DROPEFFECT_LINK;
+    }
+    else
+    {
+        return DROPEFFECT_NONE;
+    }
+}
+
+xcb_atom_t SConnection::XdndEffect2Action(DWORD dwEffect)
+{
+    xcb_atom_t action = XCB_NONE;
+    if (dwEffect & DROPEFFECT_MOVE)
+        action = atoms.XdndActionMove;
+    else if (dwEffect & DROPEFFECT_LINK)
+        action = atoms.XdndActionCopy;
+    else if (dwEffect & DROPEFFECT_COPY)
+        action = atoms.XdndActionCopy;
+    return action;
+}
+
+
+static int CALLBACK CbEnumPopupWindow(HWND hwnd, LPARAM lParam){
+    std::list<HWND> *lstPopups = (std::list<HWND> *)lParam;
+    lstPopups->push_back(hwnd);
+    return 1;
+}
+
+bool SConnection::pushEvent(xcb_generic_event_t *event)
+{
+    uint8_t event_code = event->response_type & 0x7f;
+    Msg *pMsg = nullptr;
+    bool ret = false;
+    switch (event_code)
+    {
+    case XCB_SELECTION_REQUEST:
+    {
+        xcb_selection_request_event_t *e2 = (xcb_selection_request_event_t *)event;
+        m_tsSelection = e2->time;
+        m_clipboard->handleSelectionRequest(e2);
+        return false;
+    }
+    case XCB_SELECTION_CLEAR:
+    {
+        xcb_selection_clear_event_t *e2 = (xcb_selection_clear_event_t *)event;
+        m_tsSelection = e2->time;
+        m_clipboard->handleSelectionClear(e2);
+        return false;
+    }
+    case XCB_SELECTION_NOTIFY:
+    {
+        xcb_selection_notify_event_t *e2 = (xcb_selection_notify_event_t *)event;
+        m_tsSelection = e2->time;
+        //SLOG_STMI()<<"selection notify, XCB_SELECTION_NOTIFY, property="<<e2->property;
+        return false;
+    }
+    case XCB_LEAVE_NOTIFY:
+    {
+        xcb_leave_notify_event_t *e2 = (xcb_leave_notify_event_t *)event;
+        pMsg = new Msg;
+        pMsg->hwnd = e2->event;
+        pMsg->message = WM_MOUSELEAVE;
+        pMsg->wParam = pMsg->lParam = 0;
+        break;
+    }
+    case XCB_ENTER_NOTIFY:
+    {
+        xcb_enter_notify_event_t *e2 = (xcb_enter_notify_event_t *)event;
+        pMsg = new Msg;
+        pMsg->hwnd = e2->event;
+        pMsg->message = WM_MOUSEHOVER;
+        pMsg->wParam = 0;
+        pMsg->lParam = MAKELPARAM(e2->event_x, e2->event_y);
+        break;
+    }
+    case XCB_KEY_PRESS:
+    {
+        xcb_key_press_event_t *e2 = (xcb_key_press_event_t *)event;
+        m_tsSelection = e2->time;
+        pMsg = new Msg;
+        pMsg->hwnd = m_hFocus?m_hFocus:m_hWndActive;
+
+        UINT vk = m_keyboard->onKeyEvent(true, e2->detail, e2->state, e2->time);
+        pMsg->message = (vk < VK_NUMLOCK || (vk >= VK_OEM_1 && vk <= VK_OEM_8)) ? WM_KEYDOWN : WM_SYSKEYDOWN;
+        pMsg->wParam = vk;
+        BYTE scanCode = (BYTE)e2->detail;
+        pMsg->lParam = (scanCode << 16) | m_keyboard->getRepeatCount();
+        SLOG_FMTI("onkeydown, hfocus=%u, detail=%d,vk=%d, repeat=%d", (uint32_t)m_hFocus, e2->detail, vk, (int)m_keyboard->getRepeatCount());
+        break;
+    }
+    case XCB_KEY_RELEASE:
+    {
+        xcb_key_release_event_t *e2 = (xcb_key_release_event_t *)event;
+        pMsg = new Msg;
+        pMsg->hwnd = m_hFocus?m_hFocus:m_hWndActive;
+
+        UINT vk = m_keyboard->onKeyEvent(false, e2->detail, e2->state, e2->time);
+        pMsg->message = vk < VK_NUMLOCK ? WM_KEYUP : WM_SYSKEYUP;
+        pMsg->wParam = vk;
+        BYTE scanCode = (BYTE)e2->detail;
+        pMsg->lParam = scanCode << 16;
+        //SLOG_FMTI("onkeyup, detail=%d,vk=%d", e2->detail, vk);
+        break;
+    }
+    case XCB_EXPOSE:
+    {
+        xcb_expose_event_t *expose = (xcb_expose_event_t *)event;
+        RECT rc = { expose->x, expose->y, expose->x + expose->width, expose->y + expose->height };
+        HRGN hrgn = CreateRectRgnIndirect(&rc);
+        std::unique_lock<CountMutex> lock(m_mutex4Msg);
+        //combine pending paint messages.
+        for (auto it = m_msgQueue.begin(); it != m_msgQueue.end(); it++)
+        {
+            if ((*it)->message == WM_PAINT && (*it)->hwnd == expose->window)
+            {
+                MsgPaint *oldMsg = (MsgPaint *)(*it);
+                CombineRgn(oldMsg->rgn, oldMsg->rgn, hrgn, RGN_OR);
+                DeleteObject(hrgn);
+                oldMsg->lParam = (LPARAM)oldMsg->rgn;//update lParam to new region
+                return true;
+            }
+        }
+        MsgPaint *pMsgPaint = new MsgPaint(hrgn);
+        pMsgPaint->hwnd = expose->window;
+        pMsgPaint->message = WM_PAINT;
+        pMsgPaint->wParam = 0;
+        pMsgPaint->lParam = (LPARAM)hrgn;
+        pMsgPaint->time = GetTickCount64();
+        pMsg = pMsgPaint;
+        break;
+    }
+    case XCB_PROPERTY_NOTIFY:
+    {
+        xcb_property_notify_event_t *e2 = (xcb_property_notify_event_t *)event;
+        if (e2->atom == atoms._NET_WORKAREA)
+        {
+            updateWorkArea();
+        }else if(e2->atom == atoms._XSETTINGS_SETTINGS){
+            if(e2->window == m_setting_owner){
+                //upate xsettings
+                int oldDpi = m_forceDpi;
+                readXResources();
+                int newDpi = m_forceDpi;
+                if(oldDpi != newDpi){                  
+                    std::list<HWND> lstPopups;
+                    OnEnumWindows(0,0,CbEnumPopupWindow,(LPARAM)&lstPopups);
+                    for(auto it:lstPopups){
+                        WndObj wndObj = WndMgr::fromHwnd(it);
+                        if(wndObj){
+                            postMsg(it,UM_SETTINGS,SETTINGS_DPI,MAKELONG(newDpi,oldDpi));
+                        }
+                    }
+                }
+            }
+        }
+        else if (e2->atom == atoms._NET_WM_STATE || e2->atom == atoms.WM_STATE)
+        {
+            uint32_t newState = -1;
+            BOOL isIconic = this->IsIconic(e2->window);
+            if(isIconic){
+                newState = SIZE_MINIMIZED;
+            }else
+            {
+                uint32_t state = netWmStates(e2->window);
+                if ((state & (NetWmStateMaximizedHorz | NetWmStateMaximizedVert)) == (NetWmStateMaximizedHorz | NetWmStateMaximizedVert))
+                {
+                    newState = SIZE_MAXIMIZED;
+                }
+                else if ((state & (NetWmStateMaximizedHorz | NetWmStateMaximizedVert)) == 0)
+                {
+                    newState = SIZE_RESTORED;
+                }
+            }
+            if (newState != (uint32_t)-1)
+            {
+                pMsg = new Msg;
+                pMsg->hwnd = e2->window;
+                pMsg->message = UM_STATE;
+                pMsg->wParam = newState;
+//                SLOG_STMI() << "window state changed, hWnd=" << e2->window << ", new state=" << newState;
+            }
+        }
+        break;
+    }
+    case XCB_CONFIGURE_NOTIFY:
+    {
+        xcb_configure_notify_event_t *e2 = (xcb_configure_notify_event_t *)event;
+        std::unique_lock<CountMutex> lock(m_mutex4Msg);
+        for (auto it = m_msgQueue.begin(); it != m_msgQueue.end(); it++)
+        {
+            if ((*it)->message == WM_MOVE && (*it)->hwnd == e2->window)
+            {
+                delete *it;
+                m_msgQueue.erase(it);
+                break;
+            }
+        }
+        for (auto it = m_msgQueue.begin(); it != m_msgQueue.end(); it++)
+        {
+            if ((*it)->message == WM_SIZE && (*it)->hwnd == e2->window)
+            {
+                delete *it;
+                m_msgQueue.erase(it);
+                break;
+            }
+        }
+        POINT pos = { e2->x, e2->y };
+        if (!GetParent(e2->window))
+        {
+            // Do not trust the position, query it instead.
+                xcb_translate_coordinates_cookie_t cookie = xcb_translate_coordinates(connection, e2->window, screen->root, 0, 0);
+                xcb_translate_coordinates_reply_t *reply = xcb_translate_coordinates_reply(connection, cookie, NULL);
+                if (reply)
+                {
+                    pos.x = reply->dst_x;
+                    pos.y = reply->dst_y;
+                    free(reply);
+            }
+        }
+        // GetWindowRect 失败（窗口已不在 WndMgr 且 xcb 几何查询出错）时不会写入 rc，
+        // 此时直接比较就是读未初始化值（valgrind: conditional jump ... uninitialised）。
+        RECT rc = {};
+        if (GetWindowRect(e2->window, &rc))
+        {
+            if (rc.left != pos.x || rc.top != pos.y)
+            {
+                pMsg = new Msg;
+                pMsg->hwnd = e2->window;
+                pMsg->message = WM_MOVE;
+                pMsg->wParam = 0;
+                pMsg->lParam = MAKELPARAM(pos.x, pos.y);
+                GetCursorPos(&pMsg->pt);
+                m_msgQueue.push_back(pMsg);
+            }
+            if (rc.right - rc.left != e2->width || rc.bottom - rc.top != e2->height)
+            {
+                pMsg = new Msg;
+                pMsg->hwnd = e2->window;
+                pMsg->message = WM_SIZE;
+                pMsg->wParam = 0;
+                pMsg->lParam = MAKELPARAM(e2->width, e2->height);
+                GetCursorPos(&pMsg->pt);
+                m_msgQueue.push_back(pMsg);
+            }
+        }
+        pMsg = nullptr;
+        break;
+    }
+    case XCB_CLIENT_MESSAGE:
+    {
+        xcb_client_message_event_t *e2 = (xcb_client_message_event_t *)event;
+        if (e2->type == atoms.WM_WIN4XCB_IPC)
+        {
+            // ipc message
+            pMsg = new IpcMsg(e2->window, e2->data.data32);
+        }
+        else if (e2->type == atoms.WM_PROTOCOLS)
+        {
+            if (e2->data.data32[0] == atoms.WM_DELETE_WINDOW)
+            {
+                pMsg = new Msg;
+                pMsg->message = WM_CLOSE;
+                pMsg->hwnd = e2->window;
+                pMsg->wParam = pMsg->lParam = 0;
+            }
+        }
+        else if (e2->type == atoms._NET_WM_STATE_HIDDEN)
+        {
+            pMsg = new Msg;
+            pMsg->message = WM_SHOWWINDOW;
+            pMsg->hwnd = e2->window;
+            pMsg->wParam = e2->data.data32[0];
+            pMsg->lParam = 0;
+        }
+        else if (e2->type == atoms.XdndEnter)
+        {
+            WndObj wndObj = WndMgr::fromHwnd(e2->window);
+            if (!wndObj)
+                break;
+            int version = (int)(e2->data.data32[1] >> 24);
+            if (version > SDragDrop::xdnd_version)
+                break;
+            SLOG_STMI() << "####drag enter, init dragData";
+            XDndDataObjectProxy *pDataObject = new XDndDataObjectProxy(this, e2->data.data32[0], e2->data.data32);
+            DragEnterMsg *pMsg2 = new DragEnterMsg(pDataObject);
+            pDataObject->Release();
+            pMsg2->hwnd = e2->window;
+            pMsg2->message = UM_XDND_DRAG_ENTER;
+            pMsg2->hFrom = e2->data.data32[0];
+
+            POINT pt;
+            GetCursorPos(&pt);
+            pMsg2->DragEnterData::pt.x = pt.x;
+            pMsg2->DragEnterData::pt.y = pt.y;
+
+            pMsg = pMsg2;
+        }
+        else if (e2->type == atoms.XdndPosition)
+        {
+            // remove old position
+            std::unique_lock<CountMutex> lock(m_mutex4Msg);
+            for (auto it = m_msgQueue.begin(); it != m_msgQueue.end(); it++)
+            {
+                if ((*it)->message == UM_XDND_DRAG_OVER && (*it)->hwnd == e2->window)
+                {
+                    delete *it;
+                    m_msgQueue.erase(it);
+                    break;
+                }
+            }
+            WndObj wndObj = WndMgr::fromHwnd(e2->window);
+            if (!wndObj || !wndObj->dragData)
+                break;
+            XDndDataObjectProxy *pData = (XDndDataObjectProxy *)wndObj->dragData;
+            if (pData->getSource() != e2->data.data32[0])
+                break;
+            if (e2->data.data32[3] != XCB_NONE)
+                pData->m_targetTime = e2->data.data32[3];
+            DragOverMsg *pMsg2 = new DragOverMsg;
+            pMsg2->hwnd = e2->window;
+            pMsg2->message = UM_XDND_DRAG_OVER;
+            pMsg2->hFrom = e2->data.data32[0];
+            pMsg2->dwKeyState = e2->data.data32[1];
+            pMsg2->supported_actions = XdndAction2Effect(e2->data.data32[4]) | DROPEFFECT_COPY; // only one action is transfered from source, combine copy operation.
+            pMsg2->DragOverData::pt.x = HIWORD(e2->data.data32[2]);
+            pMsg2->DragOverData::pt.y = LOWORD(e2->data.data32[2]);
+            pMsg = pMsg2;
+        }
+        else if (e2->type == atoms.XdndLeave)
+        {
+            Msg *pMsg2 = new Msg;
+            pMsg2->hwnd = e2->window;
+            pMsg2->message = UM_XDND_DRAG_LEAVE;
+            pMsg2->wParam = e2->data.data32[0];
+            pMsg = pMsg2;
+        }
+        else if (e2->type == atoms.XdndDrop)
+        {
+            DragDropMsg *pMsg2 = new DragDropMsg;
+            pMsg2->hwnd = e2->window;
+            pMsg2->message = UM_XDND_DRAG_DROP;
+            pMsg2->hFrom = e2->data.data32[0];
+            pMsg2->wParam = e2->data.data32[4];
+            pMsg = pMsg2;
+        }
+        else if (e2->type == atoms.XdndFinished)
+        {
+            pMsg = new Msg;
+            pMsg->hwnd = e2->window;
+            pMsg->message = UM_XDND_FINISH;
+            pMsg->wParam = e2->data.data32[1]; // accept flag
+            pMsg->lParam = XdndAction2Effect(e2->data.data32[2]);
+        }
+        else if (e2->type == atoms.XdndStatus)
+        {
+            pMsg = new Msg;
+            pMsg->hwnd = e2->window;
+            pMsg->message = UM_XDND_STATUS;
+            pMsg->wParam = e2->data.data32[1]; // accept flag
+            pMsg->lParam = XdndAction2Effect(e2->data.data32[4]);
+        }
+    }
+    break;
+    case XCB_BUTTON_PRESS:
+    {
+        xcb_button_press_event_t *e2 = (xcb_button_press_event_t *)event;
+        m_keyboard->onMouseEvent(e2->state);
+        m_tsSelection = e2->time;
+        if (e2->detail >= XCB_BUTTON_INDEX_1 && e2->detail <= XCB_BUTTON_INDEX_3)
+        {
+            pMsg = new Msg;
+            pMsg->hwnd = e2->event;
+            WndObj wndObj = WndMgr::fromHwnd(e2->event);
+            BOOL bAutoDblClick = wndObj ? wndObj->bAutoDblClick : TRUE;
+            pMsg->pt.x = e2->event_x;
+            pMsg->pt.y = e2->event_y;
+            if (m_hWndCapture != 0 && e2->event != m_hWndCapture)
+            {
+                MapWindowPoints(e2->event, m_hWndCapture, &pMsg->pt, 1);
+                pMsg->hwnd = m_hWndCapture;
+            }
+            pMsg->lParam = MAKELPARAM(pMsg->pt.x, pMsg->pt.y);
+            switch (e2->detail)
+            {
+            case XCB_BUTTON_INDEX_1: // left button
+                pMsg->message = (!bAutoDblClick || TsSpan(e2->time, m_tsPrevPress[0]) > m_tsDoubleSpan) ? WM_LBUTTONDOWN : WM_LBUTTONDBLCLK;
+                m_tsPrevPress[0] = e2->time;
+                break;
+            case XCB_BUTTON_INDEX_2:
+                pMsg->message = (!bAutoDblClick ||  TsSpan(e2->time, m_tsPrevPress[1]) > m_tsDoubleSpan) ? WM_MBUTTONDOWN : WM_MBUTTONDBLCLK;
+                m_tsPrevPress[1] = e2->time;
+                break;
+            case XCB_BUTTON_INDEX_3:
+                pMsg->message = (!bAutoDblClick || TsSpan(e2->time, m_tsPrevPress[2]) > m_tsDoubleSpan) ? WM_RBUTTONDOWN : WM_RBUTTONDBLCLK;
+                m_tsPrevPress[2] = e2->time;
+                break;
+            }
+            if (e2->detail <= XCB_BUTTON_INDEX_3)
+            {
+                uint8_t vk = 0;
+                switch (e2->detail)
+                {
+                case XCB_BUTTON_INDEX_1:
+                    vk = VK_LBUTTON;
+                    break;
+                case XCB_BUTTON_INDEX_2:
+                    vk = VK_MBUTTON;
+                    break;
+                case XCB_BUTTON_INDEX_3:
+                    vk = VK_RBUTTON;
+                    break;
+                }
+                m_keyboard->setKeyState(vk, 0x80);
+            }
+            pMsg->wParam = ButtonState2Mask(e2->state);
+        }
+        else if (e2->detail == XCB_BUTTON_INDEX_4 || e2->detail == XCB_BUTTON_INDEX_5)
+        {
+            // mouse wheel event
+            // SLOG_STMI() << "mouse wheel, dir = " << (e2->detail == XCB_BUTTON_INDEX_4 ? "up" : "down");
+            pMsg = new Msg;
+            pMsg->hwnd = e2->event;
+            pMsg->message = WM_MOUSEWHEEL;
+
+            pMsg->pt.x = e2->event_x;
+            pMsg->pt.y = e2->event_y;
+            ClientToScreen(pMsg->hwnd, &pMsg->pt);
+            pMsg->lParam = MAKELPARAM(pMsg->pt.x, pMsg->pt.y);
+
+            WORD vkFlag = 0;
+            vkFlag |= GetKeyState(VK_CONTROL) ? MK_CONTROL : 0;
+            vkFlag |= GetKeyState(VK_LBUTTON) ? MK_LBUTTON : 0;
+            vkFlag |= GetKeyState(VK_MBUTTON) ? MK_MBUTTON : 0;
+            vkFlag |= GetKeyState(VK_RBUTTON) ? MK_RBUTTON : 0;
+            vkFlag |= GetKeyState(VK_SHIFT) ? MK_SHIFT : 0;
+            int delta = e2->detail == XCB_BUTTON_INDEX_4 ? WHEEL_DELTA : -WHEEL_DELTA;
+            pMsg->wParam = MAKEWPARAM(vkFlag, delta);
+        }
+        if (pMsg && !IsWindowEnabled(pMsg->hwnd))
+        {
+            delete pMsg;
+            pMsg = nullptr;
+        }
+        break;
+    }
+    case XCB_BUTTON_RELEASE:
+    {
+        xcb_button_release_event_t *e2 = (xcb_button_release_event_t *)event;
+        if (e2->detail >= XCB_BUTTON_INDEX_1 && e2->detail <= XCB_BUTTON_INDEX_3)
+        {
+            pMsg = new Msg;
+            pMsg->hwnd = e2->event;
+            pMsg->pt.x = e2->event_x;
+            pMsg->pt.y = e2->event_y;
+            if (m_hWndCapture != 0 && e2->event != m_hWndCapture)
+            {
+                MapWindowPoints(e2->event, m_hWndCapture, &pMsg->pt, 1);
+                pMsg->hwnd = m_hWndCapture;
+            }
+            pMsg->lParam = MAKELPARAM(pMsg->pt.x, pMsg->pt.y);
+            uint8_t vk = 0;
+            switch (e2->detail)
+            {
+            case XCB_BUTTON_INDEX_1: // left button
+                pMsg->message = WM_LBUTTONUP;
+                vk = VK_LBUTTON;
+                break;
+            case XCB_BUTTON_INDEX_2:
+                pMsg->message = WM_MBUTTONUP;
+                vk = VK_MBUTTON;
+                break;
+            case XCB_BUTTON_INDEX_3:
+                pMsg->message = WM_RBUTTONUP;
+                vk = VK_RBUTTON;
+                break;
+            }
+            m_keyboard->setKeyState(vk, 0);
+            pMsg->wParam = ButtonState2Mask(e2->state);
+        }
+        if (pMsg && !IsWindowEnabled(pMsg->hwnd))
+        {
+            delete pMsg;
+            pMsg = nullptr;
+        }
+        break;
+    }
+    case XCB_MOTION_NOTIFY:
+    {
+        xcb_motion_notify_event_t *e2 = (xcb_motion_notify_event_t *)event;
+        POINT pt = { e2->event_x, e2->event_y };
+        HWND hWnd = e2->event;
+        if (m_hWndCapture != 0 && hWnd != m_hWndCapture)
+        {
+            // SLOG_STMI()<<"remap mousemove to capture: capture="<<m_hWndCapture<<" event window="<<e2->event;
+            MapWindowPoints(hWnd, m_hWndCapture, &pt, 1);
+            hWnd = m_hWndCapture;
+        }
+        // remove old mouse move
+        static const int16_t kMinPosDiff = 5;
+        WPARAM wp = ButtonState2Mask(e2->state);
+        std::unique_lock<CountMutex> lock(m_mutex4Msg);
+        for (auto it = m_msgQueue.begin(); it != m_msgQueue.end(); it++)
+        {
+            if ((*it)->message == WM_MOUSEMOVE && (*it)->hwnd == e2->event && (*it)->wParam == wp)
+            {
+                POINT ptPrev={GET_X_LPARAM((*it)->lParam), GET_Y_LPARAM((*it)->lParam)};
+                int16_t diff = abs(ptPrev.x - pt.x) + abs(ptPrev.y - pt.x);
+                if (diff <= kMinPosDiff)
+                {
+                    delete *it;
+                    m_msgQueue.erase(it);
+                    break;
+                }
+            }
+        }
+        pMsg = new Msg;
+        pMsg->hwnd = hWnd;
+        pMsg->message = WM_MOUSEMOVE;
+        pMsg->lParam = MAKELPARAM(pt.x, pt.y);
+        pMsg->wParam = wp;
+        pMsg->time = e2->time;
+        // different from other mouse message, dispatch mousemove dispite whether the target window is disable or not. we need it to generate WM_SETCURSOR
+        break;
+    }
+    case XCB_FOCUS_IN:
+    case XCB_FOCUS_OUT:
+        {
+            xcb_focus_out_event_t *e2 = (xcb_focus_out_event_t *)event;
+            SLOG_STMI()<<"focus changed: detail="<<e2->detail<<" window="<<e2->event<<" type="<< (event_code==XCB_FOCUS_IN?"FOCUS IN":"FOCUS OUT");
+            //swinx use the focus window to indicate the active window, it's focus window is managered by swinx itself, so when focus in/out event received, just query active window and update active window.
+            OnActiveChange(_QueryActiveWindow());
+        }
+        break;
+    case XCB_MAP_NOTIFY:
+    {
+        xcb_map_notify_event_t *e2 = (xcb_map_notify_event_t *)event;
+        pMsg = new Msg;
+        pMsg->hwnd = e2->event;
+        pMsg->message = UM_MAPNOTIFY;
+        pMsg->wParam = 1;
+        break;
+    }
+    case XCB_UNMAP_NOTIFY:
+    {
+        xcb_unmap_notify_event_t *e2 = (xcb_unmap_notify_event_t *)event;
+        pMsg = new Msg;
+        pMsg->hwnd = e2->event;
+        pMsg->message = UM_MAPNOTIFY;
+        pMsg->wParam = 0;
+        break;
+    }
+    case XCB_MAPPING_NOTIFY:
+    {
+        xcb_mapping_notify_event_t *e2 = (xcb_mapping_notify_event_t *)event;
+        m_keyboard->onMappingNotifyEvent(e2);
+        break;
+    }
+    default:
+        // SLOG_STMI()<<"unknown event code:"<<event_code;
+        break;
+    }
+    if (pMsg)
+    {
+        std::unique_lock<CountMutex> lock(m_mutex4Msg);
+        GetCursorPos(&pMsg->pt);
+        m_msgQueue.push_back(pMsg);
+    }
+    return ret;
+}
+
+void *SConnection::readProc(void *p)
+{
+    SConnection *_this = static_cast<SConnection *>(p);
+    _this->_readProc();
+    return p;
+}
+
+void SConnection::_readProc()
+{
+    int xcb_fd = xcb_get_file_descriptor(connection);
+    
+    while (!m_bQuit)
+    {
+        // Use poll to wait for either XCB events or pipe wakeup
+        struct pollfd fds[2];
+        int nfds = 0;
+        
+        // Add XCB file descriptor
+        if (xcb_fd >= 0)
+        {
+            fds[nfds].fd = xcb_fd;
+            fds[nfds].events = POLLIN;
+            fds[nfds].revents = 0;
+            nfds++;
+        }
+        
+        // Add pipe read end
+        if (m_wakeupPipe[0] >= 0)
+        {
+            fds[nfds].fd = m_wakeupPipe[0];
+            fds[nfds].events = POLLIN;
+            fds[nfds].revents = 0;
+            nfds++;
+        }
+        
+        if (nfds == 0)
+        {
+            // No file descriptors to wait on, just sleep briefly
+            usleep(10000); // 10ms
+            continue;
+        }
+        
+        // Wait for events
+        int ret = poll(fds, nfds, -1); // Block indefinitely
+        if (ret < 0)
+        {
+            if (errno == EINTR)
+                continue; // Interrupted by signal, retry
+            break; // Error, exit loop
+        }
+        
+        // Check if we were woken up by the pipe
+        bool pipeWakeup = false;
+        (void)pipeWakeup;
+        if (m_wakeupPipe[0] >= 0 && nfds > 1 && (fds[nfds-1].revents & POLLIN))
+        {
+            // Read and discard the wakeup byte
+            char dummy;
+            while (read(m_wakeupPipe[0], &dummy, 1) > 0)
+            {
+                // Keep reading until pipe is empty
+            }
+            pipeWakeup = true;
+        }
+        
+        // If quit flag is set (either by pipe wakeup or other means), exit
+        if (m_bQuit)
+        {
+            break;
+        }
+        
+        // Process XCB events if available
+        if (xcb_fd >= 0 && (fds[0].revents & POLLIN))
+        {
+            xcb_generic_event_t *event = xcb_poll_for_event(connection);
+            while (event)
+            {
+                if ((event->response_type & 0x7f) == XCB_CLIENT_MESSAGE && 
+                    ((xcb_client_message_event_t *)event)->type == atoms.WM_DISCONN)
+                {
+                    m_bQuit = true;
+                    SetEvent(m_evtSync);
+                    free(event);
+                    break;
+                }
+                
+                {
+                    std::unique_lock<std::mutex> lock(m_mutex4Evt);
+                    m_evtQueue.push_back(event);
+                    SetEvent(m_evtSync);
+                }
+                
+                event = xcb_poll_for_event(connection);
+            }
+        }
+    }
+
+    m_mutex4Evt.lock();
+    for (auto it : m_evtQueue)
+    {
+        free(it);
+    }
+    m_evtQueue.clear();
+    m_mutex4Evt.unlock();
+
+    // SLOG_STMI() << "event reader done";
+}
+
+void SConnection::updateWorkArea()
+{
+    memset(&m_rcWorkArea, 0, sizeof(RECT));
+    xcb_get_property_reply_t *workArea = xcb_get_property_reply(connection, xcb_get_property_unchecked(connection, false, screen->root, atoms._NET_WORKAREA, XCB_ATOM_CARDINAL, 0, 1024), NULL);
+    if (workArea && workArea->type == XCB_ATOM_CARDINAL && workArea->format == 32 && workArea->value_len >= 4)
+    {
+        // If workArea->value_len > 4, the remaining ones seem to be for WM's virtual desktops
+        // (don't mess with QXcbVirtualDesktop which represents an X screen).
+        // But QScreen doesn't know about that concept.  In reality there could be a
+        // "docked" panel (with _NET_WM_STRUT_PARTIAL atom set) on just one desktop.
+        // But for now just assume the first 4 values give us the geometry of the
+        // "work area", AKA "available geometry"
+        uint32_t *geom = (uint32_t *)xcb_get_property_value(workArea);
+        m_rcWorkArea.left = geom[0];
+        m_rcWorkArea.top = geom[1];
+        m_rcWorkArea.right = m_rcWorkArea.left + geom[2];
+        m_rcWorkArea.bottom = m_rcWorkArea.top + geom[3];
+    }
+    free(workArea);
+    //SLOG_STMI() << "updateWorkArea, rc=" << m_rcWorkArea.left << "," << m_rcWorkArea.top << "," << m_rcWorkArea.right << "," << m_rcWorkArea.bottom;
+}
+
+void SConnection::GetWorkArea(HMONITOR hMonitor, RECT *prc) const
+{
+    // 兼容旧接口：按显示器返回工作区（_NET_WORKAREA 与显示器矩形求交）
+    if (!GetMonitorWorkRect(hMonitor, prc))
+        memcpy(prc, &m_rcWorkArea, sizeof(RECT));
+}
+
+//--------------------------------------------------------------------------
+// clipboard api
+
+BOOL SConnection::EmptyClipboard()
+{
+    return m_clipboard->emptyClipboard();
+}
+
+BOOL SConnection::IsClipboardFormatAvailable(_In_ UINT format)
+{
+    if (!GetClipboardOwner())
+        return FALSE;
+    return m_clipboard->hasFormat(format);
+}
+
+BOOL SConnection::OpenClipboard(HWND hWndNewOwner)
+{
+    return m_clipboard->openClipboard(hWndNewOwner);
+}
+
+BOOL SConnection::CloseClipboard()
+{
+    return m_clipboard->closeClipboard();
+}
+
+HWND SConnection::GetClipboardOwner()
+{
+    return m_clipboard->getClipboardOwner();
+}
+
+HANDLE SConnection::GetClipboardData(UINT uFormat)
+{
+    return m_clipboard->getClipboardData(uFormat);
+}
+
+HANDLE SConnection::SetClipboardData(UINT uFormat, HANDLE hMem)
+{
+    return m_clipboard->setClipboardData(uFormat, hMem);
+}
+
+BOOL SConnection::IsDropTarget(HWND hWnd)
+{
+    xcb_get_property_cookie_t cookie = xcb_get_property(connection, 0, hWnd, atoms.XdndAware, XCB_GET_PROPERTY_TYPE_ANY, 0, 1024);
+    xcb_get_property_reply_t *reply = xcb_get_property_reply(connection, cookie, NULL);
+    int ret = 0;
+    if (reply)
+    {
+        if (reply->type != XCB_NONE)
+        {
+            char *data = (char *)xcb_get_property_value(reply);
+            if (data[0] <= SDragDrop::xdnd_version)
+            {
+                ret = data[0];
+            }
+        }
+        free(reply);
+    }
+    return ret;
+}
+
+VOID CALLBACK OnFlashWindowTimeout(HWND hWnd __attribute__((unused)), UINT, UINT_PTR, DWORD)
+{
+}
+
+BOOL SConnection::FlashWindowEx(PFLASHWINFO info)
+{
+    if (info->dwFlags == FLASHW_STOP)
+    { // stop flash for the window
+        changeNetWmState(info->hwnd, false, atoms._NET_WM_STATE_DEMANDS_ATTENTION, 0);
+    }
+    else
+    { // start flash
+        changeNetWmState(info->hwnd, true, atoms._NET_WM_STATE_DEMANDS_ATTENTION, 0);
+        if (info->dwFlags != FLASHW_TIMER)
+        { //
+            SetTimer(info->hwnd, TM_FLASH, info->dwTimeout * info->uCount, OnFlashWindowTimeout);
+        }
+    }
+    return 0;
+}
+
+void SConnection::changeNetWmState(HWND hWnd, bool set, xcb_atom_t one, xcb_atom_t two)
+{
+    xcb_client_message_event_t event = {};
+    event.response_type = XCB_CLIENT_MESSAGE;
+    event.format = 32;
+    event.sequence = 0;
+    event.window = hWnd;
+    event.type = atoms._NET_WM_STATE;
+    event.data.data32[0] = set ? 1 : 0;
+    event.data.data32[1] = one;
+    event.data.data32[2] = two;
+    event.data.data32[3] = 0;
+    event.data.data32[4] = 0;
+
+    xcb_send_event32(connection, 0, screen->root, XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT, event);
+}
+
+int SConnection::OnGetClassName(HWND hWnd, LPSTR lpClassName, int nMaxCount)
+{
+    uint32_t clsAtom = 0;
+    xcb_get_property_cookie_t cookie = xcb_get_property(connection, 0, hWnd, atoms.WM_CLASS_ATOM, XCB_ATOM_CARDINAL, 0, 1);
+    xcb_get_property_reply_t *reply = xcb_get_property_reply(connection, cookie, NULL);
+    if (reply != NULL)
+    {
+        clsAtom = *(uint32_t *)xcb_get_property_value(reply);
+        free(reply);
+        SAtoms::getAtomName(clsAtom, lpClassName, nMaxCount);
+    }
+    return (int)clsAtom;
+}
+
+BOOL SConnection::OnSetWindowText(HWND hWnd, _Window *wndObj, LPCSTR lpszString)
+{
+    wndObj->title = lpszString ? lpszString : "";
+    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, hWnd, atoms.WM_NAME, atoms.UTF8_STRING, 8, wndObj->title.length(), wndObj->title.c_str());
+    xcb_flush(connection);
+    updateWmclass(hWnd,wndObj);
+    return TRUE;
+}
+
+int SConnection::OnGetWindowTextLengthA(HWND hWnd)
+{
+    WndObj wndObj = WndMgr::fromHwnd(hWnd);
+    if (wndObj)
+    {
+        return wndObj->title.length();
+    }
+    else
+    {
+        int ret = 0;
+        xcb_get_property_cookie_t cookie = xcb_get_property(connection, 0, hWnd, atoms.WM_NAME, atoms.UTF8_STRING, 0, UINT_MAX);
+        xcb_get_property_reply_t *reply = xcb_get_property_reply(connection, cookie, NULL);
+        if (reply)
+        {
+            ret = xcb_get_property_value_length(reply);
+            free(reply);
+        }
+        return ret;
+    }
+}
+
+int SConnection::OnGetWindowTextLengthW(HWND hWnd)
+{
+    WndObj wndObj = WndMgr::fromHwnd(hWnd);
+    if (wndObj)
+    {
+        return MultiByteToWideChar(CP_UTF8, 0, wndObj->title.c_str(), wndObj->title.length(), nullptr, 0);
+    }
+    else
+    {
+        int ret = 0;
+        xcb_get_property_cookie_t cookie = xcb_get_property(connection, 0, hWnd, atoms.WM_NAME, atoms.UTF8_STRING, 0, UINT_MAX);
+        xcb_get_property_reply_t *reply = xcb_get_property_reply(connection, cookie, NULL);
+        if (reply)
+        {
+            int len = xcb_get_property_value_length(reply);
+            const char *text = (const char *)xcb_get_property_value(reply);
+            ret = MultiByteToWideChar(CP_UTF8, 0, text, len, nullptr, 0);
+            free(reply);
+        }
+        return ret;
+    }
+}
+
+int SConnection::OnGetWindowTextA(HWND hWnd, char *buf, int bufLen)
+{
+    WndObj wndObj = WndMgr::fromHwnd(hWnd);
+    if (wndObj)
+    {
+        if (bufLen < (int)wndObj->title.length())
+        {
+            SetLastError(ERROR_INSUFFICIENT_BUFFER);
+            return 0;
+        }
+        strcpy(buf, wndObj->title.c_str());
+        return wndObj->title.length();
+    }
+    else
+    {
+        int ret = 0;
+        xcb_get_property_cookie_t cookie = xcb_get_property(connection, 0, hWnd, atoms.WM_NAME, atoms.UTF8_STRING, 0, UINT_MAX);
+        xcb_get_property_reply_t *reply = xcb_get_property_reply(connection, cookie, NULL);
+        if (reply)
+        {
+            int len = xcb_get_property_value_length(reply);
+            if (len <= bufLen)
+            {
+                const char *text = (const char *)xcb_get_property_value(reply);
+                memcpy(buf, text, len);
+                ret = len;
+                if (len < bufLen)
+                {
+                    buf[len] = 0;
+                }
+            }
+            free(reply);
+        }
+        return ret;
+    }
+}
+
+int SConnection::OnGetWindowTextW(HWND hWnd, wchar_t *buf, int bufLen)
+{
+    WndObj wndObj = WndMgr::fromHwnd(hWnd);
+    if (wndObj)
+    {
+        return MultiByteToWideChar(CP_UTF8, 0, wndObj->title.c_str(), wndObj->title.length(), buf, bufLen);
+    }
+    else
+    {
+        int ret = 0;
+        xcb_get_property_cookie_t cookie = xcb_get_property(connection, 0, hWnd, atoms.WM_NAME, atoms.UTF8_STRING, 0, UINT_MAX);
+        xcb_get_property_reply_t *reply = xcb_get_property_reply(connection, cookie, NULL);
+        if (reply)
+        {
+            int len = xcb_get_property_value_length(reply);
+            if (len <= bufLen)
+            {
+                const char *text = (const char *)xcb_get_property_value(reply);
+                ret = MultiByteToWideChar(CP_UTF8, 0, text, len, buf, bufLen);
+            }
+            free(reply);
+        }
+        return ret;
+    }
+}
+
+struct StFindWindow
+{
+    SConnection *conn;
+    LPCSTR lpClassName;
+    LPCSTR lpWindowName;
+    HWND hRet;
+};
+
+static BOOL CALLBACK CbFindWindow(HWND hWnd, LPARAM lp)
+{
+    StFindWindow *param = (StFindWindow *)lp;
+    BOOL bMatch = TRUE;
+    if (param->lpWindowName)
+    {
+        char szTxt[1000];
+        if (param->conn->OnGetWindowTextA(hWnd, szTxt, 1000))
+        {
+            bMatch = strcmp(param->lpWindowName, szTxt) == 0;
+        }
+        else
+        {
+            bMatch = FALSE;
+        }
+    }
+    if (bMatch && param->lpClassName)
+    {
+        char szCls[1000];
+        if (param->conn->OnGetClassName(hWnd, szCls, 1000))
+        {
+            bMatch = strcmp(szCls, param->lpClassName) == 0;
+        }
+        else
+        {
+            bMatch = FALSE;
+        }
+    }
+    if (bMatch)
+    {
+        param->hRet = hWnd;
+    }
+    return !bMatch;
+}
+
+HWND SConnection::OnFindWindowEx(HWND hParent, HWND hChildAfter, LPCSTR lpClassName, LPCSTR lpWindowName)
+{
+    char szTstCls[1000] = { 0 };
+    if (lpClassName && IS_INTRESOURCE(lpClassName))
+    {
+        GetAtomNameA((int)(intptr_t)lpClassName, szTstCls, 1000);
+        lpClassName = szTstCls;
+    }
+    StFindWindow param = { this, lpClassName, lpWindowName, 0 };
+    OnEnumWindows(hParent, hChildAfter, CbFindWindow, (LPARAM)&param);
+    return param.hRet;
+}
+
+BOOL SConnection::OnEnumWindows(HWND hParent, HWND hChildAfter, WNDENUMPROC lpEnumFunc, LPARAM lParam){
+    BOOL bContinue=TRUE;
+    return _onEnumWindows(hParent, hChildAfter, lpEnumFunc, lParam,FALSE,bContinue);
+}
+
+xcb_window_t SConnection::_findAppChild(xcb_window_t deco_wnd){
+    xcb_query_tree_cookie_t child_tree_cookie = xcb_query_tree(connection, deco_wnd);
+    xcb_query_tree_reply_t *child_tree_reply = xcb_query_tree_reply(connection, child_tree_cookie, NULL);
+    if (child_tree_reply && child_tree_reply->children_len > 0)
+    {
+        xcb_window_t *deco_children = xcb_query_tree_children(child_tree_reply);
+        xcb_window_t ret = deco_children[0]; // Use the first (typically only) child
+        free(child_tree_reply);
+        if(IsDecorationWindow(ret)){
+            ret = _findAppChild(ret);
+        }
+        return ret;
+    }
+    if (child_tree_reply)
+    {
+        // reply with no children must be freed as well.
+        free(child_tree_reply);
+    }
+    return XCB_WINDOW_NONE;
+}
+
+BOOL SConnection::_onEnumWindows(HWND hParent, HWND hChildAfter, WNDENUMPROC lpEnumFunc, LPARAM lParam,BOOL bIncludeDescendants,BOOL &bContinue)
+{
+    assert(screen);
+    if (!hParent)
+        hParent = screen->root;
+    xcb_query_tree_cookie_t tree_cookie = xcb_query_tree(connection, hParent);
+    xcb_query_tree_reply_t *tree_reply = xcb_query_tree_reply(connection, tree_cookie, NULL);
+    if (!tree_reply)
+        return FALSE;
+    xcb_window_t *children = xcb_query_tree_children(tree_reply);
+    int child_count = tree_reply->children_len;
+    int i = 0;
+    if (hChildAfter)
+    {
+        while (i < child_count)
+        {
+            if (children[i] == hChildAfter)
+            {
+                i++;
+                break;
+            }
+            i++;
+        }
+    }
+    bContinue = TRUE; 
+    for (; bContinue && i < child_count; i++)
+    {
+        HWND current_child = children[i];
+        // If this is a decoration window, skip it and use its child (app window) instead
+        bool isDeco = IsDecorationWindow(current_child);
+        if(isDeco){
+            current_child = _findAppChild(current_child);
+            if(!current_child){
+                continue;
+            }
+        }
+        bContinue = lpEnumFunc(current_child, lParam);
+        if (!bContinue)
+            break;
+        if(bIncludeDescendants){
+            _onEnumWindows(current_child, 0, lpEnumFunc, lParam,TRUE,bContinue);
+            if (!bContinue)
+                break; 
+        }
+    }
+    free(tree_reply);
+    return TRUE;
+}
+
+
+void SConnection::OnActiveChange(HWND hWnd)
+{
+    WndObj wndObj = WndMgr::fromHwnd(hWnd);
+    if(!wndObj){
+        hWnd = 0;
+    }
+    if(hWnd == m_hWndActive)
+        return;
+    SLOG_STMI()<<"OnActiveChange, active="<<hWnd<<" focus="<<m_hFocus;
+    HWND oldActive = m_hWndActive;
+    WndObj oldActiveWnd = WndMgr::fromHwnd(oldActive);
+    m_hWndActive = hWnd;
+    if (oldActiveWnd)
+    {
+        //save focus before deactivate, some app (like vscode) will change focus in WM_ACTIVATE handler, we need restore it after activate new active window
+        m_mapFocus[oldActive] = m_hFocus;
+        OnFocusChanged(0);
+        SendMessageA(oldActive, WM_ACTIVATE, WA_INACTIVE, hWnd);
+    }    
+    if (hWnd)
+    {
+        SendMessageA(hWnd, WM_ACTIVATE, WA_ACTIVE, oldActive);
+        HWND hFocus = m_hWndActive;
+        auto it = m_mapFocus.find(hWnd);
+        if (it != m_mapFocus.end()) {
+            hFocus = it->second;
+        }
+        OnFocusChanged(hFocus);
+    }
+}
+
+// Check if window is application-level (not a WM decoration window)
+// Simplified: Check WndMgr first (fast path), then use _NET_WM_PID property (cross-process)
+bool SConnection::IsApplicationWindow(xcb_window_t window)
+{
+    if (!window)
+        return false;
+    
+    // Fast path: Check if it's a SWINX-managed window (same process)
+    if (WndMgr::fromHwnd(window))
+        return true;
+    
+    // Cross-process fallback: Check _NET_WM_PID property
+    // Decoration windows typically don't have this, application windows do
+    xcb_get_property_cookie_t cookie = xcb_get_property(connection, 0, window, atoms._NET_WM_PID, XCB_ATOM_CARDINAL, 0, 1);
+    xcb_get_property_reply_t *reply = xcb_get_property_reply(connection, cookie, NULL);
+    
+    bool bIsApp = false;
+    if (reply && reply->type == XCB_ATOM_CARDINAL && reply->value_len > 0)
+    {
+        // Has _NET_WM_PID - definitely an application window
+        bIsApp = true;
+    }
+    free(reply);
+    
+    return bIsApp;
+}
+
+bool SConnection::IsDecorationWindow(xcb_window_t window)
+{
+    if (!window)
+        return false;
+    
+    if(IsApplicationWindow(window))
+        return false;
+    return true;
+}
+
+HWND get_parent(HWND hwnd){
+    SConnection *conn = SConnMgr::instance()->getConnection();
+    xcb_window_t ret = XCB_NONE;
+    xcb_query_tree_cookie_t cookie = xcb_query_tree(conn->connection, hwnd);
+    xcb_query_tree_reply_t *reply = xcb_query_tree_reply(conn->connection, cookie, NULL);
+    if (reply)
+    {
+        ret = reply->parent;
+    }
+    free(reply);
+    return ret;
+}
+
+xcb_window_t SConnection::_GetParent(xcb_window_t hwnd)
+{
+    WndObj wndObj = WndMgr::fromHwnd(hwnd);
+    if(wndObj)
+    {
+        if(wndObj->dwStyle & WS_CHILD)
+            return GetParent(hwnd);
+        else
+            return XCB_NONE;
+    }else{
+        xcb_window_t ret = XCB_NONE;
+        xcb_query_tree_cookie_t cookie = xcb_query_tree(connection, hwnd);
+        xcb_query_tree_reply_t *reply = xcb_query_tree_reply(connection, cookie, NULL);
+        if(reply && IsApplicationWindow(reply->parent)){
+            ret = reply->parent;
+        }
+        free(reply);
+        return ret;
+    }
+}
+
+xcb_window_t SConnection::_GetRoot(xcb_window_t hwnd)
+{
+    xcb_window_t ret = hwnd;
+    for(;;)
+    {
+        xcb_window_t hParent = _GetParent(ret);
+        if (!hParent)
+            break;  // No more parents found
+        ret = hParent;
+    }
+    return ret;
+}
+
+HWND SConnection::OnGetAncestor(HWND hwnd, UINT gaFlags)
+{
+    switch (gaFlags)
+    {
+    case GA_PARENT:
+        return _GetParent(hwnd);
+    case GA_ROOT:
+        return _GetRoot(hwnd);
+    case GA_ROOTOWNER:
+    {
+        HWND ret = _GetRoot(hwnd);
+        HWND hOwner = GetParent(ret);
+        if (hOwner)
+            ret = hOwner;
+        return ret;
+    }
+    default:
+        return 0;
+    }
+}
+
+cairo_surface_t *SConnection::CreateWindowSurface(HWND hWnd, uint32_t visualId, int cx, int cy)
+{
+    cairo_surface_t *surf = cairo_xcb_surface_create(connection, hWnd, xcb_aux_find_visual_by_id(screen, visualId), std::max(cx, 1), std::max(cy, 1));
+    if (m_cairoDevice == nullptr && surf && cairo_surface_status(surf) == CAIRO_STATUS_SUCCESS)
+    {
+        // Keep our own reference so we can finish the device at teardown.
+        // cairo's xcb device (cairo_xcb_connection_t) is cached globally and
+        // shared by every surface on this connection.
+        m_cairoDevice = cairo_surface_get_device(surf);
+        if (m_cairoDevice)
+            cairo_device_reference(m_cairoDevice);
+    }
+    return surf;
+}
+
+cairo_surface_t * SConnection::ResizeSurface(cairo_surface_t *surface, HWND hWnd __attribute__((unused)), uint32_t visualId __attribute__((unused)),int cx, int cy)
+{
+    cairo_xcb_surface_set_size(surface, std::max(cx, 1), std::max(cy, 1));
+    return surface;
+}
+
+static void _ChangeNetWmState(SConnection *conn, xcb_window_t wnd, bool bSet, xcb_atom_t one, xcb_atom_t two)
+{
+    xcb_client_message_event_t event = {};
+    event.response_type = XCB_CLIENT_MESSAGE;
+    event.window = wnd;
+    event.format = 32;
+    event.sequence = 0;
+    event.type = conn->atoms._NET_WM_STATE;
+    event.data.data32[0] = bSet ? 1 : 0;
+    event.data.data32[1] = one;
+    event.data.data32[2] = two;
+    event.data.data32[3] = event.data.data32[4] = 0;
+    xcb_send_event32(conn->connection, false, conn->screen->root, XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT, event);
+    xcb_flush(conn->connection);
+}
+
+static void _SendSysCommand(SConnection *conn, xcb_window_t wnd, uint32_t cmd)
+{
+    xcb_client_message_event_t event = {};
+    event.response_type = XCB_CLIENT_MESSAGE;
+    event.window = wnd;
+    event.format = 32;
+    event.sequence = 0;
+    event.type = conn->atoms.WM_CHANGE_STATE;
+    event.data.data32[0] = cmd;
+    xcb_send_event32(conn->connection, false, conn->screen->root, XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT, event);
+    xcb_flush(conn->connection);
+}
+
+static void _SendSysRestore(SConnection *conn, xcb_window_t wnd)
+{
+    WndObj wndObj = WndMgr::fromHwnd(wnd);
+    if(!wndObj)
+        return;
+    if((wndObj->dwStyle & WS_MAXIMIZE)){
+        // Restore from maximized state - remove maximized flags
+	    xcb_client_message_event_t event = {};
+	    event.response_type = XCB_CLIENT_MESSAGE;
+	    event.window = wnd;
+	    event.format = 32;
+	    event.sequence = 0;
+	    event.type = conn->atoms._NET_WM_STATE;
+	    event.data.data32[0] = 0;
+	    event.data.data32[1] = conn->atoms._NET_WM_STATE_MAXIMIZED_VERT;
+	    event.data.data32[2] = conn->atoms._NET_WM_STATE_MAXIMIZED_HORZ;
+	    event.data.data32[3] = 0;
+	    event.data.data32[4] = 0;
+
+	    xcb_send_event32(conn->connection, false, conn->screen->root, XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT, event);
+    }else if(wndObj->dwStyle & WS_MINIMIZE){
+        _SendSysCommand(conn, wnd, XCB_ICCCM_WM_STATE_NORMAL);
+        xcb_client_message_event_t event = {};
+        event.response_type = XCB_CLIENT_MESSAGE;
+        event.window = wnd;
+        event.format = 32;
+        event.sequence = 0;
+        event.type = conn->atoms._NET_ACTIVE_WINDOW;
+        event.data.data32[0] = 1;  // 1 = source indication: application
+        event.data.data32[1] = XCB_CURRENT_TIME;
+        xcb_send_event32(conn->connection, false, conn->screen->root, XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT, event);
+    }
+    xcb_flush(conn->connection);
+}
+
+
+void SConnection::SendSysCommand(HWND hWnd, int nCmd)
+{
+    switch(nCmd){
+        case SC_MINIMIZE:
+            _SendSysCommand(this, hWnd, XCB_ICCCM_WM_STATE_ICONIC);
+            break;
+        case SC_MAXIMIZE:
+            _ChangeNetWmState(this, hWnd, true, atoms._NET_WM_STATE_MAXIMIZED_HORZ, atoms._NET_WM_STATE_MAXIMIZED_VERT);
+            break;
+        case SC_RESTORE:
+            _SendSysRestore(this, hWnd);
+            break;
+    }
+}
+
+
+static void AppendIconData(std::vector<uint32_t> &buf, HICON hIcon)
+{
+    ICONINFO info;
+    if (GetIconInfo(hIcon, &info))
+    {
+        BITMAP bm;
+        GetObject(info.hbmColor, sizeof(bm), &bm);
+        if (bm.bmBitsPixel == 32)
+        {
+            int pos = buf.size();
+            buf.resize(pos + bm.bmWidth * bm.bmHeight + 2);
+            uint32_t *data = buf.data() + pos;
+            data[0] = bm.bmWidth;
+            data[1] = bm.bmHeight;
+            memcpy(data + 2, bm.bmBits, bm.bmWidth * bm.bmHeight * 4);
+        }
+        if (info.hbmColor)
+            DeleteObject(info.hbmColor);
+        if (info.hbmMask)
+            DeleteObject(info.hbmMask);
+    }
+}
+
+void SConnection::UpdateWindowIcon(HWND hWnd, _Window * wndObj)
+    {
+        if (wndObj)
+        {
+            std::vector<uint32_t> buf;
+            AppendIconData(buf, wndObj->iconSmall);
+            AppendIconData(buf, wndObj->iconBig);
+            if (!buf.empty())
+            {
+                xcb_change_property(connection, XCB_PROP_MODE_REPLACE, hWnd, atoms._NET_WM_ICON, XCB_ATOM_CARDINAL, 32, buf.size(), buf.data());
+            }
+            else
+            {
+                xcb_delete_property(connection, hWnd, atoms._NET_WM_ICON);
+            }
+            xcb_flush(connection);
+        }
+    }
+    
+    int SConnection::GetScreenWidth(HMONITOR hMonitor) const
+    {
+        RECT rc;
+        if (hMonitor && GetMonitorRect(hMonitor, &rc))
+        {
+            return rc.right - rc.left;
+        }
+        SLOG_STMW() << "Monitor handle is NULL or invalid, returning default width";
+        return 1920; // Default width
+    }
+
+    int SConnection::GetScreenHeight(HMONITOR hMonitor) const
+    {
+        RECT rc;
+        if (hMonitor && GetMonitorRect(hMonitor, &rc))
+        {
+            return rc.bottom - rc.top;
+        }
+        SLOG_STMW() << "Monitor handle is NULL or invalid, returning default height";
+        return 1080; // Default height
+    }
+
+    HWND SConnection::GetScreenWindow() const
+    {
+        if (!screen)
+        {
+            SLOG_STMW() << "Screen is NULL, returning invalid window handle";
+            return 0;
+        }
+        return screen->root;
+    }
+
+
+
+    uint32_t SConnection::GetVisualID(BOOL bScreen) const
+    {
+        if (bScreen)
+        {
+            if (!screen)
+            {
+                SLOG_STMW() << "Screen is NULL, cannot get screen visual ID";
+                return 0;
+            }
+            return screen->root_visual;
+        }
+        else
+        {
+            if (!rgba_visual)
+            {
+                SLOG_STMW() << "RGBA visual is NULL, cannot get RGBA visual ID";
+                return 0;
+            }
+            return rgba_visual->visual_id;
+        }
+    }
+
+    void SConnection::SetZOrder(HWND hWnd, _Window * wndObj, HWND hwndInsertAfter)
+    {
+        if (hwndInsertAfter == HWND_TOPMOST || hwndInsertAfter == HWND_TOP)
+            {
+                if (hwndInsertAfter == HWND_TOPMOST)
+                {
+                    uint32_t val[] = { XCB_STACK_MODE_ABOVE };
+                    xcb_configure_window(connection, hWnd, XCB_CONFIG_WINDOW_STACK_MODE, val);
+                    wndObj->dwExStyle |= WS_EX_TOPMOST;
+                }
+                else
+                {
+                    uint32_t val[] = { XCB_STACK_MODE_TOP_IF };
+                    xcb_configure_window(connection, hWnd, XCB_CONFIG_WINDOW_STACK_MODE, val);
+                    wndObj->dwExStyle &= ~WS_EX_TOPMOST;
+                }
+            }
+            else
+            {
+                uint32_t val[] = { (uint32_t)hwndInsertAfter, XCB_STACK_MODE_ABOVE };
+                xcb_configure_window(connection, hWnd, XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE, val);
+                wndObj->dwExStyle &= ~WS_EX_TOPMOST;
+            }
+            xcb_flush(wndObj->mConnection->connection);
+    }
+
+    void SConnection::OnStyleChanged(HWND hWnd __attribute__((unused)),_Window * wndObj __attribute__((unused)),DWORD oldStyle __attribute__((unused)),DWORD newStyle __attribute__((unused))){
+    }
+
+    void SConnection::OnExStyleChanged(HWND hWnd,_Window * wndObj,DWORD oldStyle,DWORD newStyle){
+        if(GetParent(hWnd))
+            return;
+        if (newStyle & WS_EX_TOPMOST)
+        {
+            SetZOrder(hWnd, wndObj, HWND_TOPMOST);
+        }
+        else
+        {
+            SetZOrder(hWnd, wndObj, HWND_NOTOPMOST); 
+        }
+        if((oldStyle & WS_EX_TOOLWINDOW) != (newStyle & WS_EX_TOOLWINDOW))
+        {
+            const uint32_t mask = XCB_CW_OVERRIDE_REDIRECT;
+            uint32_t values[] = {(newStyle & WS_EX_TOOLWINDOW) ? 1u : 0};
+            xcb_change_window_attributes(connection, hWnd, mask, values);
+        }
+        if ((oldStyle & WS_EX_NOACTIVATE) != (newStyle & WS_EX_NOACTIVATE))
+        {
+            xcb_icccm_wm_hints_t hints = {};
+            xcb_icccm_wm_hints_set_input(&hints, (newStyle & WS_EX_NOACTIVATE) == 0);
+            xcb_icccm_set_wm_hints(connection, hWnd, &hints);
+        }
+        xcb_flush(connection);
+    }
+
+    void SConnection::SendClientMessage(HWND hWnd, uint32_t type, uint32_t *data, int len)
+    {
+        xcb_client_message_event_t client_msg_event = {};
+        client_msg_event.response_type = XCB_CLIENT_MESSAGE;
+        client_msg_event.format = 32;
+        client_msg_event.sequence = 0;
+        client_msg_event.window = (xcb_window_t)hWnd;
+        client_msg_event.type = type;
+        assert(len<=5);
+        memcpy(client_msg_event.data.data32, data, len * sizeof(uint32_t));
+        // Send the client message event
+        xcb_send_event32(connection, 0, hWnd, XCB_EVENT_MASK_NO_EVENT, client_msg_event);
+        // Flush the request to the X server
+        xcb_flush(connection);
+    }
+
+
+BOOL SConnection::IsWindowVisible(HWND hWnd)
+{
+    WndObj wndObj = WndMgr::fromHwnd(hWnd);
+    if(wndObj){
+        return (wndObj->dwStyle & WS_VISIBLE)!=0;
+    }else{
+        xcb_get_window_attributes_cookie_t cookie = xcb_get_window_attributes(connection, hWnd);
+        xcb_get_window_attributes_reply_t *reply = xcb_get_window_attributes_reply(connection, cookie, NULL);
+        if (!reply)
+            return FALSE;
+        uint8_t mapState = reply->map_state;
+        free(reply);
+        return mapState == XCB_MAP_STATE_VIEWABLE;
+    }
+}
+
+
+HWND SConnection::GetWndSibling(HWND hParent, HWND hWnd, BOOL bNext)
+{
+    xcb_query_tree_cookie_t cookie = xcb_query_tree(connection, hParent);
+    xcb_query_tree_reply_t *reply = xcb_query_tree_reply(connection, cookie, NULL);
+    if (!reply)
+    {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return 0;
+    }
+    xcb_window_t *children = xcb_query_tree_children(reply);
+    
+    // Filter to only application windows (skip decoration windows)
+    std::vector<int> app_indices;
+    for (int i = 0; i < reply->children_len; i++)
+    {
+        // Fallback to IsApplicationWindow (cross-process support)
+        if (IsApplicationWindow(children[i]))
+        {
+            app_indices.push_back(i);
+        }
+    }
+    
+    int self_pos_in_app_list = -1;
+    
+    // Find hWnd in the filtered app children list
+    for (int i = 0; i < (int)app_indices.size(); i++)
+    {
+        if (children[app_indices[i]] == hWnd)
+        {
+            self_pos_in_app_list = i;
+            break;
+        }
+    }
+    
+    HWND hRet = 0;
+    if (self_pos_in_app_list != -1)
+    {
+        if (bNext && self_pos_in_app_list < (int)app_indices.size() - 1)
+            hRet = children[app_indices[self_pos_in_app_list + 1]];
+        else if (!bNext && self_pos_in_app_list > 0)
+            hRet = children[app_indices[self_pos_in_app_list - 1]];
+    }
+    free(reply);
+    return hRet;
+}
+
+HWND SConnection::GetWindow(HWND hWnd, _Window *wndObj, UINT uCmd)
+{
+    if (uCmd == GW_OWNER)
+    {
+        if (!wndObj)
+        {
+            SetLastError(ERROR_INVALID_HANDLE);
+            return 0;
+        }
+        return wndObj->owner;
+    }
+
+    xcb_query_tree_cookie_t cookie = xcb_query_tree(connection, hWnd);
+    xcb_query_tree_reply_t *reply = xcb_query_tree_reply(connection, cookie, NULL);
+    if (!reply)
+    {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return 0;
+    }
+    HWND hRet = 0;
+    xcb_window_t *children = xcb_query_tree_children(reply);
+    HWND hParent = reply->parent ? reply->parent : reply->root;
+    switch (uCmd)
+    {
+    case GW_CHILDFIRST:
+        if (reply->children_len > 0)
+        {
+            // Find first application window using hybrid approach
+            for (int i = 0; i < reply->children_len; i++)
+            {
+                if (IsApplicationWindow(children[i]))
+                {
+                    hRet = children[i];
+                    break;
+                }
+            }
+        }
+        break;
+    case GW_CHILDLAST:
+        if (reply->children_len > 0)
+        {
+            // Find last application window using hybrid approach
+            for (int i = reply->children_len - 1; i >= 0; i--)
+            {
+                // Fallback to system-level check (cross-process)
+                if (IsApplicationWindow(children[i]))
+                {
+                    hRet = children[i];
+                    break;
+                }
+            }
+        }
+        break;
+    case GW_HWNDFIRST:
+        hRet = GetWindow(hParent, wndObj,GW_CHILDFIRST);
+        break;
+    case GW_HWNDLAST:
+        hRet = GetWindow(hParent, wndObj, GW_CHILDLAST);
+        break;
+    case GW_HWNDPREV:
+        hRet = GetWndSibling(hParent, hWnd, FALSE);
+        break;
+    case GW_HWNDNEXT:
+        hRet = GetWndSibling(hParent, hWnd, TRUE);
+        break;
+    }
+    free(reply);
+    return hRet;
+}
+
+UINT SConnection::RegisterMessage(LPCSTR lpString)
+{
+    return WM_REG_FIRST + SAtoms::registerAtom(lpString);;
+}
+
+UINT SConnection::RegisterClipboardFormatA(LPCSTR lpString)
+{
+    return CF_MAX+SAtoms::registerAtom(lpString);
+}
+
+BOOL SConnection::NotifyIcon(DWORD dwMessage, PNOTIFYICONDATAA lpData){
+    return GetTrayIconMgr()->NotifyIcon(dwMessage, lpData);
+}
+
+//--------------------------------------------------------------------------
+// 多显示器支持（XCB RANDR）
+//
+// HMONITOR = xcb_randr_crtc_t：X11 中每个正在驱动活跃显示输出的 CRTC 对应
+// 一台显示器（含位置与尺寸）。RANDR 不可用时退化为"整 X screen 视为单台
+// 显示器"，HMONITOR = xcb_screen_t*（保持旧实现语义）。
+// 坐标约定：X 根窗口坐标系即全局桌面坐标（左上为原点、y 向下），与 Win32
+// 全局坐标一致，无需翻转。
+//
+// 显示器列表在每次查询时实时枚举（一次 RANDR 往返 + 每 CRTC 一次小查询），
+// 不做缓存，热插拔/分辨率变化后下一次查询自动生效，无需监听 RANDR 事件。
+//--------------------------------------------------------------------------
+namespace
+{
+struct MonInfo
+{
+    RECT rc;
+    HMONITOR hMon;
+    bool bPrimary;
+};
+
+// 枚举当前所有活跃显示器；成功返回 true（mons 至少一项）。
+bool enumRandrMonitors(xcb_connection_t *conn, xcb_screen_t *scr, std::vector<MonInfo> &mons)
+{
+    mons.clear();
+    xcb_randr_get_screen_resources_current_cookie_t rcookie =
+        xcb_randr_get_screen_resources_current(conn, scr->root);
+    xcb_randr_get_screen_resources_current_reply_t *rreply =
+        xcb_randr_get_screen_resources_current_reply(conn, rcookie, nullptr);
+    if (!rreply)
+        return false;
+
+    const xcb_timestamp_t cfgTs = rreply->config_timestamp;
+    xcb_randr_crtc_t *crtcs = xcb_randr_get_screen_resources_current_crtcs(rreply);
+    const int nCrtc = xcb_randr_get_screen_resources_current_crtcs_length(rreply);
+
+    // 主显示器：RANDR 1.3+ 的 primary output，映射到其 CRTC
+    xcb_randr_crtc_t primaryCrtc = XCB_NONE;
+    xcb_randr_get_output_primary_cookie_t pcookie = xcb_randr_get_output_primary(conn, scr->root);
+    xcb_randr_get_output_primary_reply_t *preply =
+        xcb_randr_get_output_primary_reply(conn, pcookie, nullptr);
+    if (preply)
+    {
+        xcb_randr_output_t primaryOutput = preply->output;
+        free(preply);
+        xcb_randr_get_output_info_cookie_t ocookie =
+            xcb_randr_get_output_info(conn, primaryOutput, cfgTs);
+        xcb_randr_get_output_info_reply_t *oreply =
+            xcb_randr_get_output_info_reply(conn, ocookie, nullptr);
+        if (oreply)
+        {
+            primaryCrtc = oreply->crtc;
+            free(oreply);
+        }
+    }
+
+    for (int i = 0; i < nCrtc; i++)
+    {
+        xcb_randr_get_crtc_info_cookie_t ccookie = xcb_randr_get_crtc_info(conn, crtcs[i], cfgTs);
+        xcb_randr_get_crtc_info_reply_t *creply =
+            xcb_randr_get_crtc_info_reply(conn, ccookie, nullptr);
+        if (!creply)
+            continue;
+        // width/height 为 0 或未接输出 = 未使用的 CRTC，跳过
+        if (creply->width > 0 && creply->height > 0 && creply->num_outputs > 0)
+        {
+            MonInfo mi;
+            mi.rc.left = creply->x;
+            mi.rc.top = creply->y;
+            mi.rc.right = creply->x + creply->width;
+            mi.rc.bottom = creply->y + creply->height;
+            mi.hMon = (HMONITOR)(uintptr_t)crtcs[i];
+            mi.bPrimary = (crtcs[i] == primaryCrtc);
+            mons.push_back(mi);
+        }
+        free(creply);
+    }
+    free(rreply);
+
+    if (!mons.empty() && primaryCrtc == XCB_NONE)
+    {
+        // 无 primary output 信息（RANDR < 1.3）：回退为包含原点 (0,0) 的显示器，
+        // 再退首项
+        bool bMarked = false;
+        for (size_t i = 0; i < mons.size() && !bMarked; i++)
+        {
+            if (mons[i].rc.left <= 0 && mons[i].rc.top <= 0 && mons[i].rc.right > 0 &&
+                mons[i].rc.bottom > 0)
+            {
+                mons[i].bPrimary = true;
+                bMarked = true;
+            }
+        }
+        if (!bMarked)
+            mons[0].bPrimary = true;
+    }
+    return !mons.empty();
+}
+
+// 点到矩形的距离平方（点在矩形内为 0）
+int64_t distSqToRect(const RECT &rc, int x, int y)
+{
+    int64_t dx = 0, dy = 0;
+    if (x < rc.left)
+        dx = (int64_t)rc.left - x;
+    else if (x >= rc.right)
+        dx = (int64_t)x - rc.right + 1;
+    if (y < rc.top)
+        dy = (int64_t)rc.top - y;
+    else if (y >= rc.bottom)
+        dy = (int64_t)y - rc.bottom + 1;
+    return dx * dx + dy * dy;
+}
+
+// 两矩形不相交时的距离平方（相交为 0）
+int64_t distSqBetweenRects(const RECT &a, const RECT &b)
+{
+    int64_t dx = 0, dy = 0;
+    if (a.right <= b.left)
+        dx = (int64_t)b.left - a.right;
+    else if (b.right <= a.left)
+        dx = (int64_t)a.left - b.right;
+    if (a.bottom <= b.top)
+        dy = (int64_t)b.top - a.bottom;
+    else if (b.bottom <= a.top)
+        dy = (int64_t)a.top - b.bottom;
+    return dx * dx + dy * dy;
+}
+
+bool intersectRects(RECT *dst, const RECT &a, const RECT &b)
+{
+    dst->left = a.left > b.left ? a.left : b.left;
+    dst->top = a.top > b.top ? a.top : b.top;
+    dst->right = a.right < b.right ? a.right : b.right;
+    dst->bottom = a.bottom < b.bottom ? a.bottom : b.bottom;
+    return dst->left < dst->right && dst->top < dst->bottom;
+}
+
+// Win32 MonitorFrom* 的标志语义公共尾部
+HMONITOR monitorHitResult(const std::vector<MonInfo> &mons, const MonInfo *pHit, DWORD dwFlags)
+{
+    if (pHit)
+        return pHit->hMon;
+    if (dwFlags == MONITOR_DEFAULTTONULL)
+        return NULL;
+    const MonInfo *pPrimary = nullptr;
+    for (size_t i = 0; i < mons.size(); i++)
+    {
+        if (mons[i].bPrimary)
+        {
+            pPrimary = &mons[i];
+            break;
+        }
+    }
+    if (dwFlags == MONITOR_DEFAULTTOPRIMARY)
+        return pPrimary ? pPrimary->hMon : (mons.empty() ? NULL : mons[0].hMon);
+    // MONITOR_DEFAULTTONEAREST：未命中时也回退主屏（点/矩形完全在桌面外）
+    return pPrimary ? pPrimary->hMon : (mons.empty() ? NULL : mons[0].hMon);
+}
+// 枚举当前所有活跃显示器；成功返回 true（mons 至少一项）。
+// RANDR 不可用时退化为"整 X screen 视为单台显示器"（仍返回 true），
+// 仅在连接/屏幕无效时返回 false。
+bool getMonitorList(xcb_connection_t *conn, xcb_screen_t *scr, std::vector<MonInfo> &mons)
+{
+    mons.clear();
+    if (!conn || !scr)
+        return false;
+    if (!enumRandrMonitors(conn, scr, mons))
+    {
+        MonInfo mi;
+        mi.rc.left = 0;
+        mi.rc.top = 0;
+        mi.rc.right = scr->width_in_pixels;
+        mi.rc.bottom = scr->height_in_pixels;
+        mi.hMon = (HMONITOR)scr;
+        mi.bPrimary = true;
+        mons.push_back(mi);
+    }
+    return true;
+}
+} // namespace
+
+int SConnection::GetMonitorCount() const
+{
+    std::vector<MonInfo> mons;
+    if (!getMonitorList(connection, screen, mons))
+        return 0;
+    return (int)mons.size();
+}
+
+HMONITOR SConnection::GetMonitor(int index) const
+{
+    std::vector<MonInfo> mons;
+    if (!getMonitorList(connection, screen, mons) || index < 0 || index >= (int)mons.size())
+        return NULL;
+    return mons[index].hMon;
+}
+
+HMONITOR SConnection::GetPrimaryMonitor() const
+{
+    std::vector<MonInfo> mons;
+    if (!getMonitorList(connection, screen, mons))
+        return NULL;
+    for (size_t i = 0; i < mons.size(); i++)
+    {
+        if (mons[i].bPrimary)
+            return mons[i].hMon;
+    }
+    return mons.empty() ? NULL : mons[0].hMon;
+}
+
+bool SConnection::IsPrimaryMonitor(HMONITOR hMonitor) const
+{
+    std::vector<MonInfo> mons;
+    if (!getMonitorList(connection, screen, mons))
+        return false;
+    for (size_t i = 0; i < mons.size(); i++)
+    {
+        if (mons[i].hMon == hMonitor)
+            return mons[i].bPrimary;
+    }
+    return false;
+}
+
+bool SConnection::GetMonitorRect(HMONITOR hMonitor, RECT *prc) const
+{
+    if (!prc || !hMonitor)
+        return false;
+    std::vector<MonInfo> mons;
+    if (!getMonitorList(connection, screen, mons))
+        return false;
+    for (size_t i = 0; i < mons.size(); i++)
+    {
+        if (mons[i].hMon == hMonitor)
+        {
+            *prc = mons[i].rc;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool SConnection::GetMonitorWorkRect(HMONITOR hMonitor, RECT *prc) const
+{
+    RECT rcMon;
+    if (!prc || !GetMonitorRect(hMonitor, &rcMon))
+        return false;
+    // 全局工作区（_NET_WORKAREA，桌面级）与显示器矩形求交，得到该显示器的
+    // 工作区；无有效工作区信息时以整屏代替
+    RECT rcInter;
+    if (m_rcWorkArea.right > m_rcWorkArea.left && m_rcWorkArea.bottom > m_rcWorkArea.top &&
+        intersectRects(&rcInter, rcMon, m_rcWorkArea))
+    {
+        *prc = rcInter;
+    }
+    else
+    {
+        *prc = rcMon;
+    }
+    return true;
+}
+
+HMONITOR SConnection::MonitorFromPoint(POINT pt, DWORD dwFlags) const
+{
+    std::vector<MonInfo> mons;
+    if (!getMonitorList(connection, screen, mons) || mons.empty())
+        return NULL;
+    const MonInfo *pHit = nullptr;
+    for (size_t i = 0; i < mons.size(); i++)
+    {
+        if (pt.x >= mons[i].rc.left && pt.x < mons[i].rc.right && pt.y >= mons[i].rc.top &&
+            pt.y < mons[i].rc.bottom)
+        {
+            pHit = &mons[i];
+            break;
+        }
+    }
+    if (!pHit && dwFlags == MONITOR_DEFAULTTONEAREST)
+    {
+        int64_t distMin = -1;
+        for (size_t i = 0; i < mons.size(); i++)
+        {
+            int64_t dist = distSqToRect(mons[i].rc, pt.x, pt.y);
+            if (distMin < 0 || dist < distMin)
+            {
+                distMin = dist;
+                pHit = &mons[i];
+            }
+        }
+    }
+    return monitorHitResult(mons, pHit, dwFlags);
+}
+
+HMONITOR SConnection::MonitorFromRect(LPCRECT lprc, DWORD dwFlags) const
+{
+    if (!lprc)
+        return GetPrimaryMonitor();
+    std::vector<MonInfo> mons;
+    if (!getMonitorList(connection, screen, mons) || mons.empty())
+        return NULL;
+    const MonInfo *pHit = nullptr;
+    int64_t areaMax = 0;
+    for (size_t i = 0; i < mons.size(); i++)
+    {
+        RECT rcInter;
+        if (intersectRects(&rcInter, *lprc, mons[i].rc))
+        {
+            int64_t area = (int64_t)(rcInter.right - rcInter.left) * (rcInter.bottom - rcInter.top);
+            if (area > areaMax)
+            {
+                areaMax = area;
+                pHit = &mons[i];
+            }
+        }
+    }
+    if (!pHit && dwFlags == MONITOR_DEFAULTTONEAREST)
+    {
+        int64_t distMin = -1;
+        for (size_t i = 0; i < mons.size(); i++)
+        {
+            int64_t dist = distSqBetweenRects(*lprc, mons[i].rc);
+            if (distMin < 0 || dist < distMin)
+            {
+                distMin = dist;
+                pHit = &mons[i];
+            }
+        }
+    }
+    return monitorHitResult(mons, pHit, dwFlags);
+}
+
+HMONITOR SConnection::MonitorFromWindow(HWND hWnd, DWORD dwFlags) const
+{
+    if (!hWnd)
+        return dwFlags == MONITOR_DEFAULTTONULL ? NULL : GetPrimaryMonitor();
+    if (!connection || !screen)
+        return dwFlags == MONITOR_DEFAULTTONULL ? NULL : GetPrimaryMonitor();
+    // 窗口矩形换算到根坐标（xcb_get_geometry 返回的是相对父窗口的坐标）
+    xcb_get_geometry_cookie_t gcookie = xcb_get_geometry(connection, (xcb_window_t)hWnd);
+    xcb_get_geometry_reply_t *greply = xcb_get_geometry_reply(connection, gcookie, nullptr);
+    if (!greply)
+        return dwFlags == MONITOR_DEFAULTTONULL ? NULL : GetPrimaryMonitor();
+    int x = greply->x;
+    int y = greply->y;
+    const int w = greply->width;
+    const int h = greply->height;
+    free(greply);
+    xcb_translate_coordinates_cookie_t tcookie =
+        xcb_translate_coordinates(connection, (xcb_window_t)hWnd, screen->root, 0, 0);
+    xcb_translate_coordinates_reply_t *treply =
+        xcb_translate_coordinates_reply(connection, tcookie, nullptr);
+    if (treply)
+    {
+        x = treply->dst_x;
+        y = treply->dst_y;
+        free(treply);
+    }
+    RECT rcWnd = {x, y, x + w, y + h};
+    return MonitorFromRect(&rcWnd, dwFlags);
+}
+
+HMONITOR
+SConnection::GetScreen(DWORD dwFlags) const
+{
+    // 兼容旧接口：GetSystemMetrics 等以 GetScreen(0) 取"当前屏幕"。
+    // 多显示器下返回主显示器；dwFlags 暂不参与语义（历史调用均传 0）。
+    (void)dwFlags;
+    return GetPrimaryMonitor();
+}
+
+void SConnection::updateWindow(HWND hWnd, const RECT &rc __attribute__((unused))){
+    SendMessageA(hWnd, WM_PAINT, 0, 0);
+}
+
+void SConnection::commitCanvas(HWND hWnd __attribute__((unused)), const RECT &rc __attribute__((unused))){
+    flush();
+}
+
+BOOL SConnection::EnableWindow(HWND hWnd, BOOL bEnable){
+    const uint32_t actionMask = (XCB_EVENT_MASK_BUTTON_PRESS |
+        XCB_EVENT_MASK_BUTTON_RELEASE |
+        XCB_EVENT_MASK_KEY_PRESS |
+        XCB_EVENT_MASK_KEY_RELEASE);
+   xcb_get_window_attributes_cookie_t cookie = xcb_get_window_attributes(connection, hWnd);
+   xcb_get_window_attributes_reply_t *reply = xcb_get_window_attributes_reply(connection, cookie, NULL);
+   if (!reply) {
+       return FALSE;
+   }
+   uint32_t event_mask = reply->all_event_masks; 
+   uint32_t new_event_mask;
+   if (bEnable) {
+       new_event_mask = event_mask | actionMask;
+   } else {
+       new_event_mask = event_mask & (~actionMask); 
+   }
+   uint32_t values[1] = {new_event_mask};
+   xcb_change_window_attributes(connection, hWnd, XCB_CW_EVENT_MASK, values);
+
+   free(reply);
+   return TRUE;
+}
+
+BOOL SConnection::IsIconic(HWND hWnd)
+{
+    BOOL ret = FALSE;
+    const xcb_get_property_cookie_t get_cookie = xcb_get_property(connection, 0, hWnd, atoms.WM_STATE, XCB_ATOM_ANY, 0, 1024);
+    xcb_get_property_reply_t *reply = xcb_get_property_reply(connection, get_cookie, nullptr);
+    if (reply && reply->format == 32 && reply->type == atoms.WM_STATE && reply->length != 0)
+    {
+        const uint32_t *data = (const uint32_t *)xcb_get_property_value(reply);
+        if (data[0] == XCB_ICCCM_WM_STATE_ICONIC /* || data[0]==XCB_ICCCM_WM_STATE_WITHDRAWN*/)
+        {
+            ret = TRUE;
+        }
+    }
+    free(reply);
+    return ret;
+}
+
+BOOL SConnection::IsZoomed(HWND hWnd){
+    // Check _NET_WM_STATE property to determine if window is maximized
+    uint32_t state = netWmStates(hWnd);
+    
+    // Window is considered zoomed (maximized) if both horizontal and vertical maximized states are set
+    return (state & (NetWmStateMaximizedHorz | NetWmStateMaximizedVert)) == 
+            (NetWmStateMaximizedHorz | NetWmStateMaximizedVert);
+}
+
+int SConnection::ShowCursor(BOOL bShow){
+    if (bShow) {
+        m_cursorCount++;
+        if (m_cursorCount > 0) {
+            // Show cursor - restore cursor visibility
+            xcb_xfixes_show_cursor(connection, screen->root);
+            xcb_flush(connection);
+        }
+    } else {
+        m_cursorCount--;
+        if (m_cursorCount <= 0) {
+            m_cursorCount = 0;
+            // Hide cursor using XFixes
+            xcb_xfixes_hide_cursor(connection, screen->root);
+            xcb_flush(connection);
+        }
+    }
+    return m_cursorCount;
+}
+
+struct RawInputDeviceEntry {
+    std::string device_path;
+    DWORD device_type;
+};
+
+static std::map<int, RawInputDeviceEntry> s_rawInputDevices;
+static std::recursive_mutex s_rawInputMutex;
+static int s_nextDeviceId = 1;
+
+static int get_device_type(int fd) {
+    unsigned char evtype_bits[EV_MAX / 8 + 1];
+    memset(evtype_bits, 0, sizeof(evtype_bits));
+
+    if (ioctl(fd, EVIOCGBIT(0, sizeof(evtype_bits)), evtype_bits) < 0) {
+        return -1;
+    }
+
+    if (evtype_bits[EV_KEY / 8] & (1 << (EV_KEY % 8))) {
+        unsigned char key_bits[KEY_MAX / 8 + 1];
+        memset(key_bits, 0, sizeof(key_bits));
+        if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits) >= 0) {
+            if (key_bits[KEY_A / 8] & (1 << (KEY_A % 8)) ||
+                key_bits[KEY_1 / 8] & (1 << (KEY_1 % 8))) {
+                return RIM_TYPEKEYBOARD;
+            }
+        }
+        if (key_bits[BTN_LEFT / 8] & (1 << (BTN_LEFT % 8))) {
+            return RIM_TYPEMOUSE;
+        }
+        return RIM_TYPEHID;
+    }
+
+    if (evtype_bits[EV_REL / 8] & (1 << (EV_REL % 8)) ||
+        evtype_bits[EV_ABS / 8] & (1 << (EV_ABS % 8))) {
+        return RIM_TYPEMOUSE;
+    }
+
+    return -1;
+}
+
+UINT SConnection::GetRawInputDeviceList(
+        _Out_writes_opt_(*puiNumDevices) PRAWINPUTDEVICELIST pRawInputDeviceList,
+        _Inout_ PUINT puiNumDevices,
+        _In_ UINT cbSize)
+{
+    DIR *dir;
+    struct dirent *entry;
+    int device_count = 0;
+    int max_devices = (pRawInputDeviceList != NULL) ? *puiNumDevices : 0;
+    int filled = 0;
+
+    if (cbSize < sizeof(RAWINPUTDEVICELIST)) {
+        return 0;
+    }
+
+    dir = opendir("/dev/input");
+    if (dir == NULL) {
+        return 0;
+    }
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(s_rawInputMutex);
+        s_rawInputDevices.clear();
+        s_nextDeviceId = 1;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (strncmp(entry->d_name, "event", 5) != 0)
+            continue;
+
+        char path[256];
+        snprintf(path, sizeof(path), "/dev/input/%s", entry->d_name);
+
+        int fd = open(path, O_RDONLY);
+        if (fd < 0) {
+            continue;
+        }
+
+        int type = get_device_type(fd);
+        close(fd);
+        if (type < 0) {
+            continue;
+        }
+
+        int deviceId;
+        {
+            std::lock_guard<std::recursive_mutex> lock(s_rawInputMutex);
+            deviceId = s_nextDeviceId++;
+            s_rawInputDevices[deviceId] = { path, (DWORD)type };
+        }
+
+        if (pRawInputDeviceList != NULL && filled < max_devices) {
+            pRawInputDeviceList[filled].hDevice = (HANDLE)(intptr_t)deviceId;
+            pRawInputDeviceList[filled].dwType = (DWORD)type;
+            filled++;
+        }
+
+        device_count++;
+    }
+
+    closedir(dir);
+
+    *puiNumDevices = device_count;
+    return (UINT)filled;
+}
+
+UINT SConnection::GetRawInputDeviceInfoA(HRAWINPUT hDevice, UINT uiCommand, LPVOID pData, PUINT pcbSize)
+{
+    if (!pcbSize)
+        return (UINT)-1;
+
+    UINT requiredSize = 0;
+    int deviceId = (int)(intptr_t)hDevice;
+    std::string device_path;
+    DWORD device_type = RIM_TYPEMOUSE;
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(s_rawInputMutex);
+        auto it = s_rawInputDevices.find(deviceId);
+        if (it == s_rawInputDevices.end()) {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return (UINT)-1;
+        }
+        device_path = it->second.device_path;
+        device_type = it->second.device_type;
+    }
+
+    switch (uiCommand)
+    {
+        case RIDI_DEVICENAME:
+        {
+            requiredSize = (UINT)device_path.length() + 1;
+            if (pData && *pcbSize >= requiredSize)
+                strcpy((char*)pData, device_path.c_str());
+            *pcbSize = requiredSize;
+            break;
+        }
+        case RIDI_DEVICEINFO:
+        {
+            requiredSize = sizeof(RID_DEVICE_INFO);
+            if (pData && *pcbSize >= requiredSize)
+            {
+                RID_DEVICE_INFO* pInfo = (RID_DEVICE_INFO*)pData;
+                pInfo->cbSize = sizeof(RID_DEVICE_INFO);
+                pInfo->dwType = device_type;
+                if (pInfo->dwType == RIM_TYPEMOUSE)
+                {
+                    pInfo->mouse.dwId = 0;
+                    pInfo->mouse.dwNumberOfButtons = 3;
+                    pInfo->mouse.dwSampleRate = 125;
+                    pInfo->mouse.fHasHorizontalWheel = FALSE;
+                }
+                else if (pInfo->dwType == RIM_TYPEKEYBOARD)
+                {
+                    pInfo->keyboard.dwType = 1;
+                    pInfo->keyboard.dwSubType = 0;
+                    pInfo->keyboard.dwKeyboardMode = 0;
+                    pInfo->keyboard.dwNumberOfFunctionKeys = 12;
+                    pInfo->keyboard.dwNumberOfIndicators = 3;
+                    pInfo->keyboard.dwNumberOfKeysTotal = 104;
+                }
+                else if (pInfo->dwType == RIM_TYPEHID)
+                {
+                    pInfo->hid.dwVendorId = 0;
+                    pInfo->hid.dwProductId = 0;
+                    pInfo->hid.dwVersionNumber = 0;
+                    pInfo->hid.usUsagePage = 0;
+                    pInfo->hid.usUsage = 0;
+                }
+            }
+            *pcbSize = requiredSize;
+            break;
+        }
+        case RIDI_PREPARSEDDATA:
+        {
+            requiredSize = 0;
+            *pcbSize = requiredSize;
+            break;
+        }
+        default:
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return (UINT)-1;
+    }
+
+    return requiredSize;
+}
+
+UINT SConnection::GetRawInputDeviceInfoW(HRAWINPUT hDevice, UINT uiCommand, LPVOID pData, PUINT pcbSize)
+{
+    if (uiCommand != RIDI_DEVICENAME) {
+        return GetRawInputDeviceInfoA(hDevice, uiCommand, pData, pcbSize);
+    }
+    if (!pcbSize)
+        return (UINT)-1;
+
+    UINT requiredSize = 0;
+    int deviceId = (int)(intptr_t)hDevice;
+    std::string device_path;
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(s_rawInputMutex);
+        auto it = s_rawInputDevices.find(deviceId);
+        if (it == s_rawInputDevices.end()) {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return (UINT)-1;
+        }
+        device_path = it->second.device_path;
+    }
+
+    int wLen = MultiByteToWideChar(CP_UTF8, 0, device_path.c_str(), -1, NULL, 0);
+    requiredSize = (UINT)(wLen * sizeof(wchar_t));
+    if (pData && *pcbSize >= requiredSize)
+        MultiByteToWideChar(CP_UTF8, 0, device_path.c_str(), -1, (wchar_t*)pData, wLen);
+    *pcbSize = requiredSize;
+    return requiredSize;
+}

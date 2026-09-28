@@ -1,0 +1,220 @@
+﻿#include "souistd.h"
+#include "control/SComboBox.h"
+
+SNSBEGIN
+
+///////////////////////////////////////////////////////////////////////
+SComboBox::SComboBox()
+    : m_pListBox(NULL)
+{
+}
+
+SComboBox::~SComboBox()
+{
+    if (m_pListBox)
+    {
+        m_pListBox->SetOwner(NULL);
+        m_pListBox->SSendMessage(WM_DESTROY);
+        m_pListBox->Release();
+    }
+}
+
+BOOL SComboBox::CreateListBox(SXmlNode xmlNode)
+{
+    // Create list control
+    SXmlNode listStyle = xmlNode.child(SComboBox_style::kStyle_listStyle);
+    SStringW strListClass = listStyle.attribute(SComboBox_style::kStyle_wndclass).as_string(SListBox::GetClassName());
+    SListBox *pListBox = sobj_cast<SListBox>(CreateChildByName(strListClass));
+    if (!pListBox)
+        return FALSE;
+    m_pListBox = pListBox;
+
+    m_pListBox->SetContainer(GetContainer());
+    if (listStyle)
+        m_pListBox->InitFromXml(&listStyle);
+    else
+    {
+        m_pListBox->GetStyle().m_crBg = GETCOLOR(SNamedColor::THEME_COLOR);
+        m_pListBox->GetStyle().m_crBorder = GETCOLOR(SNamedColor::THEME_BORDER);
+        m_pListBox->SetAttribute(L"margin", L"1,1,1,1");
+        m_pListBox->SetAttribute(L"hotTrack", L"1", TRUE);
+    }
+    m_pListBox->SetAttribute(L"pos", L"0,0,-0,-0", TRUE);
+    m_pListBox->SetOwner(this); // chain notify message to combobox
+    m_pListBox->SetVisible(FALSE);
+    m_pListBox->SetID(IDC_DROPDOWN_LIST);
+    m_pListBox->SSendMessage(UM_SETSCALE, GetScale());
+    m_pListBox->SSendMessage(WM_CREATE);
+    // Initialize list data
+    SXmlNode xmlNode_Items = xmlNode.child(SComboBox_style::kStyle_items);
+    if (xmlNode_Items)
+    {
+        SXmlNode xmlNode_Item = xmlNode_Items.child(SComboBox_style::kStyle_item);
+        while (xmlNode_Item)
+        {
+
+            SStringW strText = xmlNode_Item.attribute(SComboBox_style::kStyle_text).value();
+            if (strText.IsEmpty())
+                strText = GetXmlText(xmlNode_Item);
+            int iIcon = xmlNode_Item.attribute(SComboBox_style::kStyle_icon).as_int(0);
+            LPARAM lParam = xmlNode_Item.attribute(SComboBox_style::kStyle_data).as_int(0);
+            m_pListBox->AddString(S_CW2T(GETSTRING(strText)), iIcon, lParam);
+            xmlNode_Item = xmlNode_Item.next_sibling(SComboBox_style::kStyle_item);
+        }
+    }
+
+    if (m_iInitSel != -1)
+    {
+        SetCurSel(m_iInitSel);
+    }
+    return TRUE;
+}
+
+int SComboBox::GetListBoxHeight()
+{
+    int nDropHeight = m_nDropHeight.toPixelSize(GetScale());
+    if (GetCount())
+    {
+        int nItemHeight = m_pListBox->GetItemHeight();
+        CRect rcMargin = m_pListBox->GetStyle().GetMargin();
+        nDropHeight = smin(nDropHeight, (int)(nItemHeight * GetCount() + rcMargin.top + rcMargin.bottom));
+    }
+    return nDropHeight;
+}
+
+void SComboBox::OnCreateDropDown(SDropDownWnd *pDropDown)
+{
+    __baseCls::OnCreateDropDown(pDropDown);
+    SWindow *pRoot = pDropDown->GetRoot();
+    SASSERT(pRoot);
+    pRoot->InsertChild(m_pListBox);
+    pRoot->UpdateChildrenPosition();
+    pRoot->SDispatchMessage(UM_SETSCALE, GetScale(), 0);
+    pRoot->SDispatchMessage(UM_SETCOLORIZE, m_crColorize, 0);
+
+    m_pListBox->SetVisible(TRUE);
+    m_pListBox->SetFocus();
+    m_pListBox->EnsureVisible(GetCurSel());
+}
+
+void SComboBox::OnDestroyDropDown(SDropDownWnd *pDropDown)
+{
+    pDropDown->GetRoot()->RemoveChild(m_pListBox);
+    m_pListBox->SetVisible(FALSE);
+    m_pListBox->SetContainer(GetContainer());
+    __baseCls::OnDestroyDropDown(pDropDown);
+}
+
+void SComboBox::OnSelChanged()
+{
+    m_pListBox->GetCurSel();
+    if (m_pEdit && !m_pEdit->GetEventSet()->isMuted())
+    {
+        SStringT strText = GetLBText(m_pListBox->GetCurSel());
+        m_pEdit->GetEventSet()->setMutedState(true);
+        SComboBase::SetWindowText(strText);
+        m_pEdit->GetEventSet()->setMutedState(false);
+    }
+    Invalidate();
+    __baseCls::OnSelChanged();
+}
+
+BOOL SComboBox::FireEvent(IEvtArgs *evt)
+{
+    if (evt->IdFrom() == IDC_DROPDOWN_LIST && m_pDropDownWnd)
+    {
+        if (evt->GetID() == EventLBSelChanged::EventID)
+        {
+            OnSelChanged();
+            return TRUE;
+        }
+        if (evt->GetID() == EventCmd::EventID)
+        {
+            CloseUp();
+            return TRUE;
+        }
+    }
+    return SComboBase::FireEvent(evt);
+}
+
+void SComboBox::OnScaleChanged(int nScale)
+{
+    __baseCls::OnScaleChanged(nScale);
+    if (m_pListBox)
+        m_pListBox->SSendMessage(UM_SETSCALE, GetScale());
+}
+
+HRESULT SComboBox::OnLanguageChanged()
+{
+    HRESULT hr = __baseCls::OnLanguageChanged();
+    if (m_pListBox)
+        m_pListBox->SSendMessage(UM_SETLANGUAGE);
+    return hr;
+}
+
+BOOL SComboBox::SetCurSel(int iSel)
+{
+    if (m_pListBox->SetCurSel(iSel))
+    {
+        m_pListBox->EnsureVisible(iSel);
+        OnSelChanged();
+        return TRUE;
+    }
+    else
+    {
+        return FALSE;
+    }
+}
+
+int SComboBox::GetCurSel() const
+{
+    return m_pListBox->GetCurSel();
+}
+
+int SComboBox::GetCount() const
+{
+    return m_pListBox->GetCount();
+}
+
+LPARAM SComboBox::GetItemData(UINT iItem) const
+{
+    return m_pListBox->GetItemData(iItem);
+}
+
+BOOL SComboBox::SetItemData(UINT iItem, LPARAM lParam)
+{
+    return m_pListBox->SetItemData(iItem, lParam);
+}
+
+int SComboBox::InsertItem(int iPos, LPCTSTR pszText, int iIcon, LPARAM lParam)
+{
+    return m_pListBox->InsertString(iPos, pszText, iIcon, lParam);
+}
+
+BOOL SComboBox::DeleteString(int iPos)
+{
+    return m_pListBox->DeleteString(iPos);
+}
+
+void SComboBox::ResetContent()
+{
+    SetCurSel(-1);
+    return m_pListBox->DeleteAll();
+}
+
+BOOL SComboBox::GetItemText(int iItem, BOOL bRawText, IStringT *str) const
+{
+    if (iItem < 0 || iItem >= GetCount())
+        return FALSE;
+
+    SStringT strRet = m_pListBox->GetText(iItem, bRawText);
+    str->Copy(&strRet);
+    return TRUE;
+}
+
+IListBox *SComboBox::GetIListBox(THIS)
+{
+    return GetListBox();
+}
+
+SNSEND

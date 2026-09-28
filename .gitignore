@@ -38,3 +38,8 @@ shot_app.bmp
 
 # WorkBuddy 本地数据（含记忆/技能，不入库）
 .workbuddy/
+
+# SOUI 已 vendoring 进仓库（去除 gitee submodule，因 GitHub CI 无法稳定拉取 gitee），
+# 需完整纳入，覆盖上方对 *.lib/*.a/*.so/*.exe 等二进制的忽略规则
+!third_party/soui/
+!third_party/soui/**

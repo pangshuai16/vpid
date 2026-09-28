@@ -1,0 +1,33 @@
+include_directories(..)
+
+SET (SMILEY_HEADERS
+	${PROJECT_SOURCE_DIR}/controls.extend/smiley/SSmileyCtrl.h
+)
+
+SET (SMILEY_SRCS
+	SSmileyCtrl.cpp
+)
+
+source_group("Header Files" FILES ${SMILEY_HEADERS})
+source_group("Source Files" FILES ${SMILEY_SRCS})
+
+ADD_LIBRARY (smiley STATIC ${SMILEY_SRCS} ${SMILEY_HEADERS})
+set(OPTION_LIBS ${OPTION_LIBS} smiley CACHE INTERNAL "option_lib")
+
+set_target_properties (smiley PROPERTIES
+    FOLDER third-part
+)
+
+install(TARGETS smiley
+    CONFIGURATIONS Release
+    RUNTIME DESTINATION bin/Release
+    LIBRARY DESTINATION lib/Release
+    ARCHIVE DESTINATION lib/Release
+)
+
+install(TARGETS smiley
+    CONFIGURATIONS Debug
+    RUNTIME DESTINATION bin/Debug
+    LIBRARY DESTINATION lib/Debug
+    ARCHIVE DESTINATION lib/Debug
+)

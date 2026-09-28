@@ -13,8 +13,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Run CMake + MSVC build (SOUI5, x86)
         shell: pwsh
@@ -38,8 +36,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: "Install deps (swinx: Cairo/xcb/fontconfig + libudev)"
         run: |
@@ -66,8 +62,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

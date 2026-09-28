@@ -1,0 +1,87 @@
+# CMakeLists.txt
+
+# Copyright (C) 2007-2014 Glenn Randers-Pehrson
+
+# This code is released under the libpng license.
+# For conditions of distribution and use, see the disclaimer
+# and license in png.h
+
+set(CMAKE_ALLOW_LOOSE_LOOP_CONSTRUCTS true)
+
+set(PNGLIB_MAJOR 1)
+set(PNGLIB_MINOR 5)
+set(PNGLIB_RELEASE 19)
+set(PNGLIB_NAME libpng${PNGLIB_MAJOR}${PNGLIB_MINOR})
+set(PNGLIB_VERSION ${PNGLIB_MAJOR}.${PNGLIB_MINOR}.${PNGLIB_RELEASE})
+
+# SET LIBNAME
+set(PNG_LIB_NAME png${PNGLIB_MAJOR}${PNGLIB_MINOR})
+
+
+include_directories(../zlib)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+include_directories(${CMAKE_CURRENT_BINARY_DIR})
+
+add_definitions(-DPNG_CONFIGURE_LIBPNG)
+add_definitions(-D_CRT_SECURE_NO_DEPRECATE)
+add_definitions(-DPNG_ARM_NEON_OPT=0)
+
+
+
+# OUR SOURCES
+set(libpng_headers
+	png.h
+	pngconf.h
+	pngdebug.h
+	pnginfo.h
+	pnglibconf.h
+	pngpriv.h
+	pngstruct.h
+)
+
+set(libpng_sources
+	png.c
+	pngerror.c
+	pngget.c
+	pngmem.c
+	pngpread.c
+	pngread.c
+	pngrio.c
+	pngrtran.c
+	pngrutil.c
+	pngset.c
+	pngtrans.c
+	pngwio.c
+	pngwrite.c
+	pngwtran.c
+	pngwutil.c
+)
+
+source_group("Header Files" FILES ${libpng_headers})
+source_group("Source Files" FILES ${libpng_sources})
+
+add_library(png_static STATIC ${libpng_sources} ${libpng_headers})
+
+target_link_libraries(png_static PUBLIC zlib_static m)
+target_compile_options(png_static PRIVATE -fPIC)
+target_include_directories(png_static
+                             PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>")
+
+
+if(SOUI_ENABLE_CORE_LIB)
+    set(SWINX_DEP_LIBS png_static ${SWINX_DEP_LIBS}  CACHE INTERNAL "swinx_dep_libs")
+endif()
+
+install(TARGETS png_static
+    CONFIGURATIONS Release
+    RUNTIME DESTINATION bin/Release
+    LIBRARY DESTINATION lib/Release
+    ARCHIVE DESTINATION lib/Release
+)
+
+install(TARGETS png_static
+    CONFIGURATIONS Debug
+    RUNTIME DESTINATION bin/Debug
+    LIBRARY DESTINATION lib/Debug
+    ARCHIVE DESTINATION lib/Debug
+)

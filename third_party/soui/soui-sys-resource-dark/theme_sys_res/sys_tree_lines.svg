@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="160" height="16" viewBox="0 0 160 16" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .box { stroke: #808080; stroke-width: 1; fill: none; }
+      .cross { stroke: #000000; stroke-width: 1; fill: none; }
+      .dash { stroke: #808080; stroke-width: 1; fill: none; stroke-dasharray: 2, 2; }
+    </style>
+  </defs>
+  
+  <!-- State 0: 方框 + 号，右虚线 (方框缩小 2px) -->
+  <g id="state0">
+    <rect x="4" y="4" width="8" height="8" class="box"/>
+    <line x1="8" y1="6" x2="8" y2="10" class="cross"/>
+    <line x1="6" y1="8" x2="10" y2="8" class="cross"/>
+    <line x1="12" y1="8" x2="16" y2="8" class="dash"/>
+  </g>
+  
+  <!-- State 1: 方框 + 号，上右下虚线 (方框缩小 2px) -->
+  <g id="state1" transform="translate(16, 0)">
+    <rect x="4" y="4" width="8" height="8" class="box"/>
+    <line x1="8" y1="6" x2="8" y2="10" class="cross"/>
+    <line x1="6" y1="8" x2="10" y2="8" class="cross"/>
+    <line x1="8" y1="0" x2="8" y2="4" class="dash"/>
+    <line x1="12" y1="8" x2="16" y2="8" class="dash"/>
+    <line x1="8" y1="12" x2="8" y2="16" class="dash"/>
+  </g>
+  
+  <!-- State 2: 方框 + 号，上右虚线 (方框缩小 2px) -->
+  <g id="state2" transform="translate(32, 0)">
+    <rect x="4" y="4" width="8" height="8" class="box"/>
+    <line x1="8" y1="6" x2="8" y2="10" class="cross"/>
+    <line x1="6" y1="8" x2="10" y2="8" class="cross"/>
+    <line x1="8" y1="0" x2="8" y2="4" class="dash"/>
+    <line x1="12" y1="8" x2="16" y2="8" class="dash"/>
+  </g>
+  
+  <!-- State 3: 方框 - 号，右虚线 (方框缩小 2px) -->
+  <g id="state3" transform="translate(48, 0)">
+    <rect x="4" y="4" width="8" height="8" class="box"/>
+    <line x1="6" y1="8" x2="10" y2="8" class="cross"/>
+    <line x1="12" y1="8" x2="16" y2="8" class="dash"/>
+  </g>
+  
+  <!-- State 4: 方框 - 号，上右下虚线 (方框缩小 2px) -->
+  <g id="state4" transform="translate(64, 0)">
+    <rect x="4" y="4" width="8" height="8" class="box"/>
+    <line x1="6" y1="8" x2="10" y2="8" class="cross"/>
+    <line x1="8" y1="0" x2="8" y2="4" class="dash"/>
+    <line x1="12" y1="8" x2="16" y2="8" class="dash"/>
+    <line x1="8" y1="12" x2="8" y2="16" class="dash"/>
+  </g>
+  
+  <!-- State 5: 方框 - 号，上右虚线 (方框缩小 2px) -->
+  <g id="state5" transform="translate(80, 0)">
+    <rect x="4" y="4" width="8" height="8" class="box"/>
+    <line x1="6" y1="8" x2="10" y2="8" class="cross"/>
+    <line x1="8" y1="0" x2="8" y2="4" class="dash"/>
+    <line x1="12" y1="8" x2="16" y2="8" class="dash"/>
+  </g>
+  
+  <!-- State 6: 垂直虚线 (无方框，保持不变) -->
+  <g id="state6" transform="translate(96, 0)">
+    <line x1="8" y1="0" x2="8" y2="16" class="dash"/>
+  </g>
+  
+  <!-- State 7: 垂直虚线 + 向右虚线 (无方框，保持不变) -->
+  <g id="state7" transform="translate(112, 0)">
+    <line x1="8" y1="0" x2="8" y2="16" class="dash"/>
+    <line x1="8" y1="8" x2="16" y2="8" class="dash"/>
+  </g>
+  
+  <!-- State 8: 向上 + 向右虚线 (无方框，保持不变) -->
+  <g id="state8" transform="translate(128, 0)">
+    <line x1="8" y1="0" x2="8" y2="8" class="dash"/>
+    <line x1="8" y1="8" x2="16" y2="8" class="dash"/>
+  </g>
+  
+  <!-- State 9: 向下 + 向右虚线 (无方框，保持不变) -->
+  <g id="state9" transform="translate(144, 0)">
+    <line x1="8" y1="8" x2="8" y2="16" class="dash"/>
+    <line x1="8" y1="8" x2="16" y2="8" class="dash"/>
+  </g>
+</svg>

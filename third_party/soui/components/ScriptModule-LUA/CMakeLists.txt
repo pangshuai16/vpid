@@ -1,0 +1,83 @@
+add_definitions(-D_CRT_SECURE_NO_WARNINGS -D_CRT_NON_CONFORMING_SWPRINTFS)
+include_directories(${SOUI_ROOT_DIR}/utilities/include)
+include_directories(${SOUI_ROOT_DIR}/SOUI/include)
+include_directories(${SOUI_ROOT_DIR}/third-part/lua-54/src)
+
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lua_tinker)
+
+set(ScriptModule-lua_header
+	src/stdafx.h
+	src/ScriptModule-Lua.h
+           src/exports/exp_Basic.h
+           src/exports/exp_ctrls.h
+           src/exports/exp_eventArgs.h
+           src/exports/exp_global.h
+           src/exports/exp_IApp.h
+           src/exports/exp_IContainer.h
+           src/exports/exp_ICtrl.h
+           src/exports/exp_IEvtArgs.h
+           src/exports/exp_IHostWnd.h
+           src/exports/exp_INativeWnd.h
+           src/exports/exp_IObject.h
+           src/exports/exp_IObjRef.h
+           src/exports/exp_IResProvider.h
+           src/exports/exp_IResProviderMgr.h
+           src/exports/exp_IScriptModule.h
+           src/exports/exp_ISouifac.h
+           src/exports/exp_IString.h
+           src/exports/exp_IWindow.h
+           src/exports/exp_IXml.h
+           src/exports/exp_string.h
+           src/exports/exp_Window.h
+           src/exports/exp_IMenu.h
+           src/exports/exp_IMenuEx.h
+           src/exports/exp_IAnimation.h
+           src/exports/exp_IInterpolator.h
+           src/exports/exp_IValueAnimator.h
+           src/exports/luaAnimationListener.h
+           src/exports/exp_SysApi.h
+           src/exports/luaFunSlot.h
+           src/exports/toobj.h
+	lua_tinker/lua_tinker.h
+)
+
+set(ScriptModule-lua_src
+    src/ScriptModule-Lua.cpp
+    src/exports/exp_soui.cpp
+    lua_tinker/lua_tinker.cpp
+)
+
+source_group("Header Files" FILES ${ScriptModule-lua_header})
+source_group("Source Files" FILES ${ScriptModule-lua_src})
+
+if (NOT SOUI_ENABLE_COM_LIB)
+    set (ScriptModule-Lua_src  ${ScriptModule-lua_src} ScriptModule-lua.rc)
+    add_library(scriptmodule-lua SHARED ${ScriptModule-lua_src} ${ScriptModule-lua_header})
+    target_link_libraries(scriptmodule-lua soui4 lua-54 utilities4)
+else()
+    add_library(scriptmodule-lua STATIC ${ScriptModule-lua_src} ${ScriptModule-lua_header})
+endif()
+
+set(COM_LIBS ${COM_LIBS} scriptmodule-lua CACHE INTERNAL "com_lib")
+if(SOUI_ENABLE_COM_LIB)
+    set(COM_DEP_LIBS ${COM_DEP_LIBS} lua-54 CACHE INTERNAL "com_dep_libs")
+endif()
+
+set_target_properties (scriptmodule-lua PROPERTIES
+    FOLDER components
+)
+
+install(TARGETS scriptmodule-lua
+    CONFIGURATIONS Release
+    RUNTIME DESTINATION bin/Release
+    LIBRARY DESTINATION lib/Release
+    ARCHIVE DESTINATION lib/Release
+)
+
+install(TARGETS scriptmodule-lua
+    CONFIGURATIONS Debug
+    RUNTIME DESTINATION bin/Debug
+    LIBRARY DESTINATION lib/Debug
+    ARCHIVE DESTINATION lib/Debug
+)

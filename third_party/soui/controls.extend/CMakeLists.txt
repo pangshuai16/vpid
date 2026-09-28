@@ -1,0 +1,50 @@
+#
+# 1394020320@qq.com
+#
+
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+
+set(SOUI_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/..)
+
+include_directories(${SOUI_ROOT_DIR}/components)
+include_directories(${SOUI_ROOT_DIR}/utilities/include)
+include_directories(${SOUI_ROOT_DIR}/SOUI/include)
+include_directories(${SOUI_ROOT_DIR}/soui-sys-resource)
+include_directories(${SOUI_ROOT_DIR}/controls.extend)
+include_directories(${SOUI_ROOT_DIR}/third-part/Scintilla/include)
+include_directories(${SOUI_ROOT_DIR}/third-part/wke/include)
+file(GLOB_RECURSE CTRLS_SRC ${SOUI_ROOT_DIR}/controls.extend/*.*)
+
+
+add_library(ExtendCtrls STATIC ${CTRLS_SRC})
+set(OPTION_LIBS ${OPTION_LIBS} ExtendCtrls CACHE INTERNAL "option_lib")
+
+target_link_libraries(ExtendCtrls soui4 utilities4)
+
+if(CMAKE_SYSTEM_NAME MATCHES Windows)
+target_link_libraries(ExtendCtrls gdiplus Msimg32)
+if(NOT MINGW)
+    target_link_libraries(ExtendCtrls smiley)
+endif()
+
+else()
+target_compile_options(ExtendCtrls PRIVATE -fPIC)
+target_link_libraries(ExtendCtrls swinx)
+endif()
+
+# 仅安装当前源码目录下的 .h/.hpp/.hxx/.hh 头文件到 include/ 目录
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/" DESTINATION include/controls.extend FILES_MATCHING PATTERN "*.h")
+
+install(TARGETS ExtendCtrls
+    CONFIGURATIONS Release
+    RUNTIME DESTINATION bin/Release
+    LIBRARY DESTINATION lib/Release
+    ARCHIVE DESTINATION lib/Release
+)
+
+install(TARGETS ExtendCtrls
+    CONFIGURATIONS Debug
+    RUNTIME DESTINATION bin/Debug
+    LIBRARY DESTINATION lib/Debug
+    ARCHIVE DESTINATION lib/Debug
+)

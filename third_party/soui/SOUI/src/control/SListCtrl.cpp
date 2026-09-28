@@ -1,0 +1,1053 @@
+﻿#include "souistd.h"
+
+#include "control/SListCtrl.h"
+
+#pragma warning(disable : 4267 4018)
+
+#define ITEM_MARGIN 4
+SNSBEGIN
+///////////////////////////////////////////////////////////////////////
+/** SListCtrl */
+SListCtrl::SListCtrl()
+    : m_nHeaderHeight(20)
+    , m_nItemHeight(20)
+    , m_pHeader(NULL)
+    , m_nSelectItem(-1)
+    , m_nSelectColumn(-1)
+    , m_crItemBg(RGBA(255, 255, 255, 255))
+    , m_crItemBg2(RGBA(226, 226, 226, 255))
+    , m_crItemSelBg(RGBA(57, 145, 209, 255))
+    , m_crItemHotBg(RGBA(57, 145, 209, 128))
+    , m_crText(RGBA(0, 0, 0, 255))
+    , m_crSelText(RGBA(255, 255, 0, 255))
+    , m_pItemSkin(NULL) // [vpid patch] 默认系统皮肤(SKIN_SYS_LIST_ITEM)会在选中/热跟踪时盖住
+                        //   colorItemSelBkgnd 等颜色属性（选中时按皮肤绘制），导致自定义
+                        //   选中背景不生效。置 NULL 后完全走颜色属性分支，便于 1:1 定制。
+    , m_pIconSkin(NULL)
+    , m_pCheckSkin(GETBUILTINSKIN(SKIN_SYS_CHECKBOX))
+    , m_ptIcon(-1, -1)
+    , m_ptText(-1, -1)
+    , m_bHotTrack(FALSE)
+    , m_bCheckBox(FALSE)
+    , m_bMultiSelection(FALSE)
+{
+    m_bClipClient = TRUE;
+    m_bFocusable = TRUE;
+    m_evtSet.addEvent(EVENTID(EventLCSelChanging));
+    m_evtSet.addEvent(EVENTID(EventLCSelChanged));
+    m_evtSet.addEvent(EVENTID(EventLCDbClick));
+    m_evtSet.addEvent(EVENTID(EventLCItemDeleted));
+    m_evtSet.addEvent(EVENTID(EventLCRClick));
+}
+
+SListCtrl::~SListCtrl()
+{
+}
+
+int SListCtrl::InsertColumn(int nIndex, LPCTSTR pszText, int nWidth, UINT fmt, LPARAM lParam)
+{
+    SASSERT(m_pHeader);
+
+    int nRet = m_pHeader->InsertItem(nIndex, pszText, nWidth, fmt, lParam);
+    for (int i = 0; i < GetItemCount(); i++)
+    {
+        m_arrItems[i].arSubItems->SetCount(GetColumnCount());
+    }
+    UpdateScrollBar();
+    return nRet;
+}
+
+BOOL SListCtrl::CreateChildren(SXmlNode xmlNode)
+{
+    SXmlNode xmlHeader = xmlNode.child(L"headerStyle");
+    m_pHeader = sobj_cast<SHeaderCtrl>(CreateChildByName(xmlHeader.attribute(L"wndclass").as_string(SHeaderCtrl::GetClassName())));
+    if (!m_pHeader)
+        return FALSE;
+    InsertChild(m_pHeader);
+    m_pHeader->InitFromXml(&xmlHeader);
+    xmlHeader.set_userdata(1);
+
+    if (!__baseCls::CreateChildren(xmlNode))
+        return FALSE;
+
+    m_pHeader->GetEventSet()->subscribeEvent(EventHeaderItemChanging::EventID, Subscriber(&SListCtrl::OnHeaderSizeChanging, this));
+    m_pHeader->GetEventSet()->subscribeEvent(EventHeaderItemSwap::EventID, Subscriber(&SListCtrl::OnHeaderSwap, this));
+
+    return TRUE;
+}
+
+int SListCtrl::InsertItem(int nItem, LPCTSTR pszText, int nImage)
+{
+    if (GetColumnCount() == 0)
+        return -1;
+    if (nItem < 0 || nItem > GetItemCount())
+        nItem = GetItemCount();
+
+    DXLVITEM lvi;
+    lvi.dwData = 0;
+    lvi.arSubItems = new ArrSubItem();
+    lvi.arSubItems->SetCount(GetColumnCount());
+
+    DXLVSUBITEM &subItem = lvi.arSubItems->GetAt(0);
+    subItem.strText = _tcsdup(pszText);
+    subItem.cchTextMax = _tcslen(pszText);
+    subItem.nImage = nImage;
+
+    m_arrItems.InsertAt(nItem, lvi);
+
+    UpdateScrollBar();
+
+    return nItem;
+}
+
+BOOL SListCtrl::SetItemData(int nItem, LPARAM dwData)
+{
+    if (nItem >= GetItemCount() || nItem < 0)
+        return FALSE;
+
+    m_arrItems[nItem].dwData = dwData;
+
+    return TRUE;
+}
+
+LPARAM SListCtrl::GetItemData(int nItem)
+{
+    if (nItem >= GetItemCount() || nItem < 0)
+        return 0;
+
+    DXLVITEM &lvi = m_arrItems[nItem];
+
+    return lvi.dwData;
+}
+
+BOOL SListCtrl::SetSubItem(int nItem, int nSubItem, const DXLVSUBITEM *plv)
+{
+    if (nItem >= GetItemCount() || nSubItem >= GetColumnCount() || nItem < 0)
+        return FALSE;
+    DXLVSUBITEM &lvsi_dst = m_arrItems[nItem].arSubItems->GetAt(nSubItem);
+    if (plv->mask & S_LVIF_TEXT)
+    {
+        if (lvsi_dst.strText)
+            free(lvsi_dst.strText);
+        lvsi_dst.strText = _tcsdup(plv->strText);
+        lvsi_dst.cchTextMax = _tcslen(plv->strText);
+    }
+    if (plv->mask & S_LVIF_IMAGE)
+        lvsi_dst.nImage = plv->nImage;
+    if (plv->mask & S_LVIF_INDENT)
+        lvsi_dst.nIndent = plv->nIndent;
+    RedrawItem(nItem);
+    return TRUE;
+}
+
+BOOL SListCtrl::GetSubItem(int nItem, int nSubItem, DXLVSUBITEM *plv) const
+{
+    if (nItem >= GetItemCount() || nSubItem >= GetColumnCount() || nItem < 0)
+        return FALSE;
+
+    const DXLVSUBITEM &lvsi_src = m_arrItems[nItem].arSubItems->GetAt(nSubItem);
+    if (plv->mask & S_LVIF_TEXT)
+    {
+        _tcscpy_s(plv->strText, plv->cchTextMax, lvsi_src.strText);
+    }
+    if (plv->mask & S_LVIF_IMAGE)
+        plv->nImage = lvsi_src.nImage;
+    if (plv->mask & S_LVIF_INDENT)
+        plv->nIndent = lvsi_src.nIndent;
+    return TRUE;
+}
+
+BOOL SListCtrl::SetSubItemText(int nItem, int nSubItem, LPCTSTR pszText)
+{
+    if (nItem < 0 || nItem >= GetItemCount())
+        return FALSE;
+
+    if (nSubItem < 0 || nSubItem >= GetColumnCount())
+        return FALSE;
+
+    DXLVSUBITEM &lvi = m_arrItems[nItem].arSubItems->GetAt(nSubItem);
+    if (lvi.strText)
+    {
+        free(lvi.strText);
+    }
+    lvi.strText = _tcsdup(pszText);
+    lvi.cchTextMax = _tcslen(pszText);
+
+    CRect rcItem = GetItemRect(nItem, nSubItem);
+    InvalidateRect(rcItem);
+    return TRUE;
+}
+
+SStringT SListCtrl::GetSubItemText(int nItem, int nSubItem) const
+{
+    if (nItem >= GetItemCount() || nSubItem >= GetColumnCount() || nItem < 0)
+        return _T("");
+
+    const DXLVSUBITEM &lvsi_src = m_arrItems[nItem].arSubItems->GetAt(nSubItem);
+    return lvsi_src.strText;
+}
+
+int SListCtrl::GetSelectedItem()
+{
+    return m_nSelectItem;
+}
+
+void SListCtrl::SetSelectedItem(int nItem)
+{
+    if (nItem != m_nSelectItem)
+    {
+        NotifySelChange(m_nSelectItem, nItem);
+    }
+}
+
+int SListCtrl::GetSelectedColumn()
+{
+    return m_nSelectColumn;
+}
+
+void SListCtrl::SetSelectedColumn(int nColumn)
+{
+    if (nColumn != m_nSelectColumn && (nColumn == -1 || (nColumn >= 0 && nColumn < GetColumnCount())))
+    {
+        m_nSelectColumn = nColumn;
+        Invalidate();
+    }
+}
+
+int SListCtrl::GetItemCount() const
+{
+    if (GetColumnCount() <= 0)
+        return 0;
+
+    return m_arrItems.GetCount();
+}
+
+BOOL SListCtrl::SetItemCount(int nItems, int nGrowBy)
+{
+    int nOldCount = GetItemCount();
+    if (nItems < nOldCount)
+        return FALSE;
+
+    BOOL bRet = m_arrItems.SetCount(nItems, nGrowBy);
+    if (bRet)
+    {
+        for (int i = nOldCount; i < nItems; i++)
+        {
+            DXLVITEM &lvi = m_arrItems[i];
+            lvi.arSubItems = new ArrSubItem;
+            lvi.arSubItems->SetCount(GetColumnCount());
+        }
+    }
+    UpdateScrollBar();
+
+    return bRet;
+}
+
+CRect SListCtrl::GetListRect()
+{
+    CRect rcList;
+
+    GetClientRect(&rcList);
+    rcList.top += m_nHeaderHeight.toPixelSize(GetScale());
+
+    return rcList;
+}
+
+///////////////////////////////////////////////////////////////////////
+/** Update scroll bar */
+void SListCtrl::UpdateScrollBar()
+{
+    CSize szView;
+    szView.cx = m_pHeader->GetTotalWidth(false);
+    int nMinWid = m_pHeader->GetTotalWidth(true);
+    szView.cy = GetItemCount() * m_nItemHeight.toPixelSize(GetScale());
+
+    CRect rcClient;
+    SWindow::GetClientRect(&rcClient); // Do not compute scroll bar size
+    rcClient.top += m_nHeaderHeight.toPixelSize(GetScale());
+    if (rcClient.bottom < rcClient.top)
+        rcClient.bottom = rcClient.top;
+    CSize size = rcClient.Size();
+    // Close scroll bar
+    m_wBarVisible = SSB_NULL;
+
+    if (size.cy < szView.cy || (size.cy < szView.cy + GetSbWidth() && size.cx < szView.cx))
+    {
+        // Need vertical scroll bar
+        m_wBarVisible |= SSB_VERT;
+        m_siVer.nMin = 0;
+        m_siVer.nMax = szView.cy - 1;
+        m_siVer.nPage = rcClient.Height();
+
+        int horzSize = size.cx - GetSbWidth();
+        if (horzSize < nMinWid)
+        {
+            // Less than the header's minimum width, horizontal scroll bar needed
+            m_wBarVisible |= SSB_HORZ;
+            m_siVer.nPage = size.cy - GetSbWidth() > 0 ? size.cy - GetSbWidth() : 0; // Note to also adjust the vertical scroll bar page info
+
+            m_siHoz.nMin = 0;
+            m_siHoz.nMax = szView.cx - 1;
+            m_siHoz.nPage = (size.cx - GetSbWidth()) > 0 ? (size.cx - GetSbWidth()) : 0;
+        }
+        else
+        {
+            if (horzSize < szView.cx || m_pHeader->IsAutoResize())
+            { // Greater than the minimum width but less than the current width, then adjust the header width.
+                CRect rcHead = m_pHeader->GetWindowRect();
+                rcHead.right = rcHead.left + horzSize;
+                m_pHeader->Move(rcHead);
+                szView.cx = horzSize;
+            }
+            // No horizontal scroll bar needed
+            m_siHoz.nPage = szView.cx;
+            m_siHoz.nMin = 0;
+            m_siHoz.nMax = m_siHoz.nPage - 1;
+            m_siHoz.nPos = 0;
+        }
+    }
+    else
+    {
+        // No vertical scroll bar needed
+        m_siVer.nPage = size.cy;
+        m_siVer.nMin = 0;
+        m_siVer.nMax = size.cy - 1;
+        m_siVer.nPos = 0;
+
+        if (size.cx < nMinWid)
+        {
+            // Less than the header's minimum width, horizontal scroll bar needed
+            m_wBarVisible |= SSB_HORZ;
+            m_siHoz.nMin = 0;
+            m_siHoz.nMax = szView.cx - 1;
+            m_siHoz.nPage = size.cx;
+        }
+        else
+        {
+            if (size.cx < szView.cx || m_pHeader->IsAutoResize())
+            { // Greater than the minimum width but less than the current width, then adjust the header width.
+                CRect rcHead = m_pHeader->GetWindowRect();
+                rcHead.right = rcHead.left + size.cx;
+                m_pHeader->Move(rcHead);
+                szView.cx = size.cx;
+            }
+            // No horizontal scroll bar needed
+            m_siHoz.nPage = szView.cx;
+            m_siHoz.nMin = 0;
+            m_siHoz.nMax = m_siHoz.nPage - 1;
+            m_siHoz.nPos = 0;
+        }
+    }
+
+    // Adjust origin position as needed
+    if (HasScrollBar(FALSE) && m_siHoz.nPos + m_siHoz.nPage > szView.cx)
+    {
+        m_siHoz.nPos = szView.cx - m_siHoz.nPage;
+    }
+
+    if (HasScrollBar(TRUE) && m_siVer.nPos + m_siVer.nPage > szView.cy)
+    {
+        m_siVer.nPos = szView.cy - m_siVer.nPage;
+    }
+
+    SetScrollPos(TRUE, m_siVer.nPos, TRUE);
+    SetScrollPos(FALSE, m_siHoz.nPos, TRUE);
+
+    // Recompute client and non-client areas
+    SSendMessage(WM_NCCALCSIZE);
+
+    Invalidate();
+}
+
+/** Update header position */
+void SListCtrl::UpdateHeaderCtrl()
+{
+    CRect rcClient;
+    GetClientRect(&rcClient);
+    CRect rcHeader(rcClient);
+    rcHeader.bottom = rcHeader.top + m_nHeaderHeight.toPixelSize(GetScale());
+    rcHeader.left -= m_ptOrigin.x;
+    if (m_pHeader)
+        m_pHeader->Move(rcHeader);
+}
+
+void SListCtrl::DeleteItem(int nItem)
+{
+    if (nItem >= 0 && nItem < GetItemCount())
+    {
+        DXLVITEM &lvi = m_arrItems[nItem];
+
+        EventLCItemDeleted evt2(this);
+        evt2.nItem = nItem;
+        evt2.dwData = lvi.dwData;
+        FireEvent(evt2);
+
+        for (int i = 0; i < GetColumnCount(); i++)
+        {
+            DXLVSUBITEM &lvsi = lvi.arSubItems->GetAt(i);
+            if (lvsi.strText)
+                free(lvsi.strText);
+        }
+        delete lvi.arSubItems;
+        m_arrItems.RemoveAt(nItem);
+
+        UpdateScrollBar();
+    }
+}
+
+void SListCtrl::DeleteColumn(int iCol)
+{
+    if (m_pHeader->DeleteItem(iCol))
+    {
+        int nColumnCount = m_pHeader->GetItemCount();
+
+        for (int i = 0; i < GetItemCount(); i++)
+        {
+            DXLVITEM &lvi = m_arrItems[i];
+
+            if (0 == nColumnCount)
+            {
+                EventLCItemDeleted evt2(this);
+                evt2.nItem = i;
+                evt2.dwData = lvi.dwData;
+                FireEvent(evt2);
+            }
+
+            DXLVSUBITEM &lvsi = lvi.arSubItems->GetAt(iCol);
+            if (lvsi.strText)
+                free(lvsi.strText);
+            m_arrItems[i].arSubItems->RemoveAt(iCol);
+        }
+        UpdateScrollBar();
+    }
+}
+
+void SListCtrl::DeleteAllItems()
+{
+    m_nSelectItem = -1;
+    for (int i = 0; i < GetItemCount(); i++)
+    {
+        DXLVITEM &lvi = m_arrItems[i];
+
+        EventLCItemDeleted evt2(this);
+        evt2.nItem = i;
+        evt2.dwData = lvi.dwData;
+        FireEvent(evt2);
+
+        for (int j = 0; j < GetColumnCount(); j++)
+        {
+            DXLVSUBITEM &lvsi = lvi.arSubItems->GetAt(j);
+            if (lvsi.strText)
+                free(lvsi.strText);
+        }
+        delete lvi.arSubItems;
+    }
+    m_arrItems.RemoveAll();
+
+    UpdateScrollBar();
+}
+
+CRect SListCtrl::GetItemRect(int nItem, int nSubItem)
+{
+    if (!(nItem >= 0 && nItem < GetItemCount() && nSubItem >= 0 && nSubItem < GetColumnCount()))
+        return CRect();
+
+    CRect rcItem;
+    int itemHeight = m_nItemHeight.toPixelSize(GetScale());
+    rcItem.top = itemHeight * nItem;
+    rcItem.bottom = rcItem.top + itemHeight;
+    rcItem.left = 0;
+    rcItem.right = 0;
+
+    for (int nCol = 0; nCol < GetColumnCount(); nCol++)
+    {
+        SHDITEM hdi = { SHDI_WIDTH | SHDI_ORDER, 0 };
+
+        m_pHeader->GetItem(nCol, &hdi);
+        rcItem.left = rcItem.right;
+        rcItem.right = rcItem.left + hdi.cx;
+        if (hdi.iOrder == nSubItem)
+            break;
+    }
+
+    CRect rcList = GetListRect();
+    // Transform to window coordinates
+    rcItem.OffsetRect(rcList.TopLeft());
+    // Correct based on origin coordinates
+    rcItem.OffsetRect(-m_ptOrigin);
+
+    return rcItem;
+}
+
+///////////////////////////////////////////////////////////////////////
+/** Automatically modify pt's position to an offset relative to the current item */
+int SListCtrl::HitTest(const CPoint &pt)
+{
+    CRect rcList = GetListRect();
+
+    CPoint pt2 = pt;
+    pt2.y -= rcList.top - m_ptOrigin.y;
+
+    int nRet = pt2.y / m_nItemHeight.toPixelSize(GetScale());
+    if (nRet >= GetItemCount())
+    {
+        nRet = -1;
+    }
+
+    return nRet;
+}
+
+int SListCtrl::HitTest(const CPoint &pt, int *pnSubItem)
+{
+    int nItem = HitTest(pt);
+    if (pnSubItem)
+    {
+        *pnSubItem = -1;
+        if (nItem != -1 && m_pHeader)
+        {
+            CRect rcList = GetListRect();
+            CPoint pt2 = pt;
+            pt2.x -= rcList.left - m_ptOrigin.x;
+
+            int x = 0;
+            for (int nCol = 0; nCol < GetColumnCount(); nCol++)
+            {
+                SHDITEM hdi = { SHDI_WIDTH | SHDI_ORDER, 0 };
+                m_pHeader->GetItem(nCol, &hdi);
+                int colWidth = hdi.cx;
+                if (pt2.x >= x && pt2.x < x + colWidth)
+                {
+                    *pnSubItem = hdi.iOrder;
+                    break;
+                }
+                x += colWidth;
+            }
+        }
+    }
+    return nItem;
+}
+
+void SListCtrl::RedrawItem(int nItem)
+{
+    if (!IsVisible(TRUE))
+        return;
+
+    CRect rcList = GetListRect();
+
+    int nTopItem = GetTopIndex();
+    int nItemHeight = m_nItemHeight.toPixelSize(GetScale());
+    int nPageItems = (rcList.Height() + nItemHeight - 1) / nItemHeight;
+
+    if (nItem >= nTopItem && nItem < GetItemCount() && nItem <= nTopItem + nPageItems)
+    {
+        CRect rcItem(0, 0, rcList.Width(), nItemHeight);
+        rcItem.OffsetRect(0, nItemHeight * nItem - m_ptOrigin.y);
+        rcItem.OffsetRect(rcList.TopLeft());
+        CRect rcDC;
+        rcDC.IntersectRect(rcItem, rcList);
+        IRenderTarget *pRT = GetRenderTarget(&rcDC, GRT_PAINTBKGND);
+        SSendMessage(WM_ERASEBKGND, (WPARAM)pRT);
+
+        DrawItem(pRT, rcItem, nItem);
+
+        ReleaseRenderTarget(pRT);
+    }
+}
+
+int SListCtrl::GetCountPerPage(BOOL bPartial)
+{
+    CRect rcClient = GetListRect();
+
+    // calculate number of items per control height (include partial item)
+    div_t divHeight = div(rcClient.Height(), m_nItemHeight.toPixelSize(GetScale()));
+
+    // round up to nearest item count
+    return smax((int)(bPartial && divHeight.rem > 0 ? divHeight.quot + 1 : divHeight.quot), 1);
+}
+BOOL SListCtrl::SortItems(PFNLVCOMPAREEX pfnCompare, void *pContext)
+{
+    qsort_s(m_arrItems.GetData(), m_arrItems.GetCount(), sizeof(DXLVITEM), pfnCompare, pContext);
+    m_nSelectItem = -1;
+    m_nHoverItem = -1;
+    InvalidateRect(GetListRect());
+    return TRUE;
+}
+
+void SListCtrl::OnPaint(IRenderTarget *pRT)
+{
+    SPainter painter;
+    BeforePaint(pRT, painter);
+    CRect rcList = GetListRect();
+    int nTopItem = GetTopIndex();
+    pRT->PushClipRect(&rcList, RGN_AND);
+    CRect rcItem(rcList);
+
+    rcItem.bottom = rcItem.top;
+    int nItemHeight = m_nItemHeight.toPixelSize(GetScale());
+    rcItem.OffsetRect(0, -(m_ptOrigin.y % nItemHeight));
+    for (int nItem = nTopItem; nItem <= (nTopItem + GetCountPerPage(TRUE)) && nItem < GetItemCount(); rcItem.top = rcItem.bottom, nItem++)
+    {
+        rcItem.bottom = rcItem.top + nItemHeight;
+
+        DrawItem(pRT, rcItem, nItem);
+    }
+    pRT->PopClip();
+    AfterPaint(pRT, painter);
+}
+
+BOOL SListCtrl::HitCheckBox(const CPoint &pt)
+{
+    if (!m_bCheckBox)
+        return FALSE;
+
+    CRect rect = GetListRect();
+    rect.left += ITEM_MARGIN;
+    rect.OffsetRect(-m_ptOrigin.x, 0);
+
+    CSize sizeSkin = m_pCheckSkin->GetSkinSize();
+    int nOffsetX = 3;
+    CRect rcCheck;
+    rcCheck.SetRect(0, 0, sizeSkin.cx, sizeSkin.cy);
+    rcCheck.OffsetRect(rect.left + nOffsetX, 0);
+
+    if (pt.x >= rcCheck.left && pt.x <= rcCheck.right)
+        return TRUE;
+    return FALSE;
+}
+
+void SListCtrl::DrawItem(IRenderTarget *pRT, CRect rcItem, int nItem)
+{
+    BOOL bTextColorChanged = FALSE;
+    int nBgImg = 0;
+    COLORREF crOldText = RGBA(0xFF, 0xFF, 0xFF, 0xFF);
+    COLORREF crItemBg = m_crItemBg;
+    COLORREF crText = m_crText;
+    DXLVITEM lvItem = m_arrItems[nItem];
+    CRect rcIcon, rcText;
+
+    if (nItem % 2)
+    {
+        if (CR_INVALID != m_crItemBg2)
+            crItemBg = m_crItemBg2;
+    }
+
+    if (lvItem.checked)
+    { // Separated from the condition of the if below, so there is a distinction between sel and hot
+        if (m_pItemSkin != NULL)
+            nBgImg = 2;
+        else if (CR_INVALID != m_crItemSelBg)
+            crItemBg = m_crItemSelBg;
+
+        if (CR_INVALID != m_crSelText)
+            crText = m_crSelText;
+    }
+    else if (m_bHotTrack && nItem == m_nHoverItem)
+    {
+        if (m_pItemSkin != NULL)
+            nBgImg = 1;
+        else if (CR_INVALID != m_crItemHotBg)
+            crItemBg = m_crItemHotBg;
+
+        if (CR_INVALID != m_crSelText)
+            crText = m_crSelText;
+    }
+    if (CR_INVALID != crItemBg) // Draw background first
+        pRT->FillSolidRect(rcItem, crItemBg);
+
+    if (m_pItemSkin != NULL) // If there is a skin, overlay the background
+        m_pItemSkin->DrawByIndex(pRT, rcItem, nBgImg);
+
+    // Add padding on the left
+    rcItem.left += ITEM_MARGIN;
+
+    if (CR_INVALID != crText)
+    {
+        bTextColorChanged = TRUE;
+        crOldText = pRT->SetTextColor(crText);
+    }
+
+    CRect rcCol(rcItem);
+    rcCol.right = rcCol.left;
+    rcCol.OffsetRect(-m_ptOrigin.x, 0);
+    int nItemHeight = m_nItemHeight.toPixelSize(GetScale());
+    for (int nCol = 0; nCol < GetColumnCount(); nCol++)
+    {
+        CRect rcVisiblePart;
+
+        SHDITEM hdi = { SHDI_WIDTH | SHDI_ORDER, 0 };
+        m_pHeader->GetItem(nCol, &hdi);
+        rcCol.left = rcCol.right;
+        rcCol.right = rcCol.left + hdi.cx;
+
+        rcVisiblePart.IntersectRect(rcItem, rcCol);
+
+        if (rcVisiblePart.IsRectEmpty())
+            continue;
+
+        // Highlight the selected column
+        if (hdi.iOrder == m_nSelectColumn)
+        {
+            if (CR_INVALID != m_crItemSelBg)
+                pRT->FillSolidRect(rcVisiblePart, m_crItemSelBg);
+        }
+
+        // Draw checkbox
+        if (nCol == 0 && m_bCheckBox && m_pCheckSkin)
+        {
+            CSize sizeSkin = m_pCheckSkin->GetSkinSize();
+            int nOffsetX = 3;
+            int nOffsetY = (nItemHeight - sizeSkin.cy) / 2;
+            CRect rcCheck;
+            rcCheck.SetRect(0, 0, sizeSkin.cx, sizeSkin.cy);
+            rcCheck.OffsetRect(rcCol.left + nOffsetX, rcCol.top + nOffsetY);
+            m_pCheckSkin->DrawByIndex(pRT, rcCheck, lvItem.checked ? 4 : 0);
+
+            rcCol.left = sizeSkin.cx + 6 + rcCol.left;
+        }
+
+        DXLVSUBITEM &subItem = lvItem.arSubItems->GetAt(hdi.iOrder);
+
+        if (subItem.nImage != -1 && m_pIconSkin)
+        {
+            int nOffsetX = m_ptIcon.x;
+            int nOffsetY = m_ptIcon.y;
+            CSize sizeSkin = m_pIconSkin->GetSkinSize();
+            rcIcon.SetRect(0, 0, sizeSkin.cx, sizeSkin.cy);
+
+            if (m_ptIcon.x == -1)
+                nOffsetX = nItemHeight / 6;
+
+            if (m_ptIcon.y == -1)
+                nOffsetY = (nItemHeight - sizeSkin.cy) / 2;
+
+            rcIcon.OffsetRect(rcCol.left + nOffsetX, rcCol.top + nOffsetY);
+            m_pIconSkin->DrawByIndex(pRT, rcIcon, subItem.nImage);
+        }
+
+        UINT align = DT_SINGLELINE;
+        rcText = rcCol;
+
+        if (m_ptText.x == -1)
+            rcText.left = rcIcon.Width() > 0 ? rcIcon.right + nItemHeight / 6 : rcCol.left;
+        else
+            rcText.left = rcCol.left + m_ptText.x;
+
+        if (m_ptText.y == -1)
+            align |= DT_VCENTER;
+        else
+            rcText.top = rcCol.top + m_ptText.y;
+
+        pRT->DrawText(subItem.strText, subItem.cchTextMax, rcText, align);
+    }
+
+    if (bTextColorChanged)
+        pRT->SetTextColor(crOldText);
+}
+
+void SListCtrl::OnDestroy()
+{
+    DeleteAllItems();
+
+    __baseCls::OnDestroy();
+}
+
+int SListCtrl::GetColumnCount() const
+{
+    if (!m_pHeader)
+        return 0;
+
+    return m_pHeader->GetItemCount();
+}
+
+int SListCtrl::GetTopIndex() const
+{
+    return m_ptOrigin.y / m_nItemHeight.toPixelSize(GetScale());
+}
+
+void SListCtrl::NotifySelChange(int nOldSel, int nNewSel, BOOL checkBox)
+{
+    EventLCSelChanging evt1(this);
+    evt1.bCancel = FALSE;
+    evt1.nOldSel = nOldSel;
+    evt1.nNewSel = nNewSel;
+
+    FireEvent(evt1);
+    if (evt1.bCancel)
+        return;
+
+    if (checkBox)
+    {
+        if (nNewSel != -1)
+        {
+            DXLVITEM &newItem = m_arrItems[nNewSel];
+            newItem.checked = newItem.checked ? FALSE : TRUE;
+            m_nSelectItem = nNewSel;
+            RedrawItem(nNewSel);
+        }
+    }
+    else
+    {
+        if ((m_bMultiSelection || m_bCheckBox) && GetKeyState(VK_CONTROL) < 0)
+        {
+            if (nNewSel != -1)
+            {
+                DXLVITEM &newItem = m_arrItems[nNewSel];
+                newItem.checked = newItem.checked ? FALSE : TRUE;
+                m_nSelectItem = nNewSel;
+                RedrawItem(nNewSel);
+            }
+        }
+        else if ((m_bMultiSelection || m_bCheckBox) && GetKeyState(VK_SHIFT) < 0)
+        {
+            if (nNewSel != -1)
+            {
+                if (nOldSel == -1)
+                    nOldSel = 0;
+
+                int imax = (nOldSel > nNewSel) ? nOldSel : nNewSel;
+                int imin = (imax == nOldSel) ? nNewSel : nOldSel;
+                for (int i = 0; i < GetItemCount(); i++)
+                {
+                    DXLVITEM &lvItem = m_arrItems[i];
+                    BOOL last = lvItem.checked;
+                    if (i >= imin && i <= imax)
+                    {
+                        lvItem.checked = TRUE;
+                    }
+                    else
+                    {
+                        lvItem.checked = FALSE;
+                    }
+                    if (last != lvItem.checked)
+                        RedrawItem(i);
+                }
+            }
+        }
+        else
+        {
+            m_nSelectItem = -1;
+            for (int i = 0; i < GetItemCount(); i++)
+            {
+                DXLVITEM &lvItem = m_arrItems[i];
+                if (i != nNewSel && lvItem.checked)
+                {
+                    BOOL last = lvItem.checked;
+                    lvItem.checked = FALSE;
+                    if (last != lvItem.checked)
+                        RedrawItem(i);
+                }
+            }
+            if (nNewSel != -1)
+            {
+                DXLVITEM &newItem = m_arrItems[nNewSel];
+                newItem.checked = TRUE;
+                m_nSelectItem = nNewSel;
+                RedrawItem(nNewSel);
+            }
+        }
+    }
+
+    EventLCSelChanged evt2(this);
+    evt2.nOldSel = nOldSel;
+    evt2.nNewSel = nNewSel;
+    FireEvent(evt2);
+}
+
+BOOL SListCtrl::OnScroll(BOOL bVertical, UINT uCode, int nPos)
+{
+    BOOL bRet = __baseCls::OnScroll(bVertical, uCode, nPos);
+
+    if (bVertical)
+    {
+        m_ptOrigin.y = m_siVer.nPos;
+    }
+    else
+    {
+        m_ptOrigin.x = m_siHoz.nPos;
+        // Handle column header scrolling
+        UpdateHeaderCtrl();
+    }
+
+    Invalidate();
+    if (uCode == SB_THUMBTRACK)
+        ScrollUpdate();
+
+    return bRet;
+}
+
+void SListCtrl::OnLButtonDownEx(UINT nFlags, CPoint pt)
+{
+    __baseCls::OnLButtonDownEx(nFlags, pt);
+    int nSubItem = -1;
+    m_nHoverItem = HitTest(pt, &nSubItem);
+    BOOL hitCheckBox = HitCheckBox(pt);
+
+    if (hitCheckBox)
+        NotifySelChange(m_nSelectItem, m_nHoverItem, TRUE);
+    else if (m_nHoverItem != m_nSelectItem && !m_bHotTrack)
+        NotifySelChange(m_nSelectItem, m_nHoverItem);
+    else if (m_nHoverItem != -1 || m_nSelectItem != -1)
+        NotifySelChange(m_nSelectItem, m_nHoverItem);
+}
+
+void SListCtrl::OnLButtonUpEx(UINT nFlags, CPoint pt)
+{
+    __baseCls::OnLButtonUpEx(nFlags, pt);
+}
+
+void SListCtrl::OnLButtonDbClick(UINT nFlags, CPoint pt)
+{
+    __baseCls::OnLButtonDbClick(nFlags, pt);
+    int nSubItem = -1;
+    m_nHoverItem = HitTest(pt, &nSubItem);
+
+    // Select column
+    SetSelectedColumn(nSubItem);
+
+    if (m_nHoverItem != m_nSelectItem)
+        NotifySelChange(m_nSelectItem, m_nHoverItem);
+
+    EventLCDbClick evt2(this);
+    evt2.nCurSel = m_nHoverItem;
+    evt2.pt = pt;
+    FireEvent(evt2);
+}
+
+void SListCtrl::OnRButtonUp(UINT nFlags, CPoint pt)
+{
+    EventLCRClick evt2(this);
+    evt2.nCurSel = HitTest(pt);
+    evt2.pt = pt;
+    FireEvent(evt2);
+    __baseCls::OnRButtonUp(nFlags, pt);
+}
+
+void SListCtrl::UpdateChildrenPosition()
+{
+    __baseCls::UpdateChildrenPosition();
+    UpdateHeaderCtrl();
+}
+
+void SListCtrl::OnSize(UINT nType, CSize size)
+{
+    __baseCls::OnSize(nType, size);
+    UpdateScrollBar();
+    UpdateHeaderCtrl();
+}
+
+BOOL SListCtrl::OnHeaderClick(IEvtArgs *pEvt)
+{
+    return true;
+}
+
+BOOL SListCtrl::OnHeaderSizeChanging(IEvtArgs *pEvt)
+{
+    UpdateScrollBar();
+    InvalidateRect(GetListRect());
+
+    return true;
+}
+
+BOOL SListCtrl::OnHeaderSwap(IEvtArgs *pEvt)
+{
+    InvalidateRect(GetListRect());
+
+    return true;
+}
+
+void SListCtrl::OnMouseMoveEx(UINT nFlags, CPoint pt)
+{
+    __baseCls::OnMouseMoveEx(nFlags, pt);
+    int nHoverItem = HitTest(pt);
+    if (m_bHotTrack && nHoverItem != m_nHoverItem)
+    {
+        m_nHoverItem = nHoverItem;
+        Invalidate();
+    }
+}
+
+void SListCtrl::OnMouseLeave()
+{
+    if (m_bHotTrack)
+    {
+        m_nHoverItem = -1;
+        Invalidate();
+    }
+    __baseCls::OnMouseLeave();
+}
+
+BOOL SListCtrl::GetCheckState(int nItem)
+{
+    if (nItem >= GetItemCount())
+        return FALSE;
+
+    const DXLVITEM lvItem = m_arrItems[nItem];
+    return lvItem.checked;
+}
+
+BOOL SListCtrl::SetCheckState(int nItem, BOOL bCheck)
+{
+    if (!m_bCheckBox)
+        return FALSE;
+
+    if (nItem >= GetItemCount())
+        return FALSE;
+
+    DXLVITEM &lvItem = m_arrItems[nItem];
+    lvItem.checked = bCheck;
+
+    return TRUE;
+}
+
+int SListCtrl::GetCheckedItemCount()
+{
+    int ret = 0;
+
+    for (int i = 0; i < GetItemCount(); i++)
+    {
+        const DXLVITEM lvItem = m_arrItems[i];
+        if (lvItem.checked)
+            ret++;
+    }
+
+    return ret;
+}
+
+int SListCtrl::GetFirstCheckedItem()
+{
+    int ret = -1;
+    for (int i = 0; i < GetItemCount(); i++)
+    {
+        const DXLVITEM lvItem = m_arrItems[i];
+        if (lvItem.checked)
+        {
+            ret = i;
+            break;
+        }
+    }
+
+    return ret;
+}
+
+int SListCtrl::GetLastCheckedItem()
+{
+    int ret = -1;
+    for (int i = GetItemCount() - 1; i >= 0; i--)
+    {
+        const DXLVITEM lvItem = m_arrItems[i];
+        if (lvItem.checked)
+        {
+            ret = i;
+            break;
+        }
+    }
+
+    return ret;
+}
+
+SHeaderCtrl *SListCtrl::GetHeaderCtrl() const
+{
+    return m_pHeader;
+}
+
+SNSEND
