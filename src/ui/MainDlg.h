@@ -116,7 +116,11 @@ protected:
         MESSAGE_HANDLER(WM_NCCALCSIZE, OnNcCalcSize)
         MESSAGE_HANDLER(WM_NCHITTEST, OnNcHitTestSys)
         MESSAGE_HANDLER(WM_APP + 1, OnScanDone)
+#ifdef WM_DEVICECHANGE
+        // 仅 Windows：设备插拔经系统消息通知（swinx/Linux 无 WM_DEVICECHANGE，
+        // Linux 走 udev 回调 → OnDeviceChanged）
         MESSAGE_HANDLER(WM_DEVICECHANGE, OnDeviceChange)
+#endif
         CHAIN_MSG_MAP(SHostWnd)
     END_MSG_MAP()
 };

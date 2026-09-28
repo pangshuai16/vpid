@@ -32,16 +32,23 @@ static bool TryCliScan(LPTSTR lpCmdLine) {
     if (cmd.find(L"--scan") == std::wstring::npos &&
         cmd.find(L"/scan") == std::wstring::npos)
         return false;
+#ifdef _WIN32
+    // GUI 子系统的 stdout 在无控制台环境不可见，Windows 下挂父进程控制台
     if (::AttachConsole(ATTACH_PARENT_PROCESS)) {
         FILE *f = nullptr;
         freopen_s(&f, "CONOUT$", "w", stdout);
     }
+#endif
     auto scanner = vpid::createScanner();
     auto devs = scanner->scan();
     // GUI 子系统的 stdout 在无控制台环境不可见，写结果文件兜底（exe 同目录）
     FILE *out = nullptr;
+#ifdef _WIN32
     errno_t e = fopen_s(&out, "vpid_scan_result.txt", "w");
     if (e != 0) out = nullptr;
+#else
+    out = fopen("vpid_scan_result.txt", "w");
+#endif
     if (out) {
         fprintf(out, "vpid scan: %zu device(s)\n", devs.size());
         for (const auto &d : devs) {
@@ -89,7 +96,10 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
             {
                 RECT rcWnd{0, 0, vpid::kDefaultWindowWidth,
                            vpid::kDefaultWindowHeight};
+#ifdef _WIN32
+                // AdjustWindowRect 仅 Windows 有（swinx/Linux 无此 Win32 API）
                 ::AdjustWindowRect(&rcWnd, WS_OVERLAPPEDWINDOW, FALSE);
+#endif
                 dlg.Create(GetActiveWindow(), 0, 0,
                            rcWnd.right - rcWnd.left, rcWnd.bottom - rcWnd.top);
             }

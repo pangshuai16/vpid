@@ -6,6 +6,7 @@
 
 #include <SApp.h>
 
+#ifdef _WIN32
 // ---- [XP 兼容] 覆盖 MSVC UCRT 静态库引入的 Vista+ API 导入 ----
 // GetNumaHighestNodeNumber 是 Vista+ 导出，XP 的 kernel32 没有。
 // UCRT 通过 __imp_GetNumaHighestNodeNumber 引用它（NUMA 拓扑探测）。
@@ -30,6 +31,7 @@ extern "C" {
     __declspec(selectany) BOOL (WINAPI *__imp_MyGetNumaProcessorNumber)(PULONG) =
         vpid_xpcompat::FakeGetNumaProcessorNumber;
 }
+#endif // _WIN32（NUMA stub 仅 Windows/MSVC 需要）
 
 namespace vpid {
 
@@ -395,7 +397,9 @@ void MainDlg::SetupDeviceNotifier() {
     // 跨平台设备插拔通知：Windows=RegisterDeviceNotification；Linux=udev。
     // 平台不支持时 Start 返回 false，UI 仍由 100ms 自动刷新定时器兜底（与原版一致）。
     notifier_ = DeviceNotifier::Create([this]() { OnDeviceChanged(); });
-    if (notifier_) notifier_->Start(m_hWnd);
+    // Start 参数为 void*；Windows 下 HWND 即 void*，Linux(swinx) 下 HWND 为
+    // unsigned long，统一 reinterpret_cast 兼容两平台。
+    if (notifier_) notifier_->Start(reinterpret_cast<void*>(m_hWnd));
 }
 
 } // namespace vpid
