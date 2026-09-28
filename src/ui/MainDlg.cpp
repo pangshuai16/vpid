@@ -333,7 +333,11 @@ void MainDlg::CopySelected() {
 }
 
 void MainDlg::HandleScanResult(std::vector<USBDevice> &devices) {
-    if (baseline_.empty()) {
+    // 首次扫描：baseline 为空，先落基准；此时 diff(baseline, devices) 必然
+    // 无变化（oldKeys==newKeys），若仅按 changed 判断将永不刷新列表/计数，
+    // 导致"状态栏 0 个设备、表格全空"。故首次扫描无条件刷新。
+    const bool firstScan = baseline_.empty();
+    if (firstScan) {
         baseline_ = devices;
         SetStatusB(L"基准: " + std::to_wstring((int)devices.size()) + L" 个设备 (" + NowTime() + L")");
     }
@@ -342,7 +346,7 @@ void MainDlg::HandleScanResult(std::vector<USBDevice> &devices) {
     removed_dev_ = std::move(diff.removed);
     bool changed = diff.changed;
     cur_dev_ = devices;
-    if (changed) {
+    if (firstScan || changed) {
         all_dev_ = devices;
         SortByPidVidName(all_dev_);
         RefreshViews();

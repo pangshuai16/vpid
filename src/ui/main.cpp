@@ -11,6 +11,9 @@
 
 #include <res.mgr/SUiDef.h>
 
+#include <cstdio>
+#include <string>
+
 #include "common/constants.h"
 #include "MainDlg.h"
 
@@ -18,7 +21,45 @@
 #define RESTYPE_PE 1
 #define RES_TYPE RESTYPE_PE
 
-int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR /*lpCmdLine*/, int /*nCmdShow*/) {
+// CLI 自检模式：vpid_viewer --scan（或 /scan）
+// 跳过 GUI，直接执行 USB 扫描并打印设备列表到控制台后退出。
+// 用途：① CI 构建后自动自检（验证扫描链路可用）；② 对比 CI 产物与本地
+// 产物在相同机器上的扫描行为（设备数/列表）。
+// GUI 程序默认无控制台，用 AttachConsole 挂到父进程控制台以便捕获输出。
+static bool TryCliScan(LPTSTR lpCmdLine) {
+    if (!lpCmdLine || !*lpCmdLine) return false;
+    const std::wstring cmd(lpCmdLine);
+    if (cmd.find(L"--scan") == std::wstring::npos &&
+        cmd.find(L"/scan") == std::wstring::npos)
+        return false;
+    if (::AttachConsole(ATTACH_PARENT_PROCESS)) {
+        FILE *f = nullptr;
+        freopen_s(&f, "CONOUT$", "w", stdout);
+    }
+    auto scanner = vpid::createScanner();
+    auto devs = scanner->scan();
+    // GUI 子系统的 stdout 在无控制台环境不可见，写结果文件兜底（exe 同目录）
+    FILE *out = nullptr;
+    errno_t e = fopen_s(&out, "vpid_scan_result.txt", "w");
+    if (e != 0) out = nullptr;
+    if (out) {
+        fprintf(out, "vpid scan: %zu device(s)\n", devs.size());
+        for (const auto &d : devs) {
+            fprintf(out, "  VID:%s PID:%s serial:%s name:%s\n",
+                    d.getFormattedVid().c_str(), d.getFormattedPid().c_str(),
+                    d.serial.c_str(), d.getDisplayName().c_str());
+        }
+        fclose(out);
+    }
+    printf("vpid scan: %zu device(s)\n", devs.size());
+    fflush(stdout);
+    return true;
+}
+
+int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine, int /*nCmdShow*/) {
+    // CLI 自检模式优先（不启动 GUI / SOUI）
+    if (TryCliScan(lpCmdLine)) return 0;
+
     // SOUI 要求 OLE 初始化（拖放/剪贴板等）
     HRESULT hRes = OleInitialize(nullptr);
     if (FAILED(hRes)) return -1;

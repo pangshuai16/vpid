@@ -20,6 +20,10 @@ jobs:
           cmake -S . -B build -G "Visual Studio 17 2022" -A Win32 -DVPID_UI_STYLE=SOUI
           cmake --build build --config Release -- /m
           Get-Item build/Release/vpid_viewer.exe | Select-Object Name, Length
+          # CLI 自检：直接执行 USB 扫描（runner 无 USB 设备时 count=0 属正常，
+          # 关键验证扫描链路可用、进程不崩溃）；exit != 0 会使步骤失败
+          & build\Release\vpid_viewer.exe --scan
+          if ($LASTEXITCODE -ne 0) { throw "vpid_viewer --scan failed with exit code $LASTEXITCODE" }
           echo "=== imported DLLs (should be system libs only) ==="
           $vsDir = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $vcvars = Join-Path $vsDir "VC\Auxiliary\Build\vcvarsall.bat"
@@ -49,6 +53,11 @@ jobs:
       - name: Build vpid_viewer (SOUI5 + swinx)
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=SOUI
+          # 诊断：dbus 编译单元的 -I 是否命中本库生成的 config.h（flags.make）
+          echo "=== dbus-1 flags.make C_INCLUDES ==="
+          grep "C_INCLUDES" build/third_party/soui/swinx/thirdparty/dbus-1.14.10/dbus/CMakeFiles/dbus-1.dir/flags.make 2>/dev/null | head -3 || echo "flags.make not found"
+          echo "=== dbus config.h key macros ==="
+          grep -n "HAVE_STDINT_H\|^#define VERSION\|DBUS_SESSION_BUS_CONNECT" build/third_party/soui/swinx/thirdparty/dbus-1.14.10/config.h 2>/dev/null | head -10 || echo "config.h not found"
           cmake --build build -j"$(nproc)"
           cp build/vpid_viewer build/vpid_viewer_linux_amd64
 

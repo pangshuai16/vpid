@@ -24,6 +24,12 @@
 #ifndef DBUS_HASH_H
 #define DBUS_HASH_H
 
+/* vendored/swinx 加固：本头文件直接使用 uintptr_t，必须无条件包含
+   <stdint.h>（C99 标准头，所有平台均提供），不能依赖调用方先包含
+   config.h 且 HAVE_STDINT_H 被定义——在 vendored 构建中 config.h 的
+   include 路径可能不命中（编译器落入系统无关 config.h）。 */
+#include <stdint.h>
+
 #ifdef HAVE_STDINT_H
 #include <stdint.h>
 #endif
