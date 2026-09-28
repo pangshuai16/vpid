@@ -3,20 +3,29 @@
 
 namespace vpid {
 
-void DeviceComparer::compare(const std::vector<USBDevice>& oldDev,
-                             const std::vector<USBDevice>& newDev,
-                             std::vector<USBDevice>& added,
-                             std::vector<USBDevice>& removed) {
+DeviceDiff DeviceComparer::diff(const std::vector<USBDevice>& oldDev,
+                                const std::vector<USBDevice>& newDev) {
+    DeviceDiff result;
     std::set<DeviceKey> oldKeys, newKeys;
     for (const auto& d : oldDev) oldKeys.insert(d.getUniqueKey());
     for (const auto& d : newDev) newKeys.insert(d.getUniqueKey());
 
-    added.clear();
-    removed.clear();
+    // 集合相等即无变化（std::set 的 operator!= 做集合语义比较）
+    result.changed = (oldKeys != newKeys);
     for (const auto& d : newDev)
-        if (!oldKeys.count(d.getUniqueKey())) added.push_back(d);
+        if (!oldKeys.count(d.getUniqueKey())) result.added.push_back(d);
     for (const auto& d : oldDev)
-        if (!newKeys.count(d.getUniqueKey())) removed.push_back(d);
+        if (!newKeys.count(d.getUniqueKey())) result.removed.push_back(d);
+    return result;
+}
+
+void DeviceComparer::compare(const std::vector<USBDevice>& oldDev,
+                             const std::vector<USBDevice>& newDev,
+                             std::vector<USBDevice>& added,
+                             std::vector<USBDevice>& removed) {
+    DeviceDiff d = diff(oldDev, newDev);
+    added = std::move(d.added);
+    removed = std::move(d.removed);
 }
 
 bool DeviceComparer::hasChanged(const std::vector<USBDevice>& a, const std::vector<USBDevice>& b) {

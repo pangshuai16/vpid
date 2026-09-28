@@ -13,11 +13,8 @@ constexpr int kDefaultWindowWidth    = 1280;
 constexpr int kDefaultWindowHeight   = 720;
 constexpr int kMinWindowWidth        = 960;
 constexpr int kMinWindowHeight       = 600;
-constexpr int kScanTimeoutMs         = 10000;
 
 constexpr const char* kStatusConnected = "Connected";
-constexpr const char* kStatusError     = "Error";
-constexpr const char* kStatusUnknown   = "Unknown";
 
 // 注册表 USB 枚举路径（Windows 兜底扫描）
 constexpr const char* kRegistryUsbBasePath = R"(SYSTEM\CurrentControlSet\Enum\USB)";

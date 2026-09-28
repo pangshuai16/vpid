@@ -48,9 +48,9 @@ git push origin main
 
 | 平台 | 架构 | 文件名 | CI 环境 |
 |------|------|--------|---------|
-| Windows | x86 | `vpid_viewer_windows_x86.exe` | Windows 2022 + MSYS2 MINGW32 (mingw-w64-i686) |
-| Linux | x64 | `vpid_viewer_linux_amd64` | Rocky Linux 8 (glibc 2.28) + gcc-c++ |
-| Linux | arm64 | `vpid_viewer_linux_arm64` | Rocky Linux 8 + QEMU + gcc-c++ |
+| Windows | x86 | `vpid_viewer_windows_x86.exe` | Windows 2022 + MSVC (VS2022) x86，/MT 静态链接，XP 兼容 |
+| Linux | x64 | `vpid_viewer_linux_amd64` | ubuntu-22.04 + SOUI5/swinx（Cairo/xcb/libudev） |
+| Linux | arm64 | `vpid_viewer_linux_arm64` | ubuntu-22.04 QEMU（`linux/arm64`）+ SOUI5/swinx |
 
 ## 相关文档
 

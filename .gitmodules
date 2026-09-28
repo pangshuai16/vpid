@@ -1,0 +1,4 @@
+[submodule "third_party/soui"]
+	path = third_party/soui
+	url = https://gitee.com/setoutsoft/soui4.git
+	branch = master

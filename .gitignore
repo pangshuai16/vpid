@@ -26,3 +26,15 @@ venv/
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 本地构建 / 诊断产物（非源码）
+build-msvc/
+build_msvc_soui.bat
+*.log
+*.bmp
+imports.txt
+docs_ui_screenshot.png
+shot_app.bmp
+
+# WorkBuddy 本地数据（含记忆/技能，不入库）
+.workbuddy/

@@ -13,40 +13,62 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Set up MSYS2 MINGW32 (i686 toolchain)
-        uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW32
-          update: false
-          install: >-
-            mingw-w64-i686-gcc
-            mingw-w64-i686-cmake
-            mingw-w64-i686-make
-            mingw-w64-i686-binutils
-            make
-            git
-            unzip
+          submodules: recursive
 
-      - name: Build vpid_viewer (i686, Win32 API, fully static, UPX compressed)
-        shell: msys2 {0}
+      - name: Run CMake + MSVC build (SOUI5, x86)
+        shell: pwsh
         run: |
-          set -eux
-          curl -sL -o upx.zip https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip
-          unzip -o upx.zip -d upx
-          UPX_DIR="$(dirname "$(find upx -name upx.exe -print -quit)")"
-          export PATH="$UPX_DIR:$PATH"
-          upx --version | head -1
-          rm -rf build && mkdir -p build
-          cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j"$(nproc)"
-          ls -lh build/vpid_viewer.exe
+          cmake -S . -B build -G "Visual Studio 17 2022" -A Win32 -DVPID_UI_STYLE=SOUI
+          cmake --build build --config Release -- /m
+          Get-Item build/Release/vpid_viewer.exe | Select-Object Name, Length
           echo "=== imported DLLs (should be system libs only) ==="
-          objdump -p build/vpid_viewer.exe | grep -E 'DLL Name' || true
+          dumpbin /imports build/Release/vpid_viewer.exe | Select-String '\.dll"'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpid_viewer_windows_x86_${{ github.sha }}
-          path: build/vpid_viewer.exe
+          path: build/Release/vpid_viewer.exe
           retention-days: 7
+
+  # Linux 双路径：
+  #   - SOUI5 + swinx（默认，跨平台 UI 层统一）
+  #   - GTK3（legacy 回退，-DVPID_UI_STYLE=GTK）
+  build-linux-soui:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install deps (swinx: Cairo/xcb/fontconfig + libudev)
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc g++ cmake pkg-config \
+            libcairo2-dev libfontconfig1-dev libfreetype6-dev libpixman-1-dev \
+            libxcb1-dev libxkbcommon-dev libdbus-1-dev libudev-dev
+          # swinx 自带 xcb-util 系列作为子模块，无需系统安装
+
+      - name: Build vpid_viewer (SOUI5 + swinx)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=SOUI
+          cmake --build build -j"$(nproc)"
+          ls -lh build/vpid_viewer
+
+  build-linux-gtk:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install deps (GTK3 + libusb)
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc g++ cmake pkg-config \
+            libgtk-3-dev libusb-1.0-0-dev
+
+      - name: Build vpid_viewer (GTK3 legacy)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=GTK
+          cmake --build build -j"$(nproc)"
+          ls -lh build/vpid_viewer

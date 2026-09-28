@@ -1,0 +1,11 @@
+// 应用 UI 资源索引：把 uires 下的 XML 编制为 SOUI PE 资源
+// （与 demo/res/soui_res.rc2 相同机制，资源名/类型由 SOUI ResProvider 识别）
+#define DEFINE_UIRES(name, type, file_path)\
+    name type file_path
+
+DEFINE_UIRES(xml_init, UIDEF, "uires/uidef/init.xml")
+DEFINE_UIRES(string,   values, "uires/values/string.xml")
+DEFINE_UIRES(color,    values, "uires/values/color.xml")
+DEFINE_UIRES(skin,     values, "uires/values/skin.xml")
+DEFINE_UIRES(template, values, "uires/values/template.xml")
+DEFINE_UIRES(dlg_main, LAYOUT, "uires/xml/dlg_main.xml")

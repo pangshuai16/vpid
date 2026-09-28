@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UIDEF>
+  <!-- 全局默认字体：Segoe UI（XP 无则系统回退 Tahoma） -->
+  <deffont value="face:Segoe UI,size:14"/>
+
+  <!-- 尺寸单位：与原 Win32 版一致使用逻辑像素 -->
+  <unit defUnit="dp"/>
+
+  <!-- 引用的全局资源表（values 系列为独立 XML 文件） -->
+  <string src="values:string"/>
+  <color src="values:color"/>
+  <skin src="values:skin"/>
+  <template src="values:template"/>
+
+  <!-- 全局样式：1:1 对应原版三种字体规格 -->
+  <style>
+    <!-- 窗口根：bg 底色 -->
+    <class name="cls_dlg_frame" colorBkgnd="@color/bg"/>
+
+    <!-- 自绘标题栏文本（Segoe UI 14px 常规，深灰） -->
+    <class name="cls_caption" font="face:Segoe UI,size:14" colorText="@color/text"/>
+
+    <!-- 标题（原版 hFontTitle: Segoe UI Bold 19px） -->
+    <class name="cls_title" font="face:Segoe UI,bold:1,size:19" colorText="@color/text"/>
+
+    <!-- 按钮文本（原版 hFontBtns: Segoe UI Bold 16px） -->
+    <class name="cls_btn_text" font="face:Segoe UI,bold:1,size:16" colorText="@color/white"/>
+
+    <!-- 列表数据 / 状态栏（原版 hFontList: 等宽 Consolas / Courier New 14px） -->
+    <class name="cls_mono" font="face:Courier New,size:14" colorText="@color/text"/>
+    <class name="cls_status" font="face:Courier New,size:14" colorText="@color/textSecondary"/>
+
+    <!-- chip 标题文本（Segoe UI Bold 16px 语义色） -->
+    <class name="cls_chip_success" font="face:Segoe UI,bold:1,size:16" colorText="@color/success"/>
+    <class name="cls_chip_danger"  font="face:Segoe UI,bold:1,size:16" colorText="@color/danger"/>
+  </style>
+</UIDEF>

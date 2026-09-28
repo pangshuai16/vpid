@@ -1,7 +1,5 @@
 #include "core/windows_scanner.h"
 
-#if defined(__WIN32__) || defined(_WIN32)
-
 #include "common/constants.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -19,9 +17,6 @@
 namespace vpid {
 
 namespace {
-// UTF-16 -> UTF-8（设备名等含非 ASCII，须保真）
-std::string w2utf8(const std::wstring& w);
-
 // 按唯一键去重（保留顺序）
 std::vector<USBDevice> dedup(const std::vector<USBDevice>& in) {
     std::vector<USBDevice> out;
@@ -209,8 +204,3 @@ std::vector<USBDevice> WindowsScanner::scanViaRegistry() {
 std::unique_ptr<Scanner> createScanner() { return std::make_unique<WindowsScanner>(); }
 
 } // namespace vpid
-
-#else
-// 预处理占位：本文件仅在 Windows 目标编译
-namespace vpid { std::unique_ptr<Scanner> createScanner(); }
-#endif

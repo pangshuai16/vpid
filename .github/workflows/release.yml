@@ -13,37 +13,18 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Set up MSYS2 MINGW32 (i686 toolchain)
-        uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW32
-          update: false
-          install: >-
-            mingw-w64-i686-gcc
-            mingw-w64-i686-cmake
-            mingw-w64-i686-make
-            mingw-w64-i686-binutils
-            make
-            git
-            unzip
+          submodules: recursive
 
-      - name: Build vpid_viewer (i686, Win32 API, fully static, UPX compressed)
-        shell: msys2 {0}
+      - name: Run CMake + MSVC build (SOUI5, x86)
+        shell: pwsh
         run: |
-          set -eux
-          curl -sL -o upx.zip https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip
-          unzip -o upx.zip -d upx
-          UPX_DIR="$(dirname "$(find upx -name upx.exe -print -quit)")"
-          export PATH="$UPX_DIR:$PATH"
-          upx --version | head -1
-          rm -rf build && mkdir -p build
-          cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j"$(nproc)"
-          ls -lh build/vpid_viewer.exe
+          cmake -S . -B build -G "Visual Studio 17 2022" -A Win32 -DVPID_UI_STYLE=SOUI
+          cmake --build build --config Release -- /m
+          Get-Item build/Release/vpid_viewer.exe | Select-Object Name, Length
           echo "=== imported DLLs (should be system libs only) ==="
-          objdump -p build/vpid_viewer.exe | grep -E 'DLL Name' || true
-          cp build/vpid_viewer.exe build/vpid_viewer_windows_x86.exe
+          dumpbin /imports build/Release/vpid_viewer.exe | Select-String '\.dll"'
+          Copy-Item build/Release/vpid_viewer.exe build/vpid_viewer_windows_x86.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -52,8 +33,66 @@ jobs:
           path: build/vpid_viewer_windows_x86.exe
           retention-days: 30
 
+  build-linux-soui:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install deps (swinx: Cairo/xcb/fontconfig + libudev)
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc g++ cmake pkg-config \
+            libcairo2-dev libfontconfig1-dev libfreetype6-dev libpixman-1-dev \
+            libxcb1-dev libxkbcommon-dev libdbus-1-dev libudev-dev
+
+      - name: Build vpid_viewer (SOUI5 + swinx)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=SOUI
+          cmake --build build -j"$(nproc)"
+          cp build/vpid_viewer build/vpid_viewer_linux_amd64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: build/vpid_viewer_linux_amd64
+          retention-days: 30
+
+  # Linux arm64（多平台推送发布：与 README 的 x64/arm64 声明一致）
+  build-linux-soui-arm64:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build vpid_viewer (SOUI5 + swinx, arm64)
+        run: |
+          docker run --rm --platform linux/arm64 -v "$PWD":/work -w /work ubuntu:22.04 bash -c '
+            apt-get update && apt-get install -y git cmake pkg-config g++ \
+              libcairo2-dev libfontconfig1-dev libfreetype6-dev libpixman-1-dev \
+              libxcb1-dev libxkbcommon-dev libdbus-1-dev libudev-dev &&
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=SOUI &&
+            cmake --build build -j"$(nproc)" &&
+            cp build/vpid_viewer build/vpid_viewer_linux_arm64
+          '
+          ls -lh build/vpid_viewer_linux_arm64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-arm64
+          path: build/vpid_viewer_linux_arm64
+          retention-days: 30
+
   release:
-    needs: build-windows-x86
+    needs: [build-windows-x86, build-linux-soui, build-linux-soui-arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: write

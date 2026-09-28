@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<skin>
+  <!-- 主操作按钮：colorrect 四态皮肤（圆角 6px + 1px 描边），与原版 BS_OWNERDRAW RoundRect 一致 -->
+  <!-- 状态索引: 0=normal 1=hover 2=pushdown 3=disable（SOUI 默认状态映射） -->
+
+  <!-- 停止刷新：深红 -->
+  <colorrect name="btn_red"
+             normal="@color/redDeep"
+             hover="@color/redDeepHover"
+             pushdown="@color/redDeepPress"
+             normalBorder="@color/redDeepBorder"
+             hoverBorder="@color/redDeepBorderHover"
+             pushdownBorder="@color/redDeepBorderPress"
+             borderWidth="1"
+             cornerRadius="6"/>
+
+  <!-- 自动刷新 / 重置：深绿 -->
+  <colorrect name="btn_green"
+             normal="@color/greenDeep"
+             hover="@color/greenDeepHover"
+             pushdown="@color/greenDeepPress"
+             normalBorder="@color/greenDeepBorder"
+             hoverBorder="@color/greenDeepBorderHover"
+             pushdownBorder="@color/greenDeepBorderPress"
+             borderWidth="1"
+             cornerRadius="6"/>
+
+  <!-- 手动刷新 / 复制：systemBlue -->
+  <colorrect name="btn_blue"
+             normal="@color/blueBtn"
+             hover="@color/blueBtnHover"
+             pushdown="@color/blueBtnPress"
+             normalBorder="@color/blueBtnBorder"
+             hoverBorder="@color/blueBtnBorderHover"
+             pushdownBorder="@color/blueBtnBorderPress"
+             borderWidth="1"
+             cornerRadius="6"/>
+
+  <!-- 右侧列表面板背景：纯白底 -->
+  <colorrect name="panel_white"
+             normal="@color/white"
+             borderWidth="1"
+             normalBorder="@color/border"
+             cornerRadius="0"/>
+
+  <!-- 状态栏底：窗口底色 -->
+  <colorrect name="status_bg"
+             normal="@color/bg"
+             cornerRadius="0"/>
+</skin>

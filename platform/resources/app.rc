@@ -1,6 +1,11 @@
 1 ICON "app.ico"
 1 RT_MANIFEST "app.manifest"
 
+// SOUI 资源：系统皮肤（theme_sys_res.rc2 引用相对路径 theme_sys_res/*.png）
+#include "theme_sys_res.rc2"
+// SOUI 资源：应用 UI（src/ui/uires.rc2，跨平台共享的 XML 布局）
+#include "uires.rc2"
+
 #include <winver.h>
 
 VS_VERSION_INFO VERSIONINFO
