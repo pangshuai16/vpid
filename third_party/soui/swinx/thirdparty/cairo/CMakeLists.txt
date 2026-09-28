@@ -73,7 +73,11 @@ endif()
 
 include(Configure_config.cmake)
 include(Configure_features.cmake)
-include_directories(${CMAKE_CURRENT_BINARY_DIR})
+# vendored/swinx 加固：必须 BEFORE——SOUI 的 ${CMAKE_BINARY_DIR}/config 也有
+# 一个 config.h 且其 -I 更靠前，否则 cairoint.h 等源码的 #include <config.h>
+# / <cairo-features.h>（尖括号）误命中 SOUI 的 config.h，HAVE_STDINT_H /
+# CAIRO_HAS_PTHREAD 等宏全部缺失（同 dbus/fontconfig）。
+include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR})
 
 if(CAIRO_HAS_PTHREAD)
 	list(APPEND CAIRO_LIBS -lpthread)
