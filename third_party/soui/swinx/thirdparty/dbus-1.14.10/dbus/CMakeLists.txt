@@ -1,5 +1,15 @@
 configure_file(dbus-arch-deps.h.in ${CMAKE_CURRENT_BINARY_DIR}/dbus-arch-deps.h )
 
+# vendored/swinx 加固：确保本目录所有编译单元（dbus-1 / dbus-internal）
+# 都能 #include <config.h>。config.h 由顶层 CMakeLists 的 configure_file
+# 生成于 ${CMAKE_CURRENT_BINARY_DIR}/..（dbus-1.14.10 的 build 目录）。
+# 单独依赖 target_include_directories(... INTERFACE ...) 不可靠（INTERFACE
+# 不作用于 target 自身编译），这里用目录级 include_directories 兜底。
+include_directories(
+  ${CMAKE_CURRENT_BINARY_DIR}/..
+  ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+
 add_definitions(-DDBUS_COMPILATION)
 
 set(dbusinclude_HEADERS

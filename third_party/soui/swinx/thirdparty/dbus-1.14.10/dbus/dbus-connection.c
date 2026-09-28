@@ -334,6 +334,13 @@ struct DBusConnection
 
 #if defined(DBUS_ENABLE_CHECKS) || defined(DBUS_ENABLE_ASSERT)
   int generation; /**< _dbus_current_generation that should correspond to this connection */
+#endif
+/* vendored/swinx 加固：_dbus_assert 在 DBUS_DISABLE_ASSERT 未定义时总是
+   展开并引用 connection->generation，因此该成员不能只在
+   DBUS_ENABLE_CHECKS/DBUS_ENABLE_ASSERT 时存在（config.h 宏可能因
+   configure check 被裁剪而缺失）。 */
+#if !defined(DBUS_ENABLE_CHECKS) && !defined(DBUS_ENABLE_ASSERT)
+  int generation; /**< 同上：无条件提供，避免 "no member named 'generation'" */
 #endif 
 };
 

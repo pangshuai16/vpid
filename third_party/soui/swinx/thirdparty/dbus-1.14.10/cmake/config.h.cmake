@@ -17,6 +17,126 @@
 @AUTOPACKAGE_CONFIG_H_TEMPLATE@
 
 /*
+ * vendored/swinx 加固：dbus 的 CMake configure check 流程在本项目被裁剪，
+ * HAVE_*/DBUS_ENABLE_* 等变量不会经 @VAR@ 替换写入 config.h，导致生成的
+ * config.h 里这些宏全部退化为 #undef，进而出现 uintptr_t 未定义、
+ * DBusConnection 缺 generation 成员等连锁编译错误。
+ * 此处按 Linux (glibc) 平台常识强制给出编译必需宏（#ifndef 保护，避免与
+ * 模板中 #cmakedefine 正常展开的 #define 重复定义）。
+ */
+#ifndef HAVE_STDINT_H
+#  define HAVE_STDINT_H 1
+#endif
+#ifndef HAVE_STDLIB_H
+#  define HAVE_STDLIB_H 1
+#endif
+#ifndef HAVE_STRING_H
+#  define HAVE_STRING_H 1
+#endif
+#ifndef HAVE_UNISTD_H
+#  define HAVE_UNISTD_H 1
+#endif
+#ifndef HAVE_ERRNO_H
+#  define HAVE_ERRNO_H 1
+#endif
+#ifndef HAVE_LOCALE_H
+#  define HAVE_LOCALE_H 1
+#endif
+#ifndef HAVE_SYSLOG_H
+#  define HAVE_SYSLOG_H 1
+#endif
+#ifndef HAVE_SYS_TIME_H
+#  define HAVE_SYS_TIME_H 1
+#endif
+#ifndef HAVE_SYS_STAT_H
+#  define HAVE_SYS_STAT_H 1
+#endif
+#ifndef HAVE_SYS_TYPES_H
+#  define HAVE_SYS_TYPES_H 1
+#endif
+#ifndef HAVE_SYS_UIO_H
+#  define HAVE_SYS_UIO_H 1
+#endif
+#ifndef HAVE_SYS_RESOURCE_H
+#  define HAVE_SYS_RESOURCE_H 1
+#endif
+#ifndef HAVE_SYS_RANDOM_H
+#  define HAVE_SYS_RANDOM_H 1
+#endif
+#ifndef HAVE_SYS_PRCTL_H
+#  define HAVE_SYS_PRCTL_H 1
+#endif
+#ifndef HAVE_SYS_EVENTS_H
+#  define HAVE_SYS_EVENTS_H 1
+#endif
+#ifndef HAVE_SYS_INOTIFY_H
+#  define HAVE_SYS_INOTIFY_H 1
+#endif
+#ifndef HAVE_ALLOCA_H
+#  define HAVE_ALLOCA_H 1
+#endif
+#ifndef HAVE_INTTYPES_H
+#  define HAVE_INTTYPES_H 1
+#endif
+#ifndef HAVE_BYTESWAP_H
+#  define HAVE_BYTESWAP_H 1
+#endif
+#ifndef HAVE_SOCKLEN_T
+#  define HAVE_SOCKLEN_T 1
+#endif
+#ifndef HAVE_UNIX_FD_PASSING
+#  define HAVE_UNIX_FD_PASSING 1
+#endif
+#ifndef HAVE_MONOTONIC_CLOCK
+#  define HAVE_MONOTONIC_CLOCK 1
+#endif
+#ifndef HAVE_POLL
+#  define HAVE_POLL 1
+#endif
+#ifndef HAVE_NANOSLEEP
+#  define HAVE_NANOSLEEP 1
+#endif
+#ifndef HAVE_SETENV
+#  define HAVE_SETENV 1
+#endif
+#ifndef HAVE_UNSETENV
+#  define HAVE_UNSETENV 1
+#endif
+#ifndef HAVE_CLEARENV
+#  define HAVE_CLEARENV 1
+#endif
+#ifndef HAVE_PIPE2
+#  define HAVE_PIPE2 1
+#endif
+#ifndef HAVE_WRITEV
+#  define HAVE_WRITEV 1
+#endif
+#ifndef HAVE_SOCKETPAIR
+#  define HAVE_SOCKETPAIR 1
+#endif
+#ifndef HAVE_GETPWNAM_R
+#  define HAVE_GETPWNAM_R 1
+#endif
+#ifndef HAVE_GETGROUPLIST
+#  define HAVE_GETGROUPLIST 1
+#endif
+#ifndef HAVE_GETRESUID
+#  define HAVE_GETRESUID 1
+#endif
+#ifndef HAVE_SETRLIMIT
+#  define HAVE_SETRLIMIT 1
+#endif
+#ifndef HAVE_ACCEPT4
+#  define HAVE_ACCEPT4 1
+#endif
+#ifndef HAVE_DECL_MSG_NOSIGNAL
+#  define HAVE_DECL_MSG_NOSIGNAL 1
+#endif
+#ifndef HAVE_GETRANDOM
+#  define HAVE_GETRANDOM 1
+#endif
+
+/*
  * Variables defined by AC_DEFINE in ../configure.ac
  * should be placed in this file
 */
