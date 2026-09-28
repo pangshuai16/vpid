@@ -23,6 +23,14 @@
  */
 
 #include <config.h>
+/* vendored/swinx 构建兜底：若 config.h 因 include 路径问题未生效（或系统
+   /usr/include/config.h 抢占），仍保证这两个默认地址宏可编译。 */
+#ifndef DBUS_SESSION_BUS_CONNECT_ADDRESS
+#define DBUS_SESSION_BUS_CONNECT_ADDRESS "autolaunch:"
+#endif
+#ifndef DBUS_SYSTEM_BUS_DEFAULT_ADDRESS
+#define DBUS_SYSTEM_BUS_DEFAULT_ADDRESS "unix:path=/run/dbus/system_bus_socket"
+#endif
 #include "dbus-bus.h"
 #include "dbus-protocol.h"
 #include "dbus-internals.h"

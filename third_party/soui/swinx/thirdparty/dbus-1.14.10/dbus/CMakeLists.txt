@@ -292,6 +292,16 @@ target_include_directories(dbus-1 INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>
     )
 
+# INTERFACE 目录只对“链接 dbus-1 的 target”生效，dbus-1 自身编译 .c 时
+# 拿不到这些 include 路径，导致 #include <config.h>（尖括号）找不到本库
+# 生成的 config.h（生成于 ${CMAKE_CURRENT_BINARY_DIR}/..），落入系统无关
+# config.h，DBUS_*_BUS_*_ADDRESS / VERSION 等宏全部缺失 -> undeclared。
+# 因此必须用 PRIVATE 显式补上（源码目录用于 "xxx.h" 引号相对查找）。
+target_include_directories(dbus-1 PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    )
+
 # Create dbus-internal library for internal tools
 set(DBUS_INTERNAL_SOURCES
     ${DBUS_SHARED_SOURCES}

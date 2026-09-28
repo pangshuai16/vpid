@@ -152,7 +152,7 @@ if(WIN32 AND VPID_UI_STYLE STREQUAL "SOUI")
     )
   endif()
 
-elseif(LINUX AND VPID_UI_STYLE STREQUAL "SOUI")
+elseif(UNIX AND NOT APPLE AND VPID_UI_STYLE STREQUAL "SOUI")
   # ===================== Linux: SOUI5 + swinx（xcb + Cairo） =====================
   # SOUI5 通过 swinx 在 Linux 上复现 Win32 API（官方支持的跨平台路径）。
   # 依赖：cairo / fontconfig / freetype / pixman / xcb / xkbcommon / dbus（由 swinx 提供或系统安装）
