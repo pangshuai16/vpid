@@ -23,6 +23,16 @@ endif()
 add_subdirectory(thirdparty/xkbcommon)
 add_subdirectory(thirdparty/libxcb)
 add_subdirectory(thirdparty/xcb-imdkit)
+
+# Ensure the D-Bus bus address cache variables are defined *before* the bundled
+# dbus-1.14.10 subproject runs configure_file() on its config.h.cmake template.
+# Without these, config.h ends up with `#undef DBUS_*_BUS_*_ADDRESS` and the
+# build fails with "DBUS_SESSION_BUS_CONNECT_ADDRESS undeclared".
+set(DBUS_SYSTEM_BUS_DEFAULT_ADDRESS "unix:path=/run/dbus/system_bus_socket"
+    CACHE STRING "system bus default address" FORCE)
+set(DBUS_SESSION_BUS_CONNECT_ADDRESS "autolaunch:"
+    CACHE STRING "session bus fallback address for clients" FORCE)
+
 add_subdirectory(thirdparty/dbus-1.14.10)
  
 
