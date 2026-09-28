@@ -42,8 +42,13 @@
 #cmakedefine DBUS_SESSION_CONFIG_FILE "@DBUS_SESSION_CONFIG_FILE@"
 #cmakedefine DBUS_SESSION_SOCKET_DIR "@DBUS_SESSION_SOCKET_DIR@"
 #cmakedefine DBUS_DAEMON_NAME "@DBUS_DAEMON_NAME@"
-#cmakedefine DBUS_SYSTEM_BUS_DEFAULT_ADDRESS "@DBUS_SYSTEM_BUS_DEFAULT_ADDRESS@"
-#cmakedefine DBUS_SESSION_BUS_CONNECT_ADDRESS "@DBUS_SESSION_BUS_CONNECT_ADDRESS@"
+/* Hard-coded so the bundled dbus-1.14.10 build never ends up with
+   `#undef DBUS_*_BUS_*_ADDRESS` (which breaks dbus-bus.c with
+   "'DBUS_SESSION_BUS_CONNECT_ADDRESS' undeclared"). The upstream template
+   relied on configure_file @VAR@ substitution that is not honoured in this
+   vendored/swinx build context. */
+#define DBUS_SYSTEM_BUS_DEFAULT_ADDRESS "unix:path=/run/dbus/system_bus_socket"
+#define DBUS_SESSION_BUS_CONNECT_ADDRESS "autolaunch:"
 #cmakedefine DBUS_MACHINE_UUID_FILE "@DBUS_MACHINE_UUID_FILE@"
 #cmakedefine DBUS_DAEMONDIR "@DBUS_DAEMONDIR@"
 #cmakedefine DBUS_RUNSTATEDIR "@DBUS_RUNSTATEDIR@"
