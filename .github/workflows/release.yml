@@ -59,7 +59,7 @@ jobs:
           echo "=== dbus config.h key macros ==="
           grep -n "HAVE_STDINT_H\|^#define VERSION\|DBUS_SESSION_BUS_CONNECT" build/third_party/soui/swinx/thirdparty/dbus-1.14.10/config.h 2>/dev/null | head -10 || echo "config.h not found"
           cmake --build build -j"$(nproc)"
-          cp build/vpid_viewer build/vpid_viewer_linux_amd64
+          cp build/bin/vpid_viewer build/vpid_viewer_linux_amd64
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -88,7 +88,7 @@ jobs:
               libx11-dev libxext-dev libxrender-dev libxi-dev libxtst-dev libglib2.0-dev &&
             cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=SOUI &&
             cmake --build build -j"$(nproc)" &&
-            cp build/vpid_viewer build/vpid_viewer_linux_arm64
+            cp build/bin/vpid_viewer build/vpid_viewer_linux_arm64
           '
           ls -lh build/vpid_viewer_linux_arm64
 
