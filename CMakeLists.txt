@@ -223,16 +223,6 @@ elseif(WIN32 AND MINGW AND VPID_UI_STYLE STREQUAL "WIN32")
   target_link_options(vpid_viewer PRIVATE -municode -static -static-libgcc -static-libstdc++ -Wl,-s -Wl,--gc-sections -Wl,--strip-all -Wl,--dynamicbase -Wl,--nxcompat)
   target_compile_definitions(vpid_viewer PRIVATE _WIN32_WINNT=0x0501 WINVER=0x0501 _WIN32_IE=0x0501)
 
-  find_program(UPX_EXECUTABLE upx)
-  if(UPX_EXECUTABLE)
-    add_custom_command(TARGET vpid_viewer POST_BUILD
-      COMMAND ${UPX_EXECUTABLE} --best --force $<TARGET_FILE:vpid_viewer>
-      COMMENT "UPX 压缩 $<TARGET_FILE:vpid_viewer>"
-    )
-  else()
-    message(STATUS "UPX 未找到，跳过压缩（安装 UPX 后自动启用）")
-  endif()
-
 elseif(UNIX AND NOT APPLE AND VPID_UI_STYLE STREQUAL "GTK")
   # ===================== Linux (GTK) 回退：旧 UI =====================
   add_compile_options(-Os -fno-rtti -fno-exceptions -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections)
@@ -250,4 +240,48 @@ elseif(UNIX AND NOT APPLE AND VPID_UI_STYLE STREQUAL "GTK")
 
 else()
   message(WARNING "当前平台/选项无可用构建路径；请用 -DVPID_UI_STYLE=SOUI（默认）")
+endif()
+
+# ============================================================
+# 全平台共享：UPX 体积压缩 + 去特征（POST_BUILD 自动执行）
+#   - 默认启用 --best（NRV 算法，约 0.65MB）：360 实测不误杀、存留产物可运行
+#   - 用 -DVPID_UPX=OFF 可禁用（回归 strip 版 1.9MB）
+#   - 去特征脚本 tools/upx_stealth.py（清 UPX 串 + 节名标准化），python 不可用时跳过
+#   - 注意：杀软实测（2026-10-08 用户 360 实测）：
+#       --best（0.65MB，NRV）   → 安全 ✓ 存留可运行
+#       --best --lzma（0.54MB） → 被清理 ✗（LZMA 触发启发式误杀）
+#       0.30MB 极端压缩         → 误杀 ✗
+#     发布固定用 --best（NRV 算法），勿加 --lzma / 极端压缩
+# ============================================================
+option(VPID_UPX "启用 UPX 压缩（默认 ON，--best 约 0.65MB；OFF 则 strip 1.9MB）" ON)
+if(TARGET vpid_viewer AND VPID_UPX)
+  find_program(UPX_EXECUTABLE upx
+    HINTS
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/upx          # 仓库自带（可选）
+      "C:/Users/Administrator/AppData/Local/Programs/UPX"  # 全局安装（推荐）
+    PATH_SUFFIXES . 
+  )
+  find_program(VPID_PYTHON_EXECUTABLE NAMES python3 python
+    HINTS
+      "C:/Users/Administrator/AppData/Local/Programs/Python/Python312-32"
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools
+    PATH_SUFFIXES . 
+  )
+  if(UPX_EXECUTABLE)
+    if(VPID_PYTHON_EXECUTABLE)
+      set(VPID_STEALTH_ARGS
+        COMMAND ${VPID_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/upx_stealth.py $<TARGET_FILE:vpid_viewer>
+      )
+    else()
+      set(VPID_STEALTH_ARGS)
+      message(STATUS "python 未找到，跳过 UPX 去特征（仅压缩）")
+    endif()
+    add_custom_command(TARGET vpid_viewer POST_BUILD
+      COMMAND ${UPX_EXECUTABLE} --best --force $<TARGET_FILE:vpid_viewer>
+      ${VPID_STEALTH_ARGS}
+      COMMENT "UPX 压缩 + 去特征 $<TARGET_FILE:vpid_viewer>"
+    )
+  else()
+    message(STATUS "VPID_UPX=ON 但 UPX 未找到，跳过压缩（安装 UPX 或使用 tools/upx/）")
+  endif()
 endif()
