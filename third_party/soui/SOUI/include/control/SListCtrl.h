@@ -5,6 +5,11 @@
 #include "helper/SColor.h" // [vpid patch] CR_INVALID（行级颜色补丁需要）
 #include "SHeaderCtrl.h"
 
+// [vpid patch] 悬停动画参数
+#define TIMERID_HOVER_ANIM  0x01  // 悬停渐变动画定时器 ID
+#define HOVER_ANIM_STEPS    8     // 动画总步数（8 × 16ms ≈ 128ms）
+#define HOVER_ANIM_INTERVAL 16    // 每步间隔（ms），≈60fps
+
 SNSBEGIN
 
 /**
@@ -453,6 +458,19 @@ class SOUI_EXP SListCtrl : public SPanel {
     void OnMouseLeave();
 
     /**
+     * @brief [vpid patch] 定时器回调：驱动悬停渐变动画
+     * @param cTimerID 定时器 ID
+     */
+    void OnTimer(char cTimerID);
+
+    /**
+     * @brief [vpid patch] 启动悬停渐变动画
+     * @param nFromItem 离开行的索引（-1 表示无）
+     * @param nToItem 进入行的索引（-1 表示离开列表）
+     */
+    void StartHoverAnimation(int nFromItem, int nToItem);
+
+    /**
      * @brief Handle size change event
      * @param nType Size change type
      * @param size New size
@@ -518,6 +536,11 @@ class SOUI_EXP SListCtrl : public SPanel {
     int m_nHoverItem;    /**< Index of the item under the mouse */
     BOOL m_bHotTrack;    /**< Hot tracking flag */
 
+    // [vpid patch] 悬停渐变动画状态
+    int  m_nHoverPrevItem;  /**< 离开行索引（-1=无），动画中渐出 */
+    int  m_nHoverStep;      /**< 动画步数 0..HOVER_ANIM_STEPS（0=未动画，>0=正在动画） */
+    float m_fHoverT;        /**< 动画插值因子 0.0→1.0（1.0=到位） */
+
     CPoint m_ptIcon; /**< Icon position */
     CPoint m_ptText; /**< Text position */
 
@@ -570,6 +593,7 @@ class SOUI_EXP SListCtrl : public SPanel {
         MSG_WM_LBUTTONDBLCLK(OnLButtonDbClick)
         MSG_WM_RBUTTONUP(OnRButtonUp)
         MSG_WM_MOUSELEAVE(OnMouseLeave)
+        MSG_WM_TIMER_EX(OnTimer) // [vpid patch] 悬停渐变动画
     SOUI_MSG_MAP_END()
 };
 

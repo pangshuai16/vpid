@@ -18,6 +18,9 @@ SListCtrl::SListCtrl()
                        //   实测为 0 时，"第 0 行"会被永久当成鼠标悬停行绘制（m_bHotTrack=true），
                        //   于是列表首行的底色永远与其余行不一致（斑马纹从第 0 行就被吃掉）。
                        //   在 m_pItemSkin=NULL 的定制路径下这个瑕疵是硬色块，肉眼可见。
+    , m_nHoverPrevItem(-1)  // [vpid patch] 悬停动画：离开行
+    , m_nHoverStep(0)       // [vpid patch] 悬停动画：步数
+    , m_fHoverT(1.0f)       // [vpid patch] 悬停动画：插值因子
     , m_crItemBg(RGBA(255, 255, 255, 255))
     , m_crItemBg2(RGBA(226, 226, 226, 255))
     , m_crItemSelBg(RGBA(57, 145, 209, 255))
@@ -674,12 +677,40 @@ void SListCtrl::DrawItem(IRenderTarget *pRT, CRect rcItem, int nItem)
         if (CR_INVALID != m_crSelText)
             crText = m_crSelText;
     }
-    else if (m_bHotTrack && nItem == m_nHoverItem)
+    else if (m_bHotTrack && CR_INVALID != m_crItemHotBg)
     {
-        if (m_pItemSkin != NULL)
-            nBgImg = 1;
-        else if (CR_INVALID != m_crItemHotBg)
-            crItemBg = m_crItemHotBg;
+        // [vpid patch] 悬停渐变动画：插值混合正常色与悬停色，消除"撕裂感"。
+        // 非动画态行为与原版一致（直接硬切）。
+        float fT = 1.0f;  // 1.0 = 完全悬停色
+        if (m_nHoverStep > 0)  // 动画进行中
+        {
+            if (nItem == m_nHoverItem)         fT = m_fHoverT;           // 渐入
+            else if (nItem == m_nHoverPrevItem) fT = 1.0f - m_fHoverT;   // 渐出
+            else                                fT = 0.0f;                // 无关行
+        }
+        else  // 未动画，直接判断
+        {
+            fT = (nItem == m_nHoverItem) ? 1.0f : 0.0f;
+        }
+
+        if (fT > 0.0f)
+        {
+            if (m_pItemSkin != NULL)
+            {
+                // 皮肤不支持半透明混合，仅在全量时启用
+                if (fT >= 1.0f) nBgImg = 1;
+            }
+            else
+            {
+                // 插值混合：crItemBg（正常色，含斑马纹/行级色）↔ m_crItemHotBg（悬停色）
+                BYTE r = GetRValue(crItemBg), g = GetGValue(crItemBg), b = GetBValue(crItemBg);
+                BYTE hr = GetRValue(m_crItemHotBg), hg = GetGValue(m_crItemHotBg), hb = GetBValue(m_crItemHotBg);
+                r = (BYTE)(r * (1.0f - fT) + hr * fT);
+                g = (BYTE)(g * (1.0f - fT) + hg * fT);
+                b = (BYTE)(b * (1.0f - fT) + hb * fT);
+                crItemBg = RGB(r, g, b);
+            }
+        }
         // [vpid patch] 悬停态只换背景、不动文字色：悬停底色 rowHover 是浅灰，
         // 若沿用选中态的 m_crSelText(白) 会变成"浅底白字"看不清。
         // 悬停保持原文字色(近黑 / 行级语义色)，仅以背景微变暗示可交互即可。
@@ -922,6 +953,14 @@ BOOL SListCtrl::OnScroll(BOOL bVertical, UINT uCode, int nPos)
 void SListCtrl::OnLButtonDownEx(UINT nFlags, CPoint pt)
 {
     __baseCls::OnLButtonDownEx(nFlags, pt);
+    // [vpid patch] 点击时立即定格动画（不取消动画会让旧行渐出与新行点击冲突）
+    if (m_nHoverStep > 0)
+    {
+        m_nHoverStep = 0;
+        m_nHoverPrevItem = -1;
+        m_fHoverT = 1.0f;
+        KillTimer(TIMERID_HOVER_ANIM);
+    }
     int nSubItem = -1;
     m_nHoverItem = HitTest(pt, &nSubItem);
     BOOL hitCheckBox = HitCheckBox(pt);
@@ -942,6 +981,14 @@ void SListCtrl::OnLButtonUpEx(UINT nFlags, CPoint pt)
 void SListCtrl::OnLButtonDbClick(UINT nFlags, CPoint pt)
 {
     __baseCls::OnLButtonDbClick(nFlags, pt);
+    // [vpid patch] 点击时立即定格动画
+    if (m_nHoverStep > 0)
+    {
+        m_nHoverStep = 0;
+        m_nHoverPrevItem = -1;
+        m_fHoverT = 1.0f;
+        KillTimer(TIMERID_HOVER_ANIM);
+    }
     // [vpid patch] 原版在此调用 SetSelectedColumn()，于是双击单元格后整列被铺成深色
     // （DrawItem 的列高亮分支）。报表列表没有"选中整列"的语义，移除该副作用。
     // 双击仍保留：选中该行 + 触发 EventLCDbClick（供宿主做自定义处理）。
@@ -1004,17 +1051,17 @@ void SListCtrl::OnMouseMoveEx(UINT nFlags, CPoint pt)
     int nHoverItem = HitTest(pt);
     if (m_bHotTrack && nHoverItem != m_nHoverItem)
     {
-        m_nHoverItem = nHoverItem;
-        Invalidate();
+        // [vpid patch] 用渐变动画代替硬切，消除"撕裂感"
+        StartHoverAnimation(m_nHoverItem, nHoverItem);
     }
 }
 
 void SListCtrl::OnMouseLeave()
 {
-    if (m_bHotTrack)
+    if (m_bHotTrack && m_nHoverItem != -1)
     {
-        m_nHoverItem = -1;
-        Invalidate();
+        // [vpid patch] 用渐变动画代替硬切
+        StartHoverAnimation(m_nHoverItem, -1);
     }
     __baseCls::OnMouseLeave();
 }
@@ -1091,6 +1138,43 @@ int SListCtrl::GetLastCheckedItem()
 SHeaderCtrl *SListCtrl::GetHeaderCtrl() const
 {
     return m_pHeader;
+}
+
+// ============================================================
+// [vpid patch] 悬停渐变动画
+// ============================================================
+
+void SListCtrl::StartHoverAnimation(int nFromItem, int nToItem)
+{
+    // 立即更新目标行（动画结束后最终状态）
+    m_nHoverPrevItem = nFromItem;
+    m_nHoverItem = nToItem;
+    m_nHoverStep = 1;  // 启动动画（step=1，下一步 OnTimer 推进）
+    m_fHoverT = 0.0f;
+    SetTimer(TIMERID_HOVER_ANIM, HOVER_ANIM_INTERVAL);
+}
+
+void SListCtrl::OnTimer(char cTimerID)
+{
+    if (cTimerID == TIMERID_HOVER_ANIM && m_nHoverStep > 0)
+    {
+        m_nHoverStep++;
+        m_fHoverT = (float)m_nHoverStep / (float)HOVER_ANIM_STEPS;
+
+        if (m_nHoverStep >= HOVER_ANIM_STEPS)
+        {
+            // 动画完成：定格到最终状态
+            m_fHoverT = 1.0f;
+            m_nHoverPrevItem = -1;
+            m_nHoverStep = 0;
+            KillTimer(TIMERID_HOVER_ANIM);
+        }
+        Invalidate();
+    }
+    else
+    {
+        __baseCls::OnTimer(cTimerID);
+    }
 }
 
 SNSEND
