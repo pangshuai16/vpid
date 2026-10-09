@@ -18,7 +18,7 @@ jobs:
         shell: pwsh
         run: |
           cmake -S . -B build -G "Visual Studio 17 2022" -A Win32 -DVPID_UI_STYLE=SOUI
-          cmake --build build --config Release -- /m
+          cmake --build build --config Release
           Get-Item build/Release/vpid_viewer.exe | Select-Object Name, Length
           # CLI 自检：直接执行 USB 扫描（runner 无 USB 设备时 count=0 属正常，
           # 关键验证扫描链路可用、进程不崩溃）；exit != 0 会使步骤失败

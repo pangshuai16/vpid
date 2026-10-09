@@ -18,7 +18,7 @@ jobs:
         shell: pwsh
         run: |
           cmake -S . -B build -G "Visual Studio 17 2022" -A Win32 -DVPID_UI_STYLE=SOUI
-          cmake --build build --config Release -- /m
+          cmake --build build --config Release
           Get-Item build/Release/vpid_viewer.exe | Select-Object Name, Length
           echo "=== imported DLLs (should be system libs only) ==="
           dumpbin /imports build/Release/vpid_viewer.exe | Select-String '\.dll"'
