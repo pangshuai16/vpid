@@ -189,6 +189,7 @@ class SOUI_EXP SHeaderCtrl : public TWindowProxy<IHeaderCtrl> {
         ATTR_INT(L"fixWidth", m_bFixWidth, FALSE)
         ATTR_INT(L"itemSwapEnable", m_bItemSwapEnable, FALSE)
         ATTR_INT(L"sortHeader", m_bSortHeader, FALSE)
+        ATTR_INT(L"text-x", m_ptText.x, FALSE)   // [vpid patch] 与 SListCtrl text-x 对齐表头
     SOUI_ATTRS_END()
 
   protected:
@@ -341,6 +342,7 @@ class SOUI_EXP SHeaderCtrl : public TWindowProxy<IHeaderCtrl> {
     BOOL m_bDragging;             /**< Dragging flag */
     HBITMAP m_hDragImg;           /**< Bitmap for drag image */
     CPoint m_ptClick;             /**< Click point */
+    CPoint m_ptText;              /**< [vpid patch] 表头文字左缩进，对齐数据行 text-x */
     DWORD m_dwHitTest;            /**< Hit test result */
     DWORD m_dwDragTo;             /**< Drag target */
     int m_nAdjItemOldWidth;       /**< Original width of the dragged item */

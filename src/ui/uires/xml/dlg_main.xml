@@ -1,13 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 主窗口布局：与原 Win32 版 layoutChildren() 1:1 复刻
-     客户区 1280x720，工具条 60px，状态栏 24px，pad=16 gap=14
-     顶栏: 标题(Segoe UI Bold 19) + 按钮右对齐(高38, 文本宽+48px, 间距10)
-     主区: 左60% 全部设备列表 | 右40% 上=+新增(28px chip + 列表) / 下=-移除(28px chip + 列表)
-     底栏: statusA 左对齐 | statusB 右对齐（等宽字体 14px）
-     布局: root=vbox 自适应（顶栏60 + 分隔线1 + 主区weight=1 + 状态栏24），
-           状态栏永远贴底，不依赖 pos 负数语义
+<!-- 主窗口布局 —— 稳重商务主题（theme: business-slate v1）· 灰窗底 + 白面板 + 深海蓝
+     客户区 1280x720
+     应用栏 52px（平面） | 主区 weight=1（左 66% 全部设备 / 右 34% 变更记录） | 状态栏 28px
+
+     版式节奏（4pt 基数）：外边距 12 · 面板间距 12 · 控件间距 8 · 分组条内边距 12
+     行高 26 · 表头 28 · 分组条 32
+
+     信息架构（两栏，从三栏合并而来）：
+       旧版右栏上下切成"新增设备 / 移除设备"两块，各占一半高度——结果两块大部分时间
+       都是空的，而真正要盯的"变了什么"被拆成两处看。合并成一栏"变更记录"：
+       新增在前、移除在后，用"状态"列的文字 + 行底色双重编码，一眼扫完。
+
+     表头交互（两栏一致）：
+       sortHeader=1    点击表头按该列排序（再点同一列切换升/降序），排序状态由 MainDlg 维护；
+                       排序方向箭头由 SHeaderCtrl 自绘（本项目不使用位图皮肤，无 sortSkin）。
+       itemSwapEnable=0 关闭"拖拽表头换列"。列序固定后，排序列号才能稳定映射到数据字段；
+                       也避免"按下表头 → 轻微移动 → 变成拖拽"与点击排序互相干扰。
+       fixWidth=0      保留拖拽列宽（HitTest 的边界余量），这是可用的，不与排序冲突。
+
      注意: SOUI 线性布局(hbox/vbox)子项必须用 size+weight，不能用 pos！
-           size: -1=wrapContent, -2=matchParent, 正数=固定px, 0=由weight分配 -->
+           size: -1=wrapContent, -2=matchParent, 正数=固定px, 0=由weight分配
+           面板必须 padding="1"，否则列表的不透明底色会盖掉面板的 1px 边框 -->
 <SOUI trCtx="dlg_main"
       title="USB设备ID查看"
       bigIcon="APP_ICON:32"
@@ -25,109 +38,126 @@
        导致 WS_CAPTION 系统标题栏无法渲染、按钮点击失效。
        system="true" → SNcPainter 消息映射整体跳过 → 边框/标题栏/按钮/拖拽/缩放全由系统处理 -->
   <ncpainter system="true"/>
-  <!-- 窗口使用系统边框（WS_CAPTION 系统标题栏）：拖拽/最小化/关闭/双击最大化/边框缩放
-       全部由系统处理（XP 上 100% 可靠）。
-       客户区 1280x720 = 纯内容区，root 布局从客户区顶部开始（无自绘标题栏） -->
   <root class="cls_dlg_frame" width="1280" height="720" layout="vbox">
 
-    <!-- ========== 顶栏（60px 白底，原版 WM_PAINT 绘制） ========== -->
-    <window size="-2,60" colorBkgnd="@color/white" layout="hbox" gravity="center"
-            padding_left="16" padding_right="16" interval="10">
-      <!-- 标题：设备数（原版 hFontTitle: Segoe UI Bold 19，白底） -->
-      <text name="txt_device_count" class="cls_title" size="-1,-1" text="0 个设备已连接"/>
-      <!-- 弹性空隙：把按钮组推到右侧（原版按钮右对齐） -->
+    <!-- ========== 应用栏（52px，平面，比画布亮一级） ========== -->
+    <window size="-2,52" skin="appbar" layout="hbox" gravity="center"
+            padding_left="16" padding_right="16" interval="8">
+      <!-- 左：监控状态胶囊。live / idle 是两个互斥窗口（不是运行时换肤），
+           与"停止刷新/恢复刷新"按钮组用同一套显隐机制 -->
+      <window name="pill_live" layout="hbox" gravity="center" size="-1,26"
+              skin="pill_live" padding="10,0,10,0" interval="8">
+        <window size="8,8" skin="dot_live"/>
+        <text class="cls_pill_text" size="-1,-1" text="实时监控中"/>
+      </window>
+      <window name="pill_idle" layout="hbox" gravity="center" size="-1,26"
+              skin="pill_idle" padding="10,0,10,0" interval="8" visible="0" display="0">
+        <window size="8,8" skin="dot_idle"/>
+        <text class="cls_pill_text_idle" size="-1,-1" text="监控已暂停"/>
+      </window>
+      <!-- 弹性空隙：把按钮组推到右侧 -->
       <window size="0,0" weight="1"/>
-      <!-- 按钮组：原版 order={0,1,3,2,4} → 停止/自动(互斥) → 重置 → 手动刷新 → 复制
-           宽度 = 文本宽 + 双侧 24px 内边距（原版 btnPadx=24, 最小 60px），高 38px -->
-      <button name="btn_stop_refresh"  text="停止刷新" class="cls_btn_text" skin="btn_red"
-              size="-1,38" padding="24,0,24,0"/>
-      <button name="btn_auto_refresh"  text="自动刷新" class="cls_btn_text" skin="btn_green"
-              size="-1,38" padding="24,0,24,0" visible="0" display="0"/>
-      <button name="btn_baseline"      text="重置"     class="cls_btn_text" skin="btn_green"
-              size="-1,38" padding="24,0,24,0"/>
-      <button name="btn_manual_refresh" text="手动刷新" class="cls_btn_text" skin="btn_blue"
-              size="-1,38" padding="24,0,24,0"/>
-      <button name="btn_copy"          text="复制"     class="cls_btn_text" skin="btn_blue"
-              size="-1,38" padding="24,0,24,0"/>
+      <!-- 右：操作组。层级——只有"刷新"是实心主按钮，其余为带描边的幽灵；
+           停止/恢复互斥（display=0 隐藏时不占位） -->
+      <button name="btn_stop_refresh"   text="停止刷新" class="cls_btn_danger"  skin="btn_danger"
+              size="-1,34" padding="14,0,14,0"/>
+      <button name="btn_auto_refresh"   text="恢复刷新" class="cls_btn_accent"  skin="btn_accent"
+              size="-1,34" padding="14,0,14,0" visible="0" display="0"/>
+      <button name="btn_baseline"       text="重置基准" class="cls_btn_ghost"   skin="btn_ghost"
+              size="-1,34" padding="14,0,14,0"/>
+      <button name="btn_copy"           text="复制"     class="cls_btn_ghost"   skin="btn_ghost"
+              size="-1,34" padding="14,0,14,0"/>
+      <button name="btn_manual_refresh" text="刷新"     class="cls_btn_primary" skin="btn_primary"
+              size="-1,34" padding="18,0,18,0"/>
     </window>
-    <!-- 顶栏分隔线（1px，原版 y=60 处 border 色直线） -->
-    <window size="-2,1" colorBkgnd="@color/border"/>
+    <!-- 应用栏底部分隔线 -->
+    <window size="-2,1" colorBkgnd="@color/hairline"/>
 
-    <!-- ========== 主内容区：左列表 | 右两面板（weight=1 填满） ========== -->
-    <window size="-2,0" weight="1" layout="hbox" interval="14"
-            padding_left="16" padding_right="16" padding_top="14" padding_bottom="14">
+    <!-- ========== 主内容区 ========== -->
+    <window size="-2,0" weight="1" layout="hbox" interval="12"
+            padding_left="16" padding_right="16" padding_top="12" padding_bottom="12">
 
-      <!-- 左：全部设备列表（60%，4 列） -->
-      <window layout="vbox" size="0,-2" weight="60">
-        <listctrl name="lc_all" size="-2,-2" itemHeight="24" headerHeight="24"
-                  colorBkgnd="@color/white"
-                  colorItemBkgnd="rgb(250,250,252)" colorItemBkgnd2="rgb(255,255,255)"
-                  colorItemHotBkgnd="rgb(222,234,254)"
-                  colorItemSelBkgnd="rgb(0,89,214)" colorSelText="rgb(255,255,255)"
-                  colorText="rgb(29,29,31)" class="cls_mono"
-                  hotTrack="0" multiSelection="0">
-          <headerStyle align="left" itemSwapEnable="1" fixWidth="0" sortHeader="0" colorBkgnd="@color/white">
+      <!-- 左：全部设备（66%）
+           行序由 MainDlg::SortByVidPidName 稳定排序（VID→PID→名称），
+           保证"同一组设备在任何一次扫描下顺序一致"，不会因扫描顺序抖动而跳行 -->
+      <window layout="vbox" size="0,-2" weight="66" skin="panel" padding="1">
+        <window size="-2,32" layout="hbox" gravity="center" skin="section_bar"
+                padding_left="12" padding_right="12" interval="8">
+          <text class="cls_section_label" size="-1,-1" text="全部设备"/>
+          <window size="0,0" weight="1"/>
+          <window layout="hbox" gravity="center" size="-1,20" skin="badge_neutral" padding="7,0,7,0">
+            <text name="txt_total_count" class="cls_count_neutral" size="-1,-1" text="0"/>
+          </window>
+        </window>
+        <!-- 分组条与列表之间的发丝线：浅色下 3% 明度差不够利落，补一条实线 -->
+        <window size="-2,1" colorBkgnd="@color/hairline"/>
+        <!-- text-x="8"：每列文字左侧内缩 8px。SListCtrl 默认让文字紧贴列边界，
+             相邻列的文本会连成一片（"设备名称"和"路径"糊在一起）。
+             内缩后右边自然留出 8px 空档，列与列就有了呼吸——这是报表可读性的关键。 -->
+        <listctrl name="lc_all" size="-2,0" weight="1" itemHeight="26" headerHeight="28" text-x="8"
+                  colorBkgnd="@color/surface1"
+                  colorItemBkgnd="@color/rowOdd" colorItemBkgnd2="@color/rowEven"
+                  colorItemHotBkgnd="@color/rowHover"
+                  colorItemSelBkgnd="@color/selectBg" colorSelText="@color/selectText"
+                  colorText="@color/textPrimary" class="cls_row"
+                  hotTrack="1" multiSelection="0">
+          <headerStyle align="left" itemSwapEnable="0" fixWidth="0" sortHeader="1" text-x="8"
+                       itemSkin="head_item" colorBkgnd="@color/surface2"
+                       colorText="@color/textSecondary" font="face:Segoe UI,size:13,weight:600">
             <items>
-              <item width="46" align="center">VID</item>
-              <item width="46" align="center">PID</item>
-              <item width="230" align="left">设备名称</item>
-              <item width="400" align="left">路径</item>
+              <item width="56" align="left">VID</item>
+              <item width="56" align="left">PID</item>
+              <item width="210" align="left">设备名称</item>
+              <item width="486" align="left">路径</item>
             </items>
           </headerStyle>
         </listctrl>
       </window>
 
-      <!-- 右：新增 / 移除 两面板（40%，上下等高无间隙，原版 half 平分） -->
-      <window layout="vbox" size="0,-2" weight="40" interval="0">
-        <!-- +新增 chip（28px 高，successBg 底，粗体绿字） -->
-        <window name="chip_added" size="-2,28" layout="hbox" gravity="center"
-                padding_left="8" colorBkgnd="@color/successBg">
-          <text name="txt_added_title" class="cls_chip_success" size="-1,-1" text="+ 新增设备  0"/>
+      <!-- 右：变更记录（34%，新增在前 / 移除在后，由 MainDlg 逐行上色） -->
+      <window layout="vbox" size="0,-2" weight="34" skin="panel" padding="1">
+        <window size="-2,32" layout="hbox" gravity="center" skin="section_bar"
+                padding_left="12" padding_right="12" interval="8">
+          <text class="cls_section_label" size="-1,-1" text="变更记录"/>
+          <window size="0,0" weight="1"/>
+          <!-- 两个计数徽标带文字（"新增 3" / "移除 2"）：
+               光靠颜色区分对红绿色盲无效，数字前必须带语义词 -->
+          <window layout="hbox" gravity="center" size="-1,20" skin="badge_accent" padding="7,0,7,0">
+            <text name="txt_added_count" class="cls_count_add" size="-1,-1" text="新增 0"/>
+          </window>
+          <window layout="hbox" gravity="center" size="-1,20" skin="badge_danger" padding="7,0,7,0">
+            <text name="txt_removed_count" class="cls_count_del" size="-1,-1" text="移除 0"/>
+          </window>
         </window>
-        <listctrl name="lc_added" size="-2,0" weight="1" itemHeight="24" headerHeight="24"
-                  colorBkgnd="@color/white"
-                  colorItemBkgnd="rgb(250,250,252)" colorItemBkgnd2="rgb(255,255,255)"
-                  colorItemHotBkgnd="rgb(222,234,254)"
-                  colorItemSelBkgnd="rgb(0,89,214)" colorSelText="rgb(255,255,255)"
-                  colorText="rgb(29,29,31)" class="cls_mono"
-                  hotTrack="0" multiSelection="0">
-          <headerStyle align="left" itemSwapEnable="1" fixWidth="0" sortHeader="0" colorBkgnd="@color/white">
+        <window size="-2,1" colorBkgnd="@color/hairline"/>
+        <listctrl name="lc_changed" size="-2,0" weight="1" itemHeight="26" headerHeight="28" text-x="8"
+                  colorBkgnd="@color/surface1"
+                  colorItemBkgnd="@color/rowOdd" colorItemBkgnd2="@color/rowEven"
+                  colorItemHotBkgnd="@color/rowHover"
+                  colorItemSelBkgnd="@color/selectBg" colorSelText="@color/selectText"
+                  colorText="@color/textPrimary" class="cls_row"
+                  hotTrack="1" multiSelection="0">
+          <headerStyle align="left" itemSwapEnable="0" fixWidth="0" sortHeader="1" text-x="8"
+                       itemSkin="head_item" colorBkgnd="@color/surface2"
+                       colorText="@color/textSecondary" font="face:Segoe UI,size:13,weight:600">
             <items>
-              <item width="46" align="center">VID</item>
-              <item width="46" align="center">PID</item>
-              <item width="240" align="left">设备名称</item>
-            </items>
-          </headerStyle>
-        </listctrl>
-        <!-- -移除 chip（28px 高，dangerBg 底，粗体红字） -->
-        <window name="chip_removed" size="-2,28" layout="hbox" gravity="center"
-                padding_left="8" colorBkgnd="@color/dangerBg">
-          <text name="txt_removed_title" class="cls_chip_danger" size="-1,-1" text="- 移除设备  0"/>
-        </window>
-        <listctrl name="lc_removed" size="-2,0" weight="1" itemHeight="24" headerHeight="24"
-                  colorBkgnd="@color/white"
-                  colorItemBkgnd="rgb(250,250,252)" colorItemBkgnd2="rgb(255,255,255)"
-                  colorItemHotBkgnd="rgb(222,234,254)"
-                  colorItemSelBkgnd="rgb(0,89,214)" colorSelText="rgb(255,255,255)"
-                  colorText="rgb(29,29,31)" class="cls_mono"
-                  hotTrack="0" multiSelection="0">
-          <headerStyle align="left" itemSwapEnable="1" fixWidth="0" sortHeader="0" colorBkgnd="@color/white">
-            <items>
-              <item width="46" align="center">VID</item>
-              <item width="46" align="center">PID</item>
-              <item width="240" align="left">设备名称</item>
+              <item width="52" align="left">状态</item>
+              <item width="56" align="left">VID</item>
+              <item width="56" align="left">PID</item>
+              <item width="250" align="left">设备名称</item>
             </items>
           </headerStyle>
         </listctrl>
       </window>
     </window>
 
-    <!-- ========== 状态栏（24px，bg 底，statusA 左 / statusB 右对齐，等宽 14px） ========== -->
-    <window size="-2,24" layout="hbox" gravity="center"
-            padding_left="16" padding_right="16" colorBkgnd="@color/bg">
+    <!-- ========== 状态栏（28px） ========== -->
+    <window size="-2,1" colorBkgnd="@color/hairline"/>
+    <window size="-2,28" layout="hbox" gravity="center"
+            padding_left="16" padding_right="16" skin="status_bar">
       <text name="txt_status_a" class="cls_status" size="-1,-1" text=""/>
       <window size="0,0" weight="1"/>
-      <text name="txt_status_b" class="cls_status" size="-1,-1" text="" align="right"/>
+      <text name="txt_status_b" class="cls_status_muted" size="-1,-1" text="" align="right"/>
     </window>
   </root>
 </SOUI>

@@ -17,6 +17,21 @@
 #include "common/constants.h"
 #include "MainDlg.h"
 
+// 高分屏清晰度：清单已声明 DPI 感知（避免 Windows 把整窗位图拉伸放虚），
+// 但 SOUI 默认缩放固定为 100（SHostWnd 内部 UM_SETSCALE 100），不会随 DPI 自动放大。
+// 这里把 SOUI scale 设为 系统DPI/96×100，使窗口在高分屏上"同尺寸但更清晰"。
+// XP 仅 96 DPI → 返回 100（不缩放），行为与旧版一致。
+static int GetDpiScale() {
+    int dpi = 96;
+    HDC hdc = ::GetDC(nullptr);
+    if (hdc) {
+        int x = ::GetDeviceCaps(hdc, LOGPIXELSX);
+        if (x > 0) dpi = x;
+        ::ReleaseDC(nullptr, hdc);
+    }
+    return dpi * 100 / 96;
+}
+
 // RESTYPE_PE：从 exe 自身 PE 资源加载 UI（Release 默认；与 demo 一致）
 #define RESTYPE_PE 1
 #define RES_TYPE RESTYPE_PE
@@ -103,6 +118,20 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
                 dlg.Create(GetActiveWindow(), 0, 0,
                            rcWnd.right - rcWnd.left, rcWnd.bottom - rcWnd.top);
             }
+            // [高分屏清晰] 按系统 DPI 放大 SOUI 缩放（清单已声明 DPI 感知，窗口不再被位图拉伸）。
+            // 不缩放时窗口在高分屏会缩成"一半大小"。scale=100（96 DPI）时跳过，保持原尺寸。
+            {
+                int scale = GetDpiScale();
+                if (scale != 100) {
+                    RECT rcScaled{0, 0,
+                        vpid::kDefaultWindowWidth * scale / 100,
+                        vpid::kDefaultWindowHeight * scale / 100};
+#ifdef _WIN32
+                    ::AdjustWindowRect(&rcScaled, WS_OVERLAPPEDWINDOW, FALSE);
+#endif
+                    dlg.SetScale(scale, &rcScaled);
+                }
+            }
             // 系统标题栏文字（SOUI 创建时窗口名为 HOSTWND，覆盖为产品名）
             ::SetWindowTextW(dlg.m_hWnd, L"USB设备ID查看");
             // 统一窗口图标：SOUI 只管理 icon 句柄（XML bigIcon/smallIcon）但从不
@@ -122,15 +151,17 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
             // 补一次让系统按 WS_CAPTION 重算非客户区（ncpainter system=true 后已走系统路径）。
             ::SetWindowPos(dlg.m_hWnd, NULL, 0, 0, 0, 0,
                            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
-            // 深色标题栏（DWM，Vista+ 动态探测；XP 无 dwmapi 自动跳过 → 经典标题栏本就可见）
-            // 让系统边框/按钮在 Win10 浅色主题下也清晰可见（系统原生绘制，非自定义控件）
+            // 浅色标题栏：显式关掉"沉浸式深色模式"。
+            // 内容区是浅色主题，若系统处于深色模式而标题栏跟着变深，
+            // 会出现"深色标题栏 + 浅色内容"的割裂（系统原生绘制，非自定义控件）。
+            // XP 无 dwmapi → LoadLibrary 失败自动跳过（经典标题栏本就是浅色）。
             {
                 HMODULE hDwm = ::LoadLibraryW(L"dwmapi.dll");
                 if (hDwm) {
                     typedef HRESULT(WINAPI *FDwmSetAttr)(HWND, DWORD, LPCVOID, DWORD);
                     FDwmSetAttr fn = (FDwmSetAttr)::GetProcAddress(hDwm, "DwmSetWindowAttribute");
                     if (fn) {
-                        BOOL dark = TRUE;
+                        BOOL dark = FALSE;
                         // DWMWA_USE_IMMERSIVE_DARK_MODE：Win10 20H1+ 用 20，旧版用 19
                         if (FAILED(fn(dlg.m_hWnd, 20, &dark, sizeof(dark))))
                             fn(dlg.m_hWnd, 19, &dark, sizeof(dark));

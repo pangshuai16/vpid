@@ -31,7 +31,10 @@ public:
     ~MainDlg() override;
 
     // 设备插拔事件入口（Windows 由 WM_DEVICECHANGE 触发；Linux 由 udev 线程回调）
-    void OnDeviceChanged() { if (!scanning_ && !closing_) StartScan(); }
+    // 注意：必须同时看 auto_refresh_。"停止刷新"的语义是"冻结自动识别"，
+    // 若这里不看 auto_refresh_，暂停后插拔设备仍会自动扫描 → 界面在"暂停"下继续变化，
+    // 用户就会看到"已暂停却仍识别到新增"这种自相矛盾的状态。
+    void OnDeviceChanged() { if (auto_refresh_ && !scanning_ && !closing_) StartScan(); }
 
 protected:
     // ---- 原生消息（由 MSG_MAP 消息映射调度，非虚函数，不加 override）----
@@ -58,6 +61,13 @@ protected:
     // 列表选择变化：三列表互斥（原版 LVN_ITEMCHANGED 逻辑）
     void OnListSelChanged(IEvtArgs *pEvt);
 
+    // ---- 表头点击排序（用户自定义排序）----
+    // 两个列表各自独立维护"按哪列 / 什么方向"。SHeaderCtrl 的 EventHeaderClick 由
+    // SListCtrl 内的表头直接发出，这里在 OnCreate 里订阅其事件集（不走 EVENT_NAME_HANDLER：
+    // 那个按"事件源控件名"匹配，而事件源是 listctrl 的子窗口表头，名字对不上）。
+    BOOL OnHeaderClickAll(EventHeaderClick *pEvt);
+    BOOL OnHeaderClickChanged(EventHeaderClick *pEvt);
+
     // ---- 内部工具 ----
     void InitListColumns();
     void RefreshViews();
@@ -71,14 +81,22 @@ protected:
     void HandleScanResult(std::vector<USBDevice> &devices);
     void SetupDeviceNotifier();
     std::wstring DeviceInfoText(const USBDevice &d);
+    // 应用栏监控状态胶囊：同步"实时监控中 / 监控已暂停"文案与圆点颜色
+    void UpdateMonitorState();
+    // 按当前排序列/方向重排三个数据表（RefreshViews 渲染前调用）
+    void ApplyUserSort();
+    // 把排序列/方向同步到表头的排序指示三角
+    void UpdateSortIndicator();
 
     // ---- 控件缓存（FindChildByName2 每次查找有开销，缓存指针）----
     SListCtrl *lc_all_       = nullptr;
-    SListCtrl *lc_added_     = nullptr;
-    SListCtrl *lc_removed_   = nullptr;
-    SWindow   *txt_count_    = nullptr;
-    SWindow   *txt_added_    = nullptr;
-    SWindow   *txt_removed_  = nullptr;
+    SListCtrl *lc_changed_   = nullptr;  // 变更记录（新增在前 / 移除在后，合并自原"新增+移除"两栏）
+    SWindow   *txt_total_count_   = nullptr;  // 分组条计数徽标（全部设备）
+    SWindow   *txt_added_count_   = nullptr;  // 分组条计数徽标（新增）
+    SWindow   *txt_removed_count_ = nullptr;  // 分组条计数徽标（移除）
+    // 应用栏监控状态胶囊：live / idle 是两个互斥窗口，靠显隐切换（不运行时换肤）
+    SWindow   *pill_live_         = nullptr;
+    SWindow   *pill_idle_         = nullptr;
     SWindow   *txt_status_a_ = nullptr;
     SWindow   *txt_status_b_ = nullptr;
 
@@ -88,11 +106,24 @@ protected:
     std::vector<USBDevice> added_dev_;
     std::vector<USBDevice> removed_dev_;
     std::vector<USBDevice> baseline_;
+    // 与 lc_changed_ 的行序严格一一对应（新增在前、移除在后），供选中行反查设备
+    std::vector<USBDevice> changed_dev_;
+    // "当前屏幕上画的是什么"的指纹（设备集合 / 新增集合 / 移除集合三条通道）。
+    // RefreshViews() 渲染后写入，HandleScanResult() 比对后决定要不要重建列表。
+    // 没有它，"插上再拔掉"回到基准时残留的变更行不会被清掉（diff 会报无变化）。
+    std::wstring shown_sig_all_, shown_sig_add_, shown_sig_del_;
 
     std::atomic<bool> scanning_{false};
     std::atomic<bool> closing_{false};
     bool auto_refresh_ = true;
     std::unique_ptr<DeviceNotifier> notifier_; // 跨平台设备插拔通知
+
+    // 表头点击排序状态（-1 = 未启用，沿用 SortByVidPidName 的 VID→PID→名称 默认序）。
+    // 两栏各自独立：列号即 headerStyle 里 <item> 的顺序（本项目已关闭拖拽换列，列号稳定）。
+    int  sort_col_all_ = -1;
+    bool sort_asc_all_ = true;
+    int  sort_col_changed_ = -1;
+    bool sort_asc_changed_ = true;
 
     // SOUI 控件事件映射（按钮 name）
     EVENT_MAP_BEGIN()
@@ -103,8 +134,7 @@ protected:
         EVENT_NAME_COMMAND(L"btn_copy", OnBtnCopy)
         // 列表选择变化（互斥选中：左清右 / 右清左）
         EVENT_NAME_HANDLER(L"lc_all", EVT_LC_SELCHANGED, OnListSelChanged)
-        EVENT_NAME_HANDLER(L"lc_added", EVT_LC_SELCHANGED, OnListSelChanged)
-        EVENT_NAME_HANDLER(L"lc_removed", EVT_LC_SELCHANGED, OnListSelChanged)
+        EVENT_NAME_HANDLER(L"lc_changed", EVT_LC_SELCHANGED, OnListSelChanged)
     EVENT_MAP_END2(SHostWnd)
 
     // 原生消息映射

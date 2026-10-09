@@ -1,5 +1,8 @@
 1 ICON "app.ico"
-1 RT_MANIFEST "app.manifest"
+// 注意：本清单不再由 RC 内嵌（RC 未 include winuser.h 时 RT_MANIFEST 会被当成
+// 字符串类型名，导致加载器不识别；且会与链接器主清单抢占 RT_MANIFEST ID=1）。
+// 改为在 CMakeLists 用 /MANIFESTINPUT 把 app.manifest 合并进链接器自动生成的主清单
+//（主清单含 VC 运行库 side-by-side 依赖 Microsoft.VC*.CRT，必须保留，否则 14001 启动失败）。
 
 // SOUI 资源：系统皮肤（theme_sys_res.rc2 引用相对路径 theme_sys_res/*.png）
 #include "theme_sys_res.rc2"

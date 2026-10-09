@@ -28,7 +28,7 @@ venv/
 Thumbs.db
 
 # 本地构建 / 诊断产物（非源码）
-build-msvc/
+build-msvc*/
 build_msvc_soui.bat
 *.log
 *.bmp
@@ -43,8 +43,3 @@ shot_app.bmp
 # 需完整纳入，覆盖上方对 *.lib/*.a/*.so/*.exe 等二进制的忽略规则
 !third_party/soui/
 !third_party/soui/**
-
-# UPX 打包工具（本仓库自带 win32 版，CMake POST_BUILD 自动压缩；供后续项目复用）
-!tools/
-!tools/upx/
-!tools/upx/*.exe

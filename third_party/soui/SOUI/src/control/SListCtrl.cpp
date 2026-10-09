@@ -14,6 +14,10 @@ SListCtrl::SListCtrl()
     , m_pHeader(NULL)
     , m_nSelectItem(-1)
     , m_nSelectColumn(-1)
+    , m_nHoverItem(-1) // [vpid patch] 原版漏初始化此成员，值来自未清零的堆内存。
+                       //   实测为 0 时，"第 0 行"会被永久当成鼠标悬停行绘制（m_bHotTrack=true），
+                       //   于是列表首行的底色永远与其余行不一致（斑马纹从第 0 行就被吃掉）。
+                       //   在 m_pItemSkin=NULL 的定制路径下这个瑕疵是硬色块，肉眼可见。
     , m_crItemBg(RGBA(255, 255, 255, 255))
     , m_crItemBg2(RGBA(226, 226, 226, 255))
     , m_crItemSelBg(RGBA(57, 145, 209, 255))
@@ -98,6 +102,28 @@ int SListCtrl::InsertItem(int nItem, LPCTSTR pszText, int nImage)
     UpdateScrollBar();
 
     return nItem;
+}
+
+// [vpid patch] 行级底色 / 文字色（见 SListCtrl.h 声明）。
+// 用于"变更记录"列表按行编码语义（新增=淡绿 / 移除=淡红），
+// 使运维人员在扫视时不必逐字读"状态"列也能分辨方向。
+void SListCtrl::SetItemColor(int nItem, COLORREF crBg, COLORREF crText)
+{
+    if (nItem < 0 || nItem >= GetItemCount())
+        return;
+
+    DXLVITEM &lvi = m_arrItems[nItem];
+    lvi.crItemBg = crBg;
+    lvi.crText = crText;
+}
+
+// [vpid patch] 行首语义竖条（见 SListCtrl.h 声明）。
+void SListCtrl::SetItemAccent(int nItem, COLORREF crAccent)
+{
+    if (nItem < 0 || nItem >= GetItemCount())
+        return;
+
+    m_arrItems[nItem].crAccent = crAccent;
 }
 
 BOOL SListCtrl::SetItemData(int nItem, LPARAM dwData)
@@ -631,6 +657,13 @@ void SListCtrl::DrawItem(IRenderTarget *pRT, CRect rcItem, int nItem)
             crItemBg = m_crItemBg2;
     }
 
+    // [vpid patch] 行级底色 / 文字色：压过上面的斑马纹，
+    // 但会被下面的"选中 / 悬停"覆盖——交互态永远优先于语义色。
+    if (CR_INVALID != lvItem.crItemBg)
+        crItemBg = lvItem.crItemBg;
+    if (CR_INVALID != lvItem.crText)
+        crText = lvItem.crText;
+
     if (lvItem.checked)
     { // Separated from the condition of the if below, so there is a distinction between sel and hot
         if (m_pItemSkin != NULL)
@@ -647,15 +680,27 @@ void SListCtrl::DrawItem(IRenderTarget *pRT, CRect rcItem, int nItem)
             nBgImg = 1;
         else if (CR_INVALID != m_crItemHotBg)
             crItemBg = m_crItemHotBg;
-
-        if (CR_INVALID != m_crSelText)
-            crText = m_crSelText;
+        // [vpid patch] 悬停态只换背景、不动文字色：悬停底色 rowHover 是浅灰，
+        // 若沿用选中态的 m_crSelText(白) 会变成"浅底白字"看不清。
+        // 悬停保持原文字色(近黑 / 行级语义色)，仅以背景微变暗示可交互即可。
     }
     if (CR_INVALID != crItemBg) // Draw background first
         pRT->FillSolidRect(rcItem, crItemBg);
 
     if (m_pItemSkin != NULL) // If there is a skin, overlay the background
         m_pItemSkin->DrawByIndex(pRT, rcItem, nBgImg);
+
+    // [vpid patch] 行首语义竖条：变更记录"新增/移除"的标识主通道。
+    // 整行铺底色在浅色主题下太"吵"（大面积着色），只留 3px 竖条——
+    // 与徽标/按钮同属一套语义色，扫视时一眼判向，又不干扰读表。
+    if (CR_INVALID != lvItem.crAccent)
+    {
+        int nBarW = 3 * GetScale() / 100;
+        if (nBarW < 2)
+            nBarW = 2;
+        CRect rcBar(rcItem.left, rcItem.top, rcItem.left + nBarW, rcItem.bottom);
+        pRT->FillSolidRect(rcBar, lvItem.crAccent);
+    }
 
     // Add padding on the left
     rcItem.left += ITEM_MARGIN;
@@ -684,12 +729,11 @@ void SListCtrl::DrawItem(IRenderTarget *pRT, CRect rcItem, int nItem)
         if (rcVisiblePart.IsRectEmpty())
             continue;
 
-        // Highlight the selected column
-        if (hdi.iOrder == m_nSelectColumn)
-        {
-            if (CR_INVALID != m_crItemSelBg)
-                pRT->FillSolidRect(rcVisiblePart, m_crItemSelBg);
-        }
+        // [vpid patch] 原版在此会把"选中列"整列铺成 m_crItemSelBg（深色）。
+        // 触发点是双击单元格：OnLButtonDbClick 会 SetSelectedColumn()，
+        // 于是整列（跨所有行）被填成深蓝，看起来像"双击把整列选中/变暗"。
+        // 报表工具里没有"选中整列"这个语义，且深蓝列底会盖掉行级语义色
+        // （新增蓝晕 / 移除红晕）与斑马纹，故彻底移除该列高亮绘制。
 
         // Draw checkbox
         if (nCol == 0 && m_bCheckBox && m_pCheckSkin)
@@ -898,11 +942,10 @@ void SListCtrl::OnLButtonUpEx(UINT nFlags, CPoint pt)
 void SListCtrl::OnLButtonDbClick(UINT nFlags, CPoint pt)
 {
     __baseCls::OnLButtonDbClick(nFlags, pt);
-    int nSubItem = -1;
-    m_nHoverItem = HitTest(pt, &nSubItem);
-
-    // Select column
-    SetSelectedColumn(nSubItem);
+    // [vpid patch] 原版在此调用 SetSelectedColumn()，于是双击单元格后整列被铺成深色
+    // （DrawItem 的列高亮分支）。报表列表没有"选中整列"的语义，移除该副作用。
+    // 双击仍保留：选中该行 + 触发 EventLCDbClick（供宿主做自定义处理）。
+    m_nHoverItem = HitTest(pt, nullptr);
 
     if (m_nHoverItem != m_nSelectItem)
         NotifySelChange(m_nSelectItem, m_nHoverItem);

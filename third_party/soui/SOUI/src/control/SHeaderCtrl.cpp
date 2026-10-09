@@ -12,6 +12,7 @@ SHeaderCtrl::SHeaderCtrl(void)
     , m_dwHitTest((DWORD)-1)
     , m_bDragging(FALSE)
     , m_hDragImg(NULL)
+    , m_ptText(0, 0)             // [vpid patch] 表头文字默认不缩进
     , m_nScale(100)
 {
     m_bClipClient = TRUE;
@@ -145,28 +146,68 @@ void SHeaderCtrl::DrawItem(IRenderTarget *pRT, CRect rcItem, const LPSHDITEMEX p
         return;
     if (m_pSkinItem)
         m_pSkinItem->DrawByState(pRT, rcItem, pItem->state);
+    // [vpid patch] 表头文字左缩进，与数据行严格对齐。
+    // 数据行文字左缘 = 列左缘 + ITEM_MARGIN(4，见 SListCtrl.cpp) + text-x；
+    // 表头补上同样的 ITEM_MARGIN，否则每列标题都会比数据左偏 4px。
+    rcItem.left += m_ptText.x + 4;
     UINT align = DT_SINGLELINE | DT_VCENTER;
     if (pItem->fmt & HDF_CENTER)
         align |= DT_CENTER;
     else if (pItem->fmt & HDF_RIGHT)
         align |= DT_RIGHT;
 
-    BOOL bDrawSortFlag = (pItem->fmt & SORT_MASK) != 0 && m_pSkinSort;
-    if (!bDrawSortFlag)
+    // [vpid patch] 排序指示三角：优先用 sortSkin 位图；若未配置皮肤（本项目为纯色主题、
+    // 不使用任何位图资源），则自绘实心三角，保证 XP / Linux 下也有一致的排序视觉反馈——
+    // 否则 EnableHeaderSort 后点击表头"有排序、无指示"，用户无法知道当前按哪列、什么方向。
+    const BOOL bSortFlag = (pItem->fmt & SORT_MASK) != 0;
+    if (!bSortFlag)
     {
         pRT->DrawText(pItem->strText.GetText(FALSE), pItem->strText.GetText(FALSE).GetLength(), rcItem, align);
         return;
     }
 
-    CSize szSort = m_pSkinSort->GetSkinSize();
-    rcItem.right -= szSort.cx;
+    const BOOL bUp = (pItem->fmt & HDF_SORTUP) != 0;
 
-    pRT->DrawText(pItem->strText.GetText(FALSE), pItem->strText.GetText(FALSE).GetLength(), rcItem, align);
-    CPoint ptSort;
-    ptSort.x = rcItem.right;
-    ptSort.y = rcItem.top + (rcItem.Height() - szSort.cy) / 2;
+    if (m_pSkinSort)
+    {
+        CSize szSort = m_pSkinSort->GetSkinSize();
+        rcItem.right -= szSort.cx;
 
-    m_pSkinSort->DrawByIndex(pRT, CRect(ptSort, szSort), (pItem->fmt & HDF_SORTUP) ? 0 : 1);
+        pRT->DrawText(pItem->strText.GetText(FALSE), pItem->strText.GetText(FALSE).GetLength(), rcItem, align);
+        CPoint ptSort;
+        ptSort.x = rcItem.right;
+        ptSort.y = rcItem.top + (rcItem.Height() - szSort.cy) / 2;
+
+        m_pSkinSort->DrawByIndex(pRT, CRect(ptSort, szSort), bUp ? 0 : 1);
+        return;
+    }
+
+    // 无 sortSkin：文字区域让出箭头宽度，再用扫描线填一个实心三角（不依赖位图/路径 API）
+    const int nScale = GetScale();
+    int nArrowW = 9 * nScale / 100;
+    int nArrowH = 5 * nScale / 100;
+    int nGap = 6 * nScale / 100;
+    if (nArrowW < 7) nArrowW = 7;
+    if (nArrowH < 4) nArrowH = 4;
+    if (nGap < 4) nGap = 4;
+
+    CRect rcText(rcItem);
+    rcText.right -= (nArrowW + nGap);
+    pRT->DrawText(pItem->strText.GetText(FALSE), pItem->strText.GetText(FALSE).GetLength(), rcText, align);
+
+    // 箭头取当前文字色（表头文字色来自 XML colorText），保持与主题同源
+    const COLORREF crArrow = pRT->GetTextColor();
+    const int cx = rcItem.right - nArrowW - nGap / 2;
+    const int cy = rcItem.top + rcItem.Height() / 2;
+    const int nHalf = nArrowW / 2;
+    for (int i = 0; i < nArrowH; ++i)
+    {
+        // 上三角：自上而下渐宽；下三角：自上而下渐窄
+        const int half = bUp ? (nHalf * (i + 1) / nArrowH) : (nHalf * (nArrowH - i) / nArrowH);
+        const int y = cy - nArrowH / 2 + i;
+        CRect rcSeg(cx - half, y, cx + half + 1, y + 1);
+        pRT->FillSolidRect(rcSeg, crArrow);
+    }
 }
 
 BOOL SHeaderCtrl::DeleteItem(int iItem)

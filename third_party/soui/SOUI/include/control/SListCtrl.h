@@ -2,6 +2,7 @@
 #define __SLISTCTRL__H__
 
 #include "core/SPanel.h"
+#include "helper/SColor.h" // [vpid patch] CR_INVALID（行级颜色补丁需要）
 #include "SHeaderCtrl.h"
 
 SNSBEGIN
@@ -68,11 +69,18 @@ typedef struct DXLVITEM
         dwData = 0;
         arSubItems = NULL;
         checked = FALSE;
+        // [vpid patch] 默认"未指定"，走控件统一的斑马纹 / 文字色
+        crItemBg = CR_INVALID;
+        crText = CR_INVALID;
+        crAccent = CR_INVALID;
     }
 
     ArrSubItem *arSubItems; /**< Array of subitems */
     LPARAM dwData;          /**< Additional data */
     BOOL checked;           /**< Check state */
+    COLORREF crItemBg;      /**< [vpid patch] 行底色，CR_INVALID=沿用控件斑马纹 */
+    COLORREF crText;        /**< [vpid patch] 行文字色，CR_INVALID=沿用控件文字色 */
+    COLORREF crAccent;      /**< [vpid patch] 行首语义竖条色，CR_INVALID=不绘制 */
 } DXLVITEM;
 
 /**
@@ -305,6 +313,25 @@ class SOUI_EXP SListCtrl : public SPanel {
     {
         m_bHotTrack = enable;
     }
+
+    /**
+     * @brief [vpid patch] 设置单行的底色 / 文字色
+     * @param nItem 行索引
+     * @param crBg 行底色，CR_INVALID 表示沿用控件斑马纹
+     * @param crText 行文字色，CR_INVALID 表示沿用控件文字色
+     * @details 用于"变更记录"这类需要按行编码语义（新增=绿 / 移除=红）的列表。
+     *          优先级：斑马纹 < 行级颜色 < 选中 / 悬停（选中与悬停始终压过行级颜色）。
+     */
+    void SetItemColor(int nItem, COLORREF crBg, COLORREF crText);
+
+    /**
+     * @brief [vpid patch] 设置单行行首语义竖条颜色
+     * @param nItem 行索引
+     * @param crAccent 竖条颜色，CR_INVALID 表示不绘制
+     * @details 用于"变更记录"这类需要按行编码语义（新增=主色 / 移除=危险色）的列表。
+     *          相比整行铺底色，3px 竖条是更克制、更贴近主题（徽标/按钮同一套色彩）的"标识"。
+     */
+    void SetItemAccent(int nItem, COLORREF crAccent);
 
   protected:
     /**

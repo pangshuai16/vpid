@@ -95,6 +95,21 @@ if(WIN32 AND VPID_UI_STYLE STREQUAL "SOUI")
   # UTF-8 源码（SOUI 与本项目均含中文）
   if(MSVC)
     add_compile_options(/utf-8)
+    # 体积优化（纯编译期、非打包、无 packer 特征 → 360 风险为 0）：
+    #   /Os    体积优先（替代 CMake 默认的 /O2）
+    #   /Gy    函数级链接（配合 /OPT:REF 删掉未引用函数）
+    #   /GR-   关 RTTI（实测 SOUI 与本项目均无 dynamic_cast/typeid）
+    #   /EHsc- 关 C++ 异常（实测全库仅 souidlgs.h 有一个未调用的 ATLTRY 宏，无 throw）
+    # 注意：每个 flag 必须单独一个 genex。塞在一个 genex 里会被
+    # add_compile_options 按空格拆坏（/EHsc- 的尾部 - 会被切成 /EH>，
+    # /Os 会被当成源文件路径 $<1:/Os）。
+    add_compile_options("$<$<CONFIG:Release>:/Os>")
+    add_compile_options("$<$<CONFIG:Release>:/Gy>")
+    add_compile_options("$<$<CONFIG:Release>:/GR->")
+    add_compile_options("$<$<CONFIG:Release>:/EHsc->")
+    # /GL 程序级优化：让编译器生成 COMDAT 节，配合 /OPT:REF 做跨 TU 去死码
+    # 注意：这只是 COMDAT 布局优化，不是 /LTCG 全链接优化（后者会做代码生成，风险更大）
+    add_compile_options("$<$<CONFIG:Release>:/GL>")
   endif()
 
   # 生成 SOUI 编译期配置（souistd.h 依赖 <config.h>）
@@ -143,7 +158,20 @@ if(WIN32 AND VPID_UI_STYLE STREQUAL "SOUI")
   # 组件裁剪：只保留 render-gdi + imgdecoder-stb
   target_compile_definitions(vpid_viewer PRIVATE "SCOM_MASK=(scom_mask_render_gdi|scom_mask_imgdecoder_stb)")
   if(MSVC)
-    target_link_options(vpid_viewer PRIVATE /SUBSYSTEM:WINDOWS,5.01)
+    # /OPT:REF 死代码消除（配合 /Gy 函数级链接）：未引用的 SOUI 控件/函数整个删掉
+    target_link_options(vpid_viewer PRIVATE
+      "/SUBSYSTEM:WINDOWS,5.01"
+      "$<$<CONFIG:Release>:/OPT:REF>"
+    )
+    # 高分屏清晰度（避免 Windows 把整窗位图拉伸放虚）：
+    # 用 /MANIFESTINPUT 把我们的 DPI 感知清单"合并"进链接器自动生成的主清单，
+    # 主清单里含 VC 运行库 side-by-side 依赖（Microsoft.VC*.CRT），必须保留，
+    # 否则缺 CRT 依赖会 14001 启动失败。
+    # 注意：不能在 app.rc 里用 RT_MANIFEST 内嵌（RC 未 include winuser.h 会把
+    # RT_MANIFEST 当字符串类型名，加载器不识别）；也不可 /MANIFEST:NO 关掉主清单。
+    target_link_options(vpid_viewer PRIVATE
+      "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/platform/resources/app.manifest"
+    )
     # XP 兼容：把 MSVC UCRT 对 Vista+ API（GetNumaHighestNodeNumber / GetNumaProcessorNumber）
     # 的导入引用，重定向到 MainDlg.cpp 中定义的本地 stub
     target_link_options(vpid_viewer PRIVATE
@@ -243,45 +271,25 @@ else()
 endif()
 
 # ============================================================
-# 全平台共享：UPX 体积压缩 + 去特征（POST_BUILD 自动执行）
-#   - 默认启用 --best（NRV 算法，约 0.65MB）：360 实测不误杀、存留产物可运行
-#   - 用 -DVPID_UPX=OFF 可禁用（回归 strip 版 1.9MB）
-#   - 去特征脚本 tools/upx_stealth.py（清 UPX 串 + 节名标准化），python 不可用时跳过
-#   - 注意：杀软实测（2026-10-08 用户 360 实测）：
-#       --best（0.65MB，NRV）   → 安全 ✓ 存留可运行
-#       --best --lzma（0.54MB） → 被清理 ✗（LZMA 触发启发式误杀）
-#       0.30MB 极端压缩         → 误杀 ✗
-#     发布固定用 --best（NRV 算法），勿加 --lzma / 极端压缩
+# 可复现构建：固定 PE TimeDateStamp（同源码同参数 → 确定性哈希）
+#   MSVC link 默认把构建时刻写进 COFF TimeDateStamp（pe+8）；本项目里该 4 字节
+#   还被复制到 .data 一处，故每次构建有 2 处字节随时间变化 → 尺寸恒等但哈希不同。
+#   钉成定值后即可复现。
 # ============================================================
-option(VPID_UPX "启用 UPX 压缩（默认 ON，--best 约 0.65MB；OFF 则 strip 1.9MB）" ON)
-if(TARGET vpid_viewer AND VPID_UPX)
-  find_program(UPX_EXECUTABLE upx
-    HINTS
-      ${CMAKE_CURRENT_SOURCE_DIR}/tools/upx          # 仓库自带（可选）
-      "C:/Users/Administrator/AppData/Local/Programs/UPX"  # 全局安装（推荐）
-    PATH_SUFFIXES . 
-  )
+if(TARGET vpid_viewer)
   find_program(VPID_PYTHON_EXECUTABLE NAMES python3 python
     HINTS
       "C:/Users/Administrator/AppData/Local/Programs/Python/Python312-32"
       ${CMAKE_CURRENT_SOURCE_DIR}/tools
-    PATH_SUFFIXES . 
+    PATH_SUFFIXES .
   )
-  if(UPX_EXECUTABLE)
-    if(VPID_PYTHON_EXECUTABLE)
-      set(VPID_STEALTH_ARGS
-        COMMAND ${VPID_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/upx_stealth.py $<TARGET_FILE:vpid_viewer>
-      )
-    else()
-      set(VPID_STEALTH_ARGS)
-      message(STATUS "python 未找到，跳过 UPX 去特征（仅压缩）")
-    endif()
+  if(VPID_PYTHON_EXECUTABLE)
     add_custom_command(TARGET vpid_viewer POST_BUILD
-      COMMAND ${UPX_EXECUTABLE} --best --force $<TARGET_FILE:vpid_viewer>
-      ${VPID_STEALTH_ARGS}
-      COMMENT "UPX 压缩 + 去特征 $<TARGET_FILE:vpid_viewer>"
+      COMMAND ${VPID_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/pin_timestamp.py
+              $<TARGET_FILE:vpid_viewer>
+      COMMENT "固定 PE 时间戳（可复现哈希）$<TARGET_FILE:vpid_viewer>"
     )
   else()
-    message(STATUS "VPID_UPX=ON 但 UPX 未找到，跳过压缩（安装 UPX 或使用 tools/upx/）")
+    message(STATUS "未找到 python，跳过时间戳固定（构建哈希将不可复现）")
   endif()
 endif()

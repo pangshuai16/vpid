@@ -1,45 +1,113 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  ============================================================================
+  VPID · 设计令牌 (theme: business-slate v1)
+  ============================================================================
+  使用者：运维人员。场景：排查机器上插了哪些 USB 设备、刚插上/拔掉了什么。
+  设计目标：简单 / 美观 / 清晰 · 稳重商务风 · 颜色更深、对比更强。
+
+  风格取向：稳重商务
+    · 中性色 = 极低彩度的冷灰（chroma 近乎为 0，只留一丝蓝相），
+      这是"商务"与"消费级"的分界：不带情绪色，长时间看不疲劳。
+    · 主色 = 深海蓝（hue≈215）。商务语汇里最"稳"的一味：
+      比亮蓝克制、比黑色有生气，用在"刷新"按钮与选中行上，一眼就是可操作。
+    · 表面层级靠"白面板 + 灰窗底"的明度差建立，不靠投影（GDI 也没有投影）。
+    · 直角优先：面板/表头/数据区一律直角，只有按钮与徽标给 3px 微圆角——
+      这是"报表工具"而非"移动 App"的关键信号。
+    · 整窗只允许"一个"实心主按钮。强调色面积占比 < 10%。
+
+  语义色的双通道编码（色觉障碍与黑白打印的兜底）：
+    新增 → 蓝晕行底 + 文字"新增" + 计数徽标；移除 → 红晕行底 + 文字"移除" + 计数徽标。
+    刻意用"蓝 + 红"而不是"绿 + 红"：红绿色盲（约 8% 男性）能区分蓝与红，绿与红则不能。
+
+  对比度实测（sRGB，WCAG 2.1 相对亮度公式）：
+    textPrimary   / surface1        17.1:1  ✓ AAA
+    textPrimary   / rowEven         16.5:1  ✓ AAA
+    textSecondary / surface1         7.5:1  ✓ AAA
+    textMuted     / surface1         4.7:1  ✓ AA
+    textOnAccent  / accent           8.0:1  ✓ AAA   ← 实心主按钮 / 选中行
+    accentText    / surface1         8.8:1  ✓ AAA
+    success       / surface1         7.0:1  ✓ AAA
+    danger        / surface1         6.5:1  ✓ AA
+    danger        / dangerTint       5.6:1  ✓ AA
+    idle          / idleTint         4.7:1  ✓ AA
+    textPrimary   / rowAddBg        14.9:1  ✓ AAA
+    textPrimary   / rowDelBg        14.7:1  ✓ AAA
+    border        / surface1         3.3:1  ✓ 非文本 3:1
+    border        / surface2         3.1:1  ✓ 非文本 3:1
+  ============================================================================
+-->
 <color>
-  <!-- Apple HIG 语义色（浅色外观），对应原 Win32 版 theme 命名 -->
-  <primary       value="rgb(0,122,255)"/>     <!-- systemBlue -->
-  <primaryDark   value="rgb(0,89,214)"/>      <!-- systemBlue 深 -->
-  <primaryHover  value="rgb(10,132,255)"/>
-  <success       value="rgb(52,199,89)"/>     <!-- systemGreen -->
-  <successBg     value="rgb(233,249,239)"/>
-  <danger        value="rgb(255,59,48)"/>     <!-- systemRed -->
-  <dangerBg      value="rgb(253,236,236)"/>
-  <text          value="rgb(29,29,31)"/>
-  <textSecondary value="rgb(134,134,139)"/>
-  <border        value="rgb(209,209,214)"/>
-  <bg            value="rgb(245,245,247)"/>
-  <rowEven       value="rgb(250,250,252)"/>
-  <white         value="rgb(255,255,255)"/>
 
-  <!-- 列表选中/悬停（原版 ListView 高亮：深蓝底 + 白字，对比度最高） -->
-  <selBkgnd      value="rgb(0,89,214)"/>      <!-- systemBlue 深：选中背景，白字可读 -->
-  <selHoverBkgnd value="rgb(222,234,254)"/>   <!-- 浅蓝：hover 背景，深色文字可读 -->
+  <!-- ========================= 表面层级（灰窗底 + 白面板） ========================= -->
+  <!-- 窗底：客户区底色，也是面板之间的"空隙"——比面板重，面板自然浮起 -->
+  <canvas       value="rgb(228,231,237)"/>
+  <!-- 面板 / 列表体 / 应用栏：整窗最亮的一级，数据铺在它上面 -->
+  <surface1     value="rgb(255,255,255)"/>
+  <!-- 分组条 / 表头 / 状态栏 / 幽灵按钮底：比面板重一档，用来"收口" -->
+  <surface2     value="rgb(242,244,249)"/>
+  <!-- 悬停 -->
+  <surface3     value="rgb(230,233,240)"/>
+  <!-- 按下 -->
+  <surface4     value="rgb(216,220,229)"/>
 
-  <!-- 按钮体系（与原版 btnFill/btnBorder + shade(+22/-36) 精确一致） -->
-  <!-- 停止刷新：深红（白字可读） -->
-  <redDeep       value="rgb(214,69,65)"/>
-  <redDeepHover  value="rgb(236,91,87)"/>     <!-- +22 -->
-  <redDeepPress  value="rgb(178,33,29)"/>     <!-- -36 -->
-  <redDeepBorder value="rgb(176,58,53)"/>
-  <redDeepBorderHover value="rgb(198,80,75)"/>
-  <redDeepBorderPress value="rgb(140,22,17)"/>
-  <!-- 自动刷新 / 重置：深绿（白字可读） -->
-  <greenDeep       value="rgb(30,158,75)"/>
-  <greenDeepHover  value="rgb(52,180,97)"/>
-  <greenDeepPress  value="rgb(0,122,39)"/>
-  <greenDeepBorder value="rgb(23,131,55)"/>
-  <greenDeepBorderHover value="rgb(45,153,77)"/>
-  <greenDeepBorderPress value="rgb(0,95,19)"/>
-  <!-- 手动刷新 / 复制：systemBlue -->
-  <blueBtn       value="rgb(0,122,255)"/>
-  <blueBtnHover  value="rgb(22,144,255)"/>
-  <blueBtnPress  value="rgb(0,86,219)"/>
-  <blueBtnBorder value="rgb(0,89,214)"/>
-  <blueBtnBorderHover value="rgb(22,111,236)"/>
-  <blueBtnBorderPress value="rgb(0,53,178)"/>
-  <btnDisableText value="rgb(165,165,165)"/>
+  <!-- ========================= 描边 ========================= -->
+  <!-- 装饰分隔（面板外框 / 区块分隔）：刻意压到几乎看不见，只负责"收边" -->
+  <hairline     value="rgb(203,208,218)"/>
+  <!-- 控件描边（按钮 / 徽标边界）：承载"这是一个可点的东西"，必须 ≥3:1 -->
+  <border       value="rgb(134,141,155)"/>
+  <borderStrong value="rgb(98,106,120)"/>
+
+  <!-- ========================= 文本 ========================= -->
+  <textPrimary   value="rgb(24,27,33)"/>    <!-- 数据行、标题：压到近黑，报表要的就是清晰 -->
+  <textSecondary value="rgb(76,83,94)"/>    <!-- 表头、分组标签、状态栏 -->
+  <textMuted     value="rgb(106,114,126)"/> <!-- 次要元信息，仍满足 4.5:1 -->
+  <textDisabled  value="rgb(164,171,182)"/> <!-- 禁用态，WCAG 豁免 -->
+  <textOnAccent  value="rgb(255,255,255)"/> <!-- 深海蓝实底上的字 -->
+
+  <!-- ========================= 主色：深海蓝 ========================= -->
+  <accent          value="rgb(30,80,148)"/>
+  <accentHover     value="rgb(22,66,124)"/>   <!-- 浅色主题：hover 走"更深" -->
+  <accentPress     value="rgb(16,51,99)"/>
+  <accentText      value="rgb(26,74,138)"/>   <!-- 白底上的蓝字 -->
+  <accentTint      value="rgb(233,240,250)"/> <!-- 淡蓝晕（新增行底 / 强调幽灵按钮底） -->
+  <accentBorder    value="rgb(163,190,225)"/>
+  <accentTintHover value="rgb(216,230,246)"/>
+
+  <!-- ========================= 语义色：运行中（绿） ========================= -->
+  <!-- 只出现在 8px 状态圆点与"实时监控中"胶囊上，永远是"点"，不是"面" -->
+  <success       value="rgb(22,101,72)"/>
+  <successTint   value="rgb(230,243,236)"/>
+  <successBorder value="rgb(157,199,181)"/>
+
+  <!-- ========================= 语义色：移除 / 危险（红） ========================= -->
+  <danger       value="rgb(176,42,48)"/>
+  <dangerTint   value="rgb(251,234,235)"/>
+  <dangerBorder value="rgb(228,175,178)"/>
+
+  <!-- ========================= 暂停（中性灰） ========================= -->
+  <idle       value="rgb(99,107,119)"/>
+  <idleTint   value="rgb(238,241,245)"/>
+  <idleBorder value="rgb(198,205,214)"/>
+
+  <!-- ========================= 数据行 ========================= -->
+  <rowOdd   value="rgb(255,255,255)"/>
+  <rowEven  value="rgb(250,251,253)"/>   <!-- 斑马纹：只差 2% 明度，够引导视线又不花 -->
+  <rowHover value="rgb(230,233,240)"/>
+  <!-- 选中行：主色实底 + 白字（报表工具的标准语义，与"编辑态"无关，纯粹是"我正在看这一行"） -->
+  <selectBg   value="rgb(30,80,148)"/>
+  <selectText value="rgb(255,255,255)"/>
+
+  <!-- ========================= 变更记录的行标识 ========================= -->
+  <!-- 双通道编码：
+         ① 行底晕：大面积、低浓度，负责"整行归属"（哪几行是变更）；
+         ② 行首 3px 竖条：小面积、实色，负责"一眼判向"（新增还是移除）。
+       两者都直接取自主题已有的语义色——新增=主色深海蓝、移除=危险色，
+       与计数徽标 / 按钮 / 选中行同一套色彩体系，而不是另起一套"绿+红"：
+       那样既与整体商务蓝主题割裂，红绿色盲（约 8% 男性）也无法区分。 -->
+  <rowAddBg  value="rgb(233,240,250)"/>  <!-- 新增行底晕 = accentTint（蓝晕） -->
+  <rowDelBg  value="rgb(251,234,235)"/>  <!-- 移除行底晕 = dangerTint（红晕） -->
+  <rowAddBar value="rgb(30,80,148)"/>    <!-- 新增行首竖条 = accent（深海蓝） -->
+  <rowDelBar value="rgb(176,42,48)"/>    <!-- 移除行首竖条 = danger（危险色） -->
+
 </color>
