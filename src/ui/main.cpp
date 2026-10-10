@@ -250,3 +250,32 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
     diag("exit _tWinMain");
     return nRet;
 }
+
+#ifndef _WIN32
+// ===================== Linux 标准入口 =====================
+// 关键：Linux 链接器以标准 C 的 main 为入口。若只有 Win32 风格的
+// _tWinMain 而无 main 调用它，链接器 GC（-ffunction-sections + LTO）
+// 会把整个应用代码（含资源字符串）当死代码删除——产物启动后
+// 只剩 swinx 库代码，表现为"无报错、无窗口、无进程"（用户实测现象）。
+// 这里显式提供 main → _tWinMain 调用链，确保应用代码被保留。
+extern "C" int main(int argc, char **argv) {
+    // 组装 Win32 风格命令行（swinx 用窄/宽字符串，这里按 _tWinMain 期望）
+    // _tWinMain(hInstance, hPrev, lpCmdLine, nCmdShow)
+    // hInstance：Linux 下 swinx 的 GetModuleHandle(NULL) 返回有效值（dlopen 基址）
+    // lpCmdLine：argv[1..] 拼接（用于 --scan 自检）
+    std::string cmdline;
+    for (int i = 1; i < argc; ++i) {
+        if (i > 1) cmdline += " ";
+        cmdline += argv[i];
+    }
+    HINSTANCE hInstance = ::GetModuleHandle(nullptr);
+    int ret = _tWinMain(hInstance, nullptr,
+#ifdef _UNICODE
+        (LPTSTR)std::wstring(cmdline.begin(), cmdline.end()).c_str(),
+#else
+        (LPTSTR)cmdline.c_str(),
+#endif
+        SW_SHOWNORMAL);
+    return ret;
+}
+#endif // !_WIN32
