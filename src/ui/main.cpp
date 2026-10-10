@@ -55,6 +55,16 @@ static std::wstring GetExeDir() {
     return path;
 }
 
+// Linux 诊断用窄字符版（stderr/日志文件输出）
+static std::string GetExeDirA() {
+    char buf[MAX_PATH + 1] = {0};
+    ::GetModuleFileNameA(NULL, buf, MAX_PATH);
+    std::string path(buf);
+    size_t pos = path.find_last_of("/\\");
+    if (pos != std::string::npos) path = path.substr(0, pos);
+    return path;
+}
+
 // CLI 自检模式：vpid_viewer --scan（或 /scan）
 // 跳过 GUI，直接执行 USB 扫描并打印设备列表到控制台后退出。
 // 用途：① CI 构建后自动自检（验证扫描链路可用）；② 对比 CI 产物与本地
@@ -98,12 +108,28 @@ static bool TryCliScan(LPTSTR lpCmdLine) {
 }
 
 int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine, int /*nCmdShow*/) {
+    // Linux 诊断：所有失败路径都写 stderr + vpid_linux_diag.txt（GUI 静默退出排查用）
+    auto diag = [](const char *msg) {
+        fprintf(stderr, "[vpid] %s\n", msg);
+        fflush(stderr);
+        FILE *f = fopen("vpid_linux_diag.txt", "a");
+        if (f) { fprintf(f, "[vpid] %s\n", msg); fclose(f); }
+    };
+#ifndef _WIN32
+    diag("start _tWinMain");
+    diag(("exe dir: " + GetExeDirA()).c_str());
+    diag(("uires dir: " + (GetExeDirA() + "/uires")).c_str());
+#endif
+
     // CLI 自检模式优先（不启动 GUI / SOUI）
     if (TryCliScan(lpCmdLine)) return 0;
 
     // SOUI 要求 OLE 初始化（拖放/剪贴板等）
     HRESULT hRes = OleInitialize(nullptr);
-    if (FAILED(hRes)) return -1;
+    if (FAILED(hRes)) {
+        diag("OleInitialize FAILED");
+        return -1;
+    }
 
     int nRet = 0;
     {
@@ -138,8 +164,10 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
 #endif
 
         if (!cfg.DoConfig(&theApp)) {
+            diag("DoConfig FAILED (资源加载失败：检查 uires/ 目录与 uires.idx)");
             nRet = -1;
         } else {
+            diag("DoConfig OK");
             vpid::MainDlg dlg;
             // 系统边框窗口：XML wndStyle 含 WS_CAPTION（系统标题栏 47120384=0x02CF0000）
             // 客户区 = 内容区 1280x720，窗口总尺寸 = 客户区 + 系统标题栏/边框（AdjustWindowRect）
@@ -152,6 +180,12 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
 #endif
                 dlg.Create(GetActiveWindow(), 0, 0,
                            rcWnd.right - rcWnd.left, rcWnd.bottom - rcWnd.top);
+                if (!dlg.m_hWnd) {
+                    diag("MainDlg Create FAILED (窗口创建失败)");
+                    nRet = -1;
+                    return nRet;
+                }
+                diag("MainDlg Create OK");
             }
             // [高分屏清晰] 按系统 DPI 放大 SOUI 缩放（清单已声明 DPI 感知，窗口不再被位图拉伸）。
             // 不缩放时窗口在高分屏会缩成"一半大小"。scale=100（96 DPI）时跳过，保持原尺寸。
@@ -207,9 +241,12 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
             dlg.GetNative()->SendMessage(WM_INITDIALOG);
             dlg.CenterWindow();
             dlg.ShowWindow(SW_SHOWNORMAL);
+            diag("ShowWindow OK, entering message loop");
             nRet = theApp.Run(dlg.m_hWnd);
+            diag("message loop exited");
         }
     }
     OleUninitialize();
+    diag("exit _tWinMain");
     return nRet;
 }
