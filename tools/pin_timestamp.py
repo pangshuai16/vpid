@@ -26,8 +26,10 @@ def main():
 
     data = bytearray(open(path, "rb").read())
     if len(data) < 64 or data[:2] != b"MZ":
-        sys.stderr.write("not a PE file: %s\n" % path)
-        return 1
+        # 非 PE（如 zig 交叉编译的 Linux ELF）：时间戳由 ELF 构建可复现性保证，
+        # 无需处理。返回 0 避免 POST_BUILD 失败。
+        print("[pin_timestamp] not a PE file (ELF?), skip: %s" % path)
+        return 0
 
     pe = struct.unpack_from("<I", data, 0x3C)[0]
     off_ts = pe + 8  # COFF: Machine(2) + NumberOfSections(2) + TimeDateStamp(4)

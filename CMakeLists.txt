@@ -205,6 +205,16 @@ elseif(UNIX AND NOT APPLE AND VPID_UI_STYLE STREQUAL "SOUI")
 
   VPID_ADD_SOUI_SUBDIRS()
 
+  # zig 交叉 / Clang 下禁用 PCH 后，soui4 依赖 PCH 隐式注入 souistd.h
+  # （源文件直接使用 SNSBEGIN/SStringA 等，无显式 include）。
+  # 用编译器 -include 等效替换（仅 soui4 target，不影响第三方 C 库）。
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    set(SOUI_STD_HEADER ${SOUI_ROOT}/SOUI/include/souistd.h)
+    if(EXISTS ${SOUI_STD_HEADER})
+      target_compile_options(soui4 PRIVATE "-include;${SOUI_STD_HEADER}")
+    endif()
+  endif()
+
   add_executable(vpid_viewer
     ${SOUI_UI_SOURCES}
     ${CORE_SOURCES}
@@ -217,17 +227,37 @@ elseif(UNIX AND NOT APPLE AND VPID_UI_STYLE STREQUAL "SOUI")
   # TRANSLATOR/LOG4Z 等未链接组件 → 链接期 undefined reference
   target_compile_definitions(vpid_viewer PRIVATE "SCOM_MASK=(scom_mask_render_gdi|scom_mask_imgdecoder_stb)")
 
-  # swinx + SOUI 组件静态库 + Linux 原生扫描(libusb)/设备通知(libudev)
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(LIBUDEV REQUIRED libudev)
-  pkg_check_modules(LIBUSB REQUIRED libusb-1.0)   # linux_scanner.cpp 用 libusb 枚举 USB
+  # swinx + SOUI 组件静态库 + Linux 原生扫描(libusb vendored)：
+  #   * libudev：linux_notifier.cpp 用 dlopen 动态加载（缺失降级轮询），无链接期依赖，不写死。
+  #   * libusb-1.0：linux_scanner.cpp 真要用静态链接，vendored 到 third_party/libusb 从源码编，
+  #                 规避交叉编译时 pkg-config 误用 host 系统 libusb（glibc 版本不匹配）。
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/libusb)
   target_link_libraries(vpid_viewer PRIVATE
     soui4 utilities4 render-gdi imgdecoder-stb aupng
-    ${LIBUDEV_LIBRARIES} ${LIBUSB_LIBRARIES}
+    libusb
+    brotlicommon   # freetype→brotlidec 的 PRIVATE 依赖，静态链接不传递，需显式补
     dl pthread
   )
-  target_include_directories(vpid_viewer PRIVATE ${LIBUSB_INCLUDE_DIRS})
-  target_compile_options(vpid_viewer PRIVATE ${LIBUDEV_CFLAGS_OTHER} ${LIBUSB_CFLAGS_OTHER})
+
+  # zig 交叉编译：系统库 libxcb/libXau/libuuid 不能 -L 解析（Windows 下 zig
+  # 对 -L盘符路径 解析错误），直接传 sysroot 里的 .so 绝对路径。
+  #     --allow-shlib-undefined：sysroot 的 .so 取自 Ubuntu 22.04，内部引用
+  #     getrandom@GLIBC_2.25 等新符号，本机链接时目标 glibc 是 2.17 floor；
+  #     运行时目标机用自己的系统库解析，链接期放行即可（不污染产物 glibc 版本）。
+  if(DEFINED LINUX_SYSROOT_LIB AND EXISTS ${LINUX_SYSROOT_LIB}/libxcb.so)
+    target_link_libraries(vpid_viewer PRIVATE
+      ${LINUX_SYSROOT_LIB}/libxcb.so
+      ${LINUX_SYSROOT_LIB}/libuuid.so
+      ${LINUX_SYSROOT_LIB}/libXau.so
+    )
+    target_link_options(vpid_viewer PRIVATE -Wl,--allow-shlib-undefined)
+  endif()
+
+  # Release 体积：链接期 strip（zig cc -s 等价于 --strip-all，避免依赖
+  # zig objcopy 工具在该机解压失败的问题；gcc/g++ 也支持 -s）
+  if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    target_link_options(vpid_viewer PRIVATE -s)
+  endif()
 
 elseif(WIN32 AND MINGW AND VPID_UI_STYLE STREQUAL "WIN32")
   # ===================== Windows (MinGW) 回退：原生 Win32 UI =====================

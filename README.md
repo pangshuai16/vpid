@@ -71,6 +71,21 @@ build_msvc_soui.bat Release
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=SOUI
 cmake --build build -j$(nproc)
 
+# Linux 交叉编译（Windows 宿主上用 zig（v0.17.0 已验证），glibc floor 2.17，兼容 CentOS 7/Ubuntu 12.04+）
+#   * libusb 已 vendored（third_party/libusb）；libudev 运行时 dlopen 降级，无需系统开发包。
+#   * 系统库 libxcb/libXau/libuuid 由 tools/fetch_linux_sysroot.py 提取到
+#     tools/linux-sysroot/lib（已入库，无需联网）。
+#   * 3 个 EXITCODE 是 pixman 交叉探测必需（try_run 在交叉编译下要求预置退出码）。
+cmake -S . -B build-zig -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=$PWD/tools/zig-linux-x86_64.cmake \
+  -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=SOUI \
+  -DTOOLCHAIN_SUPPORTS_ATTRIBUTE_CONSTRUCTOR_EXITCODE=0 \
+  -DTOOLCHAIN_SUPPORTS_ATTRIBUTE_DESTRUCTOR_EXITCODE=0 \
+  -DASM_LEADING_UNDERSCORE_EXITCODE=1
+cmake --build build-zig --config Release
+# 产物：build-zig/bin/vpid_viewer（ELF x86-64，glibc >= 2.17 可运行，已 strip）
+# arm64：换用 tools/zig-linux-aarch64.cmake，产物 ELF aarch64。
+
 # 旧方案（可选）：MinGW 原生 Win32 UI
 cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=WIN32
 cmake --build build -j$(nproc)
