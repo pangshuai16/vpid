@@ -44,7 +44,8 @@
 - **设备插拔通知**（`device_notifier.h` 抽象 + 平台实现）:
   - Windows: `RegisterDeviceNotification` + `WM_DEVICECHANGE`
   - Linux: udev monitor（libudev，动态加载，缺失时降级为 100ms 定时轮询）
-- **CI/CD**: GitHub Actions（Windows 2022 + MSVC / Ubuntu 22.04 + SOUI5+swinx / GTK3 回退）
+- **CI/CD**: 本地固化脚本（`tools/build_release.py`，一次构建 Windows x86 + Linux amd64/arm64）+
+  GitHub Release 手动发布（API 直传，不依赖 Actions）
 
 > **可选回退**：旧实现保留在 `src/platform/legacy/`，可通过编译选项切换：
 > - `-DVPID_UI_STYLE=WIN32`：MinGW + 原生 Win32 UI（Windows）
@@ -59,22 +60,40 @@
 
 ## 从源码构建
 
+### 一键 Release 构建（推荐）
+
+Windows 宿主上一次产出三个平台产物（需 VS2022 BuildTools + zig 0.17.0 在 PATH）：
+
+```bash
+python tools/build_release.py
+# 产物：dist/vpid_viewer_windows_x86.exe、dist/vpid_viewer_linux_amd64、
+#       dist/vpid_viewer_linux_arm64（自动验证 PE/ELF/glibc 版本）
+python tools/build_release.py --only windows   # 只构建 Windows
+python tools/build_release.py --only linux-x64 # 只构建 Linux amd64
+```
+
+发布到 GitHub Release（无需 Actions）：
+
+```bash
+python tools/release_github.py --tag v1.0.0 --title "v1.0.0" --notes-file RELEASE_NOTES.md
+```
+
+完整发布流程见 [RELEASE.md](RELEASE.md)。
+
+### 手动构建（分平台）
+
 ```bash
 # Windows (MSVC + SOUI5，XP 兼容；需 VS2017+ 或 CMake+Ninja 在 vcvarsall x86 环境中)
 cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=SOUI
 cmake --build build
 
-# 或一键构建脚本（VS2017 x86 + 内置 CMake/Ninja）
-build_msvc_soui.bat Release
-
 # Linux (SOUI5 + swinx；需 cairo/fontconfig/xcb/libudev 开发包)
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=SOUI
 cmake --build build -j$(nproc)
 
-# Linux 交叉编译（Windows 宿主上用 zig（v0.17.0 已验证），glibc floor 2.17，兼容 CentOS 7/Ubuntu 12.04+）
+# Linux 交叉编译（Windows 宿主上用 zig v0.17.0，glibc floor 2.17，兼容 CentOS 7/Ubuntu 12.04+）
 #   * libusb 已 vendored（third_party/libusb）；libudev 运行时 dlopen 降级，无需系统开发包。
-#   * 系统库 libxcb/libXau/libuuid 由 tools/fetch_linux_sysroot.py 提取到
-#     tools/linux-sysroot/lib（已入库，无需联网）。
+#   * 系统库 libxcb/libXau/libuuid 已入库（tools/linux-sysroot/），无需联网。
 #   * 3 个 EXITCODE 是 pixman 交叉探测必需（try_run 在交叉编译下要求预置退出码）。
 cmake -S . -B build-zig -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE=$PWD/tools/zig-linux-x86_64.cmake \
@@ -83,7 +102,7 @@ cmake -S . -B build-zig -G Ninja \
   -DTOOLCHAIN_SUPPORTS_ATTRIBUTE_DESTRUCTOR_EXITCODE=0 \
   -DASM_LEADING_UNDERSCORE_EXITCODE=1
 cmake --build build-zig --config Release
-# 产物：build-zig/bin/vpid_viewer（ELF x86-64，glibc >= 2.17 可运行，已 strip）
+# 产物：build-zig/bin/vpid_viewer（ELF x86-64，glibc <= 2.17 可运行，已 strip）
 # arm64：换用 tools/zig-linux-aarch64.cmake，产物 ELF aarch64。
 
 # 旧方案（可选）：MinGW 原生 Win32 UI

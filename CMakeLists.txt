@@ -171,6 +171,7 @@ if(WIN32 AND VPID_UI_STYLE STREQUAL "SOUI")
     # RT_MANIFEST 当字符串类型名，加载器不识别）；也不可 /MANIFEST:NO 关掉主清单。
     target_link_options(vpid_viewer PRIVATE
       "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/platform/resources/app.manifest"
+      "/MANIFEST:EMBED"
     )
     # XP 兼容：把 MSVC UCRT 对 Vista+ API（GetNumaHighestNodeNumber / GetNumaProcessorNumber）
     # 的导入引用，重定向到 MainDlg.cpp 中定义的本地 stub

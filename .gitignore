@@ -31,6 +31,9 @@ Thumbs.db
 build-msvc*/
 build-ci-test*/
 build-zig*/
+.build-release/
+.obsolete-builds/
+dist/
 build_msvc_soui.bat
 *.log
 *.bmp
