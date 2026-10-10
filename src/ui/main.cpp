@@ -34,9 +34,26 @@ static int GetDpiScale() {
     return dpi * 100 / 96;
 }
 
-// RESTYPE_PE：从 exe 自身 PE 资源加载 UI（Release 默认；与 demo 一致）
+// RESTYPE_PE：从 exe 自身 PE 资源加载 UI（Windows Release 默认；与 demo 一致）
+// Linux：ELF 无 PE 资源段，swinx 的 FindResource 需要 _binary_soui_coff_o_* 符号
+// （windres 机制），本项目未启用 → PE 资源加载必然失败 → SOUI 静默退出。
+// 所以 Linux 改用文件资源提供者（SetSysResFile/SetAppResFile），从 exe 同目录
+// 的 uires/ 加载（与 README 承诺的"Linux 从本地资源目录加载"一致）。
 #define RESTYPE_PE 1
 #define RES_TYPE RESTYPE_PE
+
+// Linux：解析 exe 自身路径（swinx 实现了 GetModuleFileName，基于 /proc/self/exe），
+// 返回 exe 所在目录。资源目录约定：<exe_dir>/uires/
+// 注意：SOUI 在 Linux 下编译定义 _UNICODE（TCHAR=wchar_t），
+// SetSysResFile/SetAppResFile 接收宽字符路径（LPCWSTR）。
+static std::wstring GetExeDir() {
+    wchar_t buf[MAX_PATH + 1] = {0};
+    ::GetModuleFileNameW(NULL, buf, MAX_PATH);
+    std::wstring path(buf);
+    size_t pos = path.find_last_of(L"/\\");
+    if (pos != std::wstring::npos) path = path.substr(0, pos);
+    return path;
+}
 
 // CLI 自检模式：vpid_viewer --scan（或 /scan）
 // 跳过 GUI，直接执行 USB 扫描并打印设备列表到控制台后退出。
@@ -99,10 +116,26 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
             .SetLog(TRUE, 2, "vpid")
             .EnableScript(FALSE);
 
-        // 系统资源：静态库模式（LIB_CORE && LIB_SOUI_COM）下全部编入 exe
+#ifdef _WIN32
+        // Windows：系统资源 + 应用资源全部编入 exe PE 资源（单文件自包含）
         cfg.SetSysResPeHandle(hInstance);
-        // 应用资源也编入 exe（RESTYPE_PE）
         cfg.SetAppResPeHandle(hInstance);
+#else
+        // Linux：ELF 无 PE 资源段（swinx 的 COFF 资源嵌入机制未启用），
+        // 改用文件资源提供者，从 exe 同目录的 uires/ 加载。
+        // 目录约定（发布脚本打包时保证）：
+        //   <exe_dir>/uires/uires.idx             —— 应用资源索引
+        //   <exe_dir>/uires/uires/...             —— 应用 XML（xml/values/uidef）
+        //   <exe_dir>/uires/soui-sys-resource/    —— 系统皮肤（含其 uires.idx）
+        {
+            std::wstring exeDir = GetExeDir();
+            std::wstring resRoot = exeDir + L"/uires";
+            // 系统资源：SOUI 内置控件皮肤/图标/系统对话框布局
+            cfg.SetSysResFile((resRoot + L"/soui-sys-resource").c_str());
+            // 应用资源：本项目 UI 布局与主题
+            cfg.SetAppResFile(resRoot.c_str());
+        }
+#endif
 
         if (!cfg.DoConfig(&theApp)) {
             nRet = -1;

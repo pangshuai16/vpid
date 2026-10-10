@@ -117,8 +117,59 @@ def build_linux_zig(cmake, zig, toolchain, bdir_name, out_name):
     out = os.path.join(DIST, out_name)
     shutil.copy2(elf, out)
     os.chmod(out, 0o755)
+    # Linux 产物必须配套 UI 资源目录（ELF 无 PE 资源段，运行时从
+    # <exe_dir>/uires/ 加载）。打包成 tar.gz 保持单文件发布体验：
+    #   vpid_viewer_linux_amd64.tar.gz
+    #   ├── vpid_viewer_linux_amd64      （ELF，可执行）
+    #   └── uires/
+    #       ├── uires.idx                 （应用资源索引）
+    #       ├── uidef/ values/ xml/       （应用 XML）
+    #       └── soui-sys-resource/        （系统皮肤，含其 uires.idx）
+    pkg = package_linux_assets(out, bdir_name)
     print(f"  -> {out} ({os.path.getsize(out)} bytes)")
+    print(f"  -> {pkg} ({os.path.getsize(pkg)} bytes)")
     return out
+
+
+def package_linux_assets(elf_path, bdir_name):
+    """把 ELF + uires 资源目录打包成 tar.gz（单文件发布）。"""
+    import tarfile
+    pkg = elf_path + ".tar.gz"
+    staging = os.path.join(BUILD, bdir_name, "pkg")
+    if os.path.exists(staging):
+        shutil.rmtree(staging)
+    os.makedirs(staging, exist_ok=True)
+    # 1. ELF
+    shutil.copy2(elf_path, os.path.join(staging, os.path.basename(elf_path)))
+    # 2. 应用资源：src/ui/uires/ -> uires/
+    res_src = os.path.join(REPO, "src", "ui", "uires")
+    res_dst = os.path.join(staging, "uires")
+    shutil.copytree(res_src, res_dst)
+    # 3. 系统皮肤：官方 soui-sys-resource -> uires/soui-sys-resource
+    #    （只复制运行时需要的 uires.idx + theme_sys_res/，跳过 .rc/.cpp 等构建文件）
+    sys_src = os.path.join(REPO, "third_party", "soui", "soui-sys-resource")
+    sys_dst = os.path.join(res_dst, "soui-sys-resource")
+    if os.path.exists(sys_src):
+        os.makedirs(sys_dst, exist_ok=True)
+        shutil.copy2(os.path.join(sys_src, "uires.idx"), os.path.join(sys_dst, "uires.idx"))
+        theme_src = os.path.join(sys_src, "theme_sys_res")
+        theme_dst = os.path.join(sys_dst, "theme_sys_res")
+        shutil.copytree(theme_src, theme_dst)
+    else:
+        # 回退：项目自身的 theme_sys_res（含 uires.idx 需自建）
+        sys_src2 = os.path.join(REPO, "platform", "resources", "theme_sys_res")
+        os.makedirs(sys_dst, exist_ok=True)
+        for f in os.listdir(sys_src2):
+            shutil.copy2(os.path.join(sys_src2, f), os.path.join(sys_dst, f))
+        shutil.copy2(os.path.join(REPO, "src", "ui", "uires", "uires.idx"),
+                     os.path.join(sys_dst, "uires.idx"))
+    # 4. 打包（tar.gz，根目录含 ELF + uires/）
+    with tarfile.open(pkg, "w:gz") as tf:
+        tf.add(os.path.join(staging, os.path.basename(elf_path)),
+               arcname=os.path.basename(elf_path))
+        tf.add(res_dst, arcname="uires")
+    shutil.rmtree(staging)
+    return pkg
 
 
 def main():

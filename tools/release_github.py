@@ -197,8 +197,8 @@ def main():
     # 4. 上传资产
     release_id = rel["id"]
     patterns = ["vpid_viewer_windows_x86.exe",
-                "vpid_viewer_linux_amd64",
-                "vpid_viewer_linux_arm64"]
+                "vpid_viewer_linux_amd64.tar.gz",
+                "vpid_viewer_linux_arm64.tar.gz"]
     ok = True
     for name in patterns:
         path = os.path.join(args.assets_dir, name)

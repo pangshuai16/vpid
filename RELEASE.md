@@ -14,8 +14,15 @@ python tools/build_release.py
 | 平台 | 架构 | 产物 | 工具链 |
 |------|------|------|--------|
 | Windows | x86 | `vpid_viewer_windows_x86.exe` | VS2022 BuildTools + MSVC，XP 兼容，1.5MB 级 |
-| Linux | amd64 | `vpid_viewer_linux_amd64` | zig 交叉，glibc floor 2.17 |
-| Linux | arm64 | `vpid_viewer_linux_arm64` | zig 交叉，glibc floor 2.17 |
+| Linux | amd64 | `vpid_viewer_linux_amd64.tar.gz` | zig 交叉，glibc floor 2.17；含 UI 资源目录 |
+| Linux | arm64 | `vpid_viewer_linux_arm64.tar.gz` | zig 交叉，glibc floor 2.17；含 UI 资源目录 |
+
+> **Linux 产物是 tar.gz 包**：ELF 无 PE 资源段，运行时从 `<exe_dir>/uires/` 加载
+> UI 资源（XML 布局 + 系统皮肤），因此打成单文件包发布。解压即用：
+> ```bash
+> tar xzf vpid_viewer_linux_amd64.tar.gz
+> ./vpid_viewer_linux_amd64
+> ```
 
 常用变体：
 
@@ -29,7 +36,8 @@ python tools/build_release.py --dist out/           # 指定输出目录
 
 构建完成后自动跑 `tools/verify_release.py` 校验每个产物：
 - Windows：PE 有效、x86 架构
-- Linux：ELF 架构正确、glibc 版本符号 ≤ 2.17、动态依赖仅基础系统库
+- Linux ELF：架构正确、glibc 版本符号 ≤ 2.17、动态依赖仅基础系统库
+- Linux tar.gz 包：内含 ELF + `uires/` 资源目录（应用 uires.idx + 系统皮肤 + 布局 XML）
 
 ## 二、发布（GitHub Release API 直传）
 

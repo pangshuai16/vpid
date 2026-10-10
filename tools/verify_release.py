@@ -129,6 +129,24 @@ def check_elf_linux(path, expect_arch):
         raise AssertionError(f"意外动态依赖: {extra}")
 
 
+def check_linux_pkg(path):
+    """校验 Linux tar.gz 发布包：内含 ELF + uires 资源目录（应用 uires.idx + 系统皮肤）。"""
+    import tarfile
+    assert path.endswith(".tar.gz"), "不是 .tar.gz"
+    with tarfile.open(path, "r:gz") as tf:
+        names = tf.getnames()
+    base = "vpid_viewer_linux_" + ("amd64" if "amd64" in path else "arm64")
+    elf_in = f"{base}" in names
+    uires_idx = "uires/uires.idx" in names
+    sys_ok = any(n.startswith("uires/soui-sys-resource/") for n in names)
+    app_xml = any(n.startswith("uires/xml/") or n.startswith("uires/values/")
+                  or n.startswith("uires/uidef/") for n in names)
+    print(f"  [{'OK' if elf_in else 'FAIL'}] {os.path.basename(path)}: "
+          f"ELF={elf_in} uires.idx={uires_idx} sys-res={sys_ok} app-xml={app_xml}")
+    if not (elf_in and uires_idx and sys_ok and app_xml):
+        raise AssertionError("Linux 发布包结构不完整（缺 ELF 或资源目录）")
+
+
 def main():
     dist = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dist")
@@ -137,6 +155,8 @@ def main():
         "vpid_viewer_windows_x86.exe": check_pe,
         "vpid_viewer_linux_amd64": lambda p: check_elf_linux(p, "amd64"),
         "vpid_viewer_linux_arm64": lambda p: check_elf_linux(p, "arm64"),
+        "vpid_viewer_linux_amd64.tar.gz": check_linux_pkg,
+        "vpid_viewer_linux_arm64.tar.gz": check_linux_pkg,
     }
     ok = True
     for name, fn in files.items():

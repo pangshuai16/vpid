@@ -56,7 +56,8 @@
 从 [Releases](https://github.com/pangshuai16/vpid_fyne/releases) 页面下载对应平台的可执行文件：
 
 - **Windows**: `vpid_viewer_windows_x86.exe`（XP 兼容，单文件免安装）
-- **Linux**: `vpid_viewer_linux_amd64` 或 `vpid_viewer_linux_arm64`
+- **Linux**: `vpid_viewer_linux_amd64.tar.gz` 或 `vpid_viewer_linux_arm64.tar.gz`
+  （内含 ELF + `uires/` 资源目录，解压即用：`tar xzf xxx.tar.gz && ./vpid_viewer_linux_amd64`）
 
 ## 从源码构建
 
@@ -66,8 +67,8 @@ Windows 宿主上一次产出三个平台产物（需 VS2022 BuildTools + zig 0.
 
 ```bash
 python tools/build_release.py
-# 产物：dist/vpid_viewer_windows_x86.exe、dist/vpid_viewer_linux_amd64、
-#       dist/vpid_viewer_linux_arm64（自动验证 PE/ELF/glibc 版本）
+# 产物：dist/vpid_viewer_windows_x86.exe、dist/vpid_viewer_linux_amd64.tar.gz、
+#       dist/vpid_viewer_linux_arm64.tar.gz（自动验证 PE/ELF/glibc 版本/资源目录）
 python tools/build_release.py --only windows   # 只构建 Windows
 python tools/build_release.py --only linux-x64 # 只构建 Linux amd64
 ```
