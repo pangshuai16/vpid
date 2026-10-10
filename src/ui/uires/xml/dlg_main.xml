@@ -94,7 +94,12 @@
         <!-- text-x="8"：每列文字左侧内缩 8px。SListCtrl 默认让文字紧贴列边界，
              相邻列的文本会连成一片（"设备名称"和"路径"糊在一起）。
              内缩后右边自然留出 8px 空档，列与列就有了呼吸——这是报表可读性的关键。 -->
+        <!-- scrollSpeed="78"：= itemHeight(26) × 3，让鼠标滚轮 1 档前进 3 行。
+             SOUI 默认 m_nScrollSpeed=10px/档（SPanel.cpp 构造），配合 26px 行高实际每档仅 0.4 行——
+             用户实测"表格滚动太慢"。改成 3 行/档是 Chrome / Edge / Notion 等现代 UI 的标准节奏。
+             若未来行高调整，这里的倍数同步调（保持 3×itemHeight）。 -->
         <listctrl name="lc_all" size="-2,0" weight="1" itemHeight="26" headerHeight="28" text-x="8"
+                  scrollSpeed="78"
                   colorBkgnd="@color/surface1"
                   colorItemBkgnd="@color/rowOdd" colorItemBkgnd2="@color/rowEven"
                   colorItemHotBkgnd="@color/rowHover"
@@ -130,7 +135,9 @@
           </window>
         </window>
         <window size="-2,1" colorBkgnd="@color/hairline"/>
+        <!-- scrollSpeed="78"：与 lc_all 保持一致（3 行/档） -->
         <listctrl name="lc_changed" size="-2,0" weight="1" itemHeight="26" headerHeight="28" text-x="8"
+                  scrollSpeed="78"
                   colorBkgnd="@color/surface1"
                   colorItemBkgnd="@color/rowOdd" colorItemBkgnd2="@color/rowEven"
                   colorItemHotBkgnd="@color/rowHover"
