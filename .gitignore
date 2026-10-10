@@ -30,6 +30,10 @@ Thumbs.db
 # 本地构建 / 诊断产物（非源码）
 build-msvc*/
 build-ci-test*/
+build-zig*/
+.build-release/
+.obsolete-builds/
+dist/
 build_msvc_soui.bat
 *.log
 *.bmp
@@ -44,3 +48,9 @@ shot_app.bmp
 # 需完整纳入，覆盖上方对 *.lib/*.a/*.so/*.exe 等二进制的忽略规则
 !third_party/soui/
 !third_party/soui/**
+
+# zig 交叉编译 sysroot：库文件必须入库（离线可复现构建 + CI 无需联网下载），
+# 覆盖上方 *.so 忽略规则。tools/linux-sysroot/lib/ 下的 .so 是从 Ubuntu deb
+# 提取的系统库（libxcb/libXau/libuuid），产物运行时依赖目标机自己的系统库。
+!tools/linux-sysroot/
+!tools/linux-sysroot/**

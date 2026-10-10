@@ -1,6 +1,8 @@
 add_compile_options(-Wno-format-truncation)
 add_compile_options(-Wno-attributes)
-find_package(PkgConfig REQUIRED)
+# QUIET：交叉编译（zig）下 host 无 pkg-config / stub 返回找不到时不 FATAL。
+# ALSA 本身是可选依赖（找不到走 avplay fallback）。
+find_package(PkgConfig QUIET)
 
 # Find ALSA library for audio playback (now optional)
 pkg_check_modules(ALSA QUIET alsa)
@@ -75,7 +77,11 @@ endif()
 
 # Add dependencies to ensure proper build order for all internal libraries
 add_dependencies(swinx cairo fontconfig freetype pixman-1 xcb-imdkit xkbcommon dbus-1)
-set(SWINX_LIBS dl xcb uuid atomic m stdc++ ${ALSA_LIBRARIES})
+# 注意：SWINX_LIBS 不含 xcb/uuid——这些系统库由消费方（vpid_viewer）显式链接
+# （原生 Linux 走系统 libxcb/libuuid；zig 交叉走 tools/linux-sysroot 的 .so）。
+# 若在此用裸 -lxcb/-luuid，zig 交叉链接会报 unable to find library
+# （Windows 下 zig 无法解析 -L盘符路径，且 SOUI_PUBLIC_LIBS 会把它展开成 -lxcb）。
+set(SWINX_LIBS dl atomic m stdc++ ${ALSA_LIBRARIES})
 if(SOUI_ENABLE_CORE_LIB)
     set(SWINX_DEP_LIBS ${SWINX_DEP_LIBS} ${SWINX_LIBS} CACHE INTERNAL "swinx_dep_libs")
 endif()
@@ -96,6 +102,9 @@ target_include_directories(swinx
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/xcb
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/sysinclude
+    # X11 协议头（keyboard.h 的 <X11/keysym.h> 等）：vendored 自 xorgproto/libx11
+    #（交叉编译无系统 libx11-dev；原生 Linux 下此目录在搜索顺序靠后，不影响）
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/sysinclude_x11
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/xkbcommon
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/xcb-imdkit/include
     PRIVATE ${ALSA_INCLUDE_DIRS}

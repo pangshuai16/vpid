@@ -23,11 +23,13 @@
 // XP 仅 96 DPI → 返回 100（不缩放），行为与旧版一致。
 static int GetDpiScale() {
     int dpi = 96;
-    HDC hdc = ::GetDC(nullptr);
+    // 注意：swinx 跨平台 HWND 是整数类型（UINT_PTR），用 0 表示 NULL 窗口；
+    // nullptr 无法隐式转整数（C++17 报错），MSVC 原生构建则是指针类型可直接传。
+    HDC hdc = ::GetDC((HWND)0);
     if (hdc) {
         int x = ::GetDeviceCaps(hdc, LOGPIXELSX);
         if (x > 0) dpi = x;
-        ::ReleaseDC(nullptr, hdc);
+        ::ReleaseDC((HWND)0, hdc);
     }
     return dpi * 100 / 96;
 }

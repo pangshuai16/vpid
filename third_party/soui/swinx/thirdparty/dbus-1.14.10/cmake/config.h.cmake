@@ -132,8 +132,15 @@
 #ifndef HAVE_DECL_MSG_NOSIGNAL
 #  define HAVE_DECL_MSG_NOSIGNAL 1
 #endif
+/* getrandom 是 glibc 2.25+ 函数。glibc 2.17 floor（zig 交叉 / 老发行版）
+ * 没有它，此时必须走 /dev/urandom 回退。
+ * 不能无条件 define（上游 bug：无视 cmake 探测结果强制启用，
+ * 导致老 glibc 上 dbus 随机数初始化链接失败）。探测结果由下方
+ * #cmakedefine HAVE_GETRANDOM 1 生成（config.h 中 #undef 即不存在）。 */
 #ifndef HAVE_GETRANDOM
-#  define HAVE_GETRANDOM 1
+#  if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 25))
+#    define HAVE_GETRANDOM 1
+#  endif
 #endif
 
 /*

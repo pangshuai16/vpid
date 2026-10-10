@@ -64,7 +64,10 @@ set(DEFAULT_FONTS_DIRS "" CACHE STRING "Default font directories (semicolon sepa
 set(ADDITIONAL_FONTS_DIRS "" CACHE STRING "Additional font directories (semicolon separated)")
 
 # Find required dependencies
-find_package(PkgConfig REQUIRED)
+# QUIET：交叉编译（zig）下 host 无 pkg-config / stub 返回找不到时不 FATAL。
+# 所有关键依赖（freetype/expat）都走内部 target 分支（见下方 if(TARGET ...)），
+# pkg-check 只是非 vendored 场景的 fallback。
+find_package(PkgConfig QUIET)
 
 # Find FreeType2
 if(TARGET freetype)

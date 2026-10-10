@@ -113,6 +113,10 @@ if (APPLE AND CAIRO_QUARTZ_DEPS_FOUND)
     endif()
 endif()
 include_directories(src)
+# xcb 核心协议头：vendored（thirdparty/xcb/xcb.h、sysinclude/xcb.h 等）。
+# 系统 libxcb1-dev 提供 <xcb/xcb.h>；交叉编译（zig）无系统包，指向 vendored。
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/..)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../sysinclude)
 add_subdirectory(src)
 
 
