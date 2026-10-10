@@ -33,10 +33,19 @@ OWNER_REPO = None  # 从 git remote 解析
 
 
 def git(*args, **kw):
+    # 注意：命令回显时对 ghp_/gho_/github_pat_ 开头的 token 打码，防止泄露
+    show = [a if not (isinstance(a, str) and
+                      ("ghp_" in a or "gho_" in a or "github_pat_" in a)) else "<redacted>"
+            for a in args]
     r = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True,
                        encoding="utf-8", errors="replace", **kw)
     if r.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} 失败: {r.stderr.strip()}")
+        err = r.stderr.strip()
+        for secret in ("ghp_", "gho_", "github_pat_"):
+            idx = err.find(secret)
+            if idx >= 0:
+                err = err[:idx] + "<redacted>" + err[idx + 40:]
+        raise RuntimeError(f"git 失败: {err}")
     return r.stdout.strip()
 
 
@@ -50,22 +59,32 @@ def get_remote_slug():
 
 
 def get_token():
-    """取 GitHub token：环境变量优先，其次 git-credential-manager。"""
-    if os.environ.get("GITHUB_TOKEN"):
-        return os.environ["GITHUB_TOKEN"].strip()
+    """取 GitHub token：
+    1. 环境变量 VPID_GH_TOKEN / GITHUB_TOKEN
+    2. token 文件（C:/tools/_gh_token.tmp 或 --token-file 指定）
+    3. git credential fill（交互环境可用；非交互 shell 可能挂起）"""
+    for env_name in ("VPID_GH_TOKEN", "GITHUB_TOKEN"):
+        if os.environ.get(env_name):
+            return os.environ[env_name].strip()
+    for tf in (r"C:\tools\_gh_token.tmp", os.path.join(REPO, ".gh_token")):
+        if os.path.exists(tf):
+            with open(tf, "r") as f:
+                tok = f.read().strip()
+            if tok:
+                return tok
     # 从 git credential fill 获取（凭据管理器缓存）
     try:
         r = subprocess.run(
             ["git", "credential", "fill"],
             input="protocol=https\nhost=github.com\n\n",
-            capture_output=True, text=True, encoding="utf-8", cwd=REPO, timeout=15)
+            capture_output=True, text=True, encoding="utf-8", cwd=REPO, timeout=10)
         for line in r.stdout.splitlines():
             if line.startswith("password="):
                 return line[len("password="):].strip()
     except Exception:
         pass
     raise RuntimeError(
-        "未找到 GitHub token。请设置环境变量 GITHUB_TOKEN，或先运行 git-credential-manager 登录 GitHub")
+        "未找到 GitHub token。请设置环境变量 VPID_GH_TOKEN，或运行 git-credential-manager 登录 GitHub")
 
 
 def api(method, path, token, body=None):
@@ -91,18 +110,15 @@ def api(method, path, token, body=None):
 
 
 def push_branch(token, branch):
-    """推送分支到 origin（HTTP + 认证头）。"""
-    out = git("remote", "get-url", REMOTE)
-    cfg_key = f"http.{out}.extraheader"
-    git("-c", f"{cfg_key}=Authorization: token {token}", "push", REMOTE, branch)
+    """推送分支到 origin（走 git 默认凭据机制——credential-manager 的凭据
+    直接 push 有效，显式注入 OAuth token 反而不被 github 接受）。"""
+    git("push", REMOTE, branch)
     print(f"  已推送 {branch} -> {REMOTE}")
 
 
 def push_tag(token, tag, msg):
     git("tag", "-a", tag, "-m", msg)
-    out = git("remote", "get-url", REMOTE)
-    cfg_key = f"http.{out}.extraheader"
-    git("-c", f"{cfg_key}=Authorization: token {token}", "push", REMOTE, tag)
+    git("push", REMOTE, tag)
     # 两个 SHA：tag 对象 SHA 与指向的 commit SHA
     tag_sha = git("rev-parse", tag)
     commit_sha = git("show", "--no-patch", "--format=%H", tag)
@@ -111,10 +127,11 @@ def push_tag(token, tag, msg):
 
 
 def upload_asset(token, owner, repo, release_id, path):
-    """上传资产，自动处理新/旧版 Gitea 不同端点（这里是 GitHub，仅 pre-signed 之外直传情况）。"""
+    """上传资产到 GitHub Release。
+    注意：必须走 uploads.github.com 域名（api.github.com 会 404）。"""
     name = os.path.basename(path)
     from urllib.parse import quote
-    url = f"{API}/repos/{owner}/{repo}/releases/{release_id}/assets?name={quote(name)}"
+    url = f"https://uploads.github.com/repos/{owner}/{repo}/releases/{release_id}/assets?name={quote(name)}"
     with open(path, "rb") as f:
         data = f.read()
     req = urllib.request.Request(url, data=data, method="POST")
