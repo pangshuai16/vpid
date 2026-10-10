@@ -209,7 +209,11 @@ BOOL SResLoader::LoadResFromFile(LPCTSTR pszResFile)
 {
     SouiFactory souiFac;
     m_pResProvider.Attach(souiFac.CreateResProvider(RES_FILE));
-    return m_pResProvider->Init((LPARAM)pszResFile, 0);
+    // [fix] SResProviderFiles::Init 从 wParam 读路径（见 res.mgr/SResProvider.cpp:
+    //   LPCTSTR pszPath = (LPCTSTR)wParam;
+    // 原代码传 (LPARAM)pszResFile（lParam），导致 pszPath 永远为 NULL，
+    // uires.idx 加载失败 → DoConfig 失败。改为传 wParam。
+    return m_pResProvider->Init((WPARAM)pszResFile, 0);
 }
 
 BOOL SResLoader::LoadResFromRes(HMODULE hResModule)
