@@ -14,6 +14,7 @@
 #include <vector>
 #include <atomic>
 #include <memory>
+#include <cstdint>
 
 #include "common/constants.h"
 #include "core/device_info.h"       // USBDevice
@@ -111,7 +112,11 @@ protected:
     // "当前屏幕上画的是什么"的指纹（设备集合 / 新增集合 / 移除集合三条通道）。
     // RefreshViews() 渲染后写入，HandleScanResult() 比对后决定要不要重建列表。
     // 没有它，"插上再拔掉"回到基准时残留的变更行不会被清掉（diff 会报无变化）。
-    std::wstring shown_sig_all_, shown_sig_add_, shown_sig_del_;
+    // [perf] 64 位 FNV-1a 哈希，替代原来的 std::wstring 拼接（每帧 O(N) 字符串分配）。
+    // 三个 0 是"从未渲染"的哨兵值，首帧必 dirty（firstScan 分支也兜底）。
+    uint64_t shown_sig_all_ = 0;
+    uint64_t shown_sig_add_ = 0;
+    uint64_t shown_sig_del_ = 0;
 
     std::atomic<bool> scanning_{false};
     std::atomic<bool> closing_{false};
