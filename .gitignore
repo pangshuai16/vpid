@@ -29,6 +29,7 @@ Thumbs.db
 
 # 本地构建 / 诊断产物（非源码）
 build-msvc*/
+build-ci-test*/
 build_msvc_soui.bat
 *.log
 *.bmp
