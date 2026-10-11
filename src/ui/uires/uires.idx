@@ -14,4 +14,9 @@
   <LAYOUT>
     <file name="dlg_main" path="xml/dlg_main.xml"/>
   </LAYOUT>
+  <ICON>
+    <!-- 窗口/任务栏图标：dlg_main.xml 引用 APP_ICON:32 / APP_ICON:16，
+         由 app-icon.ico 的 256x256 PNG 帧缩放提供 -->
+    <file name="APP_ICON" path="icons/app_icon_256x256.png"/>
+  </ICON>
 </resource>
