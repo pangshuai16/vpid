@@ -19,6 +19,15 @@
 static const char *kCoof_o_start = "_binary_soui_coff_o_start";
 static const char *kCoof_o_end = "_binary_soui_coff_o_end";
 
+// [vpid patch] 允许应用把 COFF 资源对象"直接静态链接"进可执行文件。
+// 声明为弱符号：应用提供了就用普通符号引用解析（不依赖 dlsym /
+// --export-dynamic 导出动态符号，产物更小、也不暴露内部符号）；
+// 未提供时符号为 0，自动跳过，行为与上游一致。
+extern "C" {
+extern const unsigned char _binary_soui_coff_o_start[] __attribute__((weak));
+extern const unsigned char _binary_soui_coff_o_end[] __attribute__((weak));
+}
+
 // Resource database per module
 struct ResourceModule
 {
@@ -81,6 +90,14 @@ void LoadModuleResources(HMODULE hModule)
     {
         startSym = dlsym((void *)hModule, kCoof_o_start);
         endSym = dlsym((void *)hModule, kCoof_o_end);
+    }
+
+    // [vpid patch] 回退：资源对象由应用直接静态链接（弱符号）时，
+    // 直接取符号地址即可，无需动态符号表。
+    if ((!startSym || !endSym) && &_binary_soui_coff_o_start && &_binary_soui_coff_o_end)
+    {
+        startSym = (void *)_binary_soui_coff_o_start;
+        endSym = (void *)_binary_soui_coff_o_end;
     }
     ResourceModule mod;
     mod.hModule = hModule;

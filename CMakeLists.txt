@@ -228,6 +228,19 @@ elseif(UNIX AND NOT APPLE AND VPID_UI_STYLE STREQUAL "SOUI")
   # TRANSLATOR/LOG4Z 等未链接组件 → 链接期 undefined reference
   target_compile_definitions(vpid_viewer PRIVATE "SCOM_MASK=(scom_mask_render_gdi|scom_mask_imgdecoder_stb)")
 
+  # ---- 内嵌 UI 资源：单二进制自包含 ----
+  # tools/gen_linux_coff_res.py 预生成 COFF 资源对象，并输出"把它 .incbin 进 ELF
+  # 的 C 源码"（文件级 __asm__，走标准 C 编译器；避免 CMake ASM 语言在 zig
+  # 交叉工具链下把裸 zig 当汇编器调用）。路径经 -DVPID_COFF_RES_C=... 传入。
+  # 定义 _binary_soui_coff_o_start/_end 两个符号，由 swinx resapi.cpp 以
+  # "弱符号直接引用"解析 → 静态链接即可，无需导出动态符号。
+  if(VPID_COFF_RES_C AND EXISTS "${VPID_COFF_RES_C}")
+    target_sources(vpid_viewer PRIVATE "${VPID_COFF_RES_C}")
+    message(STATUS "VPID: 内嵌 UI 资源 = ${VPID_COFF_RES_C}")
+  else()
+    message(WARNING "VPID: 未提供 VPID_COFF_RES_C，Linux 产物不含内嵌资源（需外置 uires/）")
+  endif()
+
   # swinx + SOUI 组件静态库 + Linux 原生扫描(libusb vendored)：
   #   * libudev：linux_notifier.cpp 用 dlopen 动态加载（缺失降级轮询），无链接期依赖，不写死。
   #   * libusb-1.0：linux_scanner.cpp 真要用静态链接，vendored 到 third_party/libusb 从源码编，
@@ -308,12 +321,20 @@ endif()
 #   钉成定值后即可复现。
 # ============================================================
 if(TARGET vpid_viewer)
-  find_program(VPID_PYTHON_EXECUTABLE NAMES python3 python
-    HINTS
-      "C:/Users/Administrator/AppData/Local/Programs/Python/Python312-32"
-      ${CMAKE_CURRENT_SOURCE_DIR}/tools
-    PATH_SUFFIXES .
-  )
+  # 自动发现本机 Python（不写死版本目录：跨机器/升级后目录名会变）。
+  # 取已安装的 Python3* 中排序最后的（通常为最新版）；找不到再退回 PATH。
+  set(VPID_PYTHON_EXECUTABLE "")
+  file(GLOB _vpid_py_cands
+    "C:/Users/Administrator/AppData/Local/Programs/Python/Python3*/python.exe"
+    "$ENV{LOCALAPPDATA}/Programs/Python/Python3*/python.exe")
+  foreach(_c ${_vpid_py_cands})
+    if(EXISTS "${_c}")
+      set(VPID_PYTHON_EXECUTABLE "${_c}")
+    endif()
+  endforeach()
+  if(NOT VPID_PYTHON_EXECUTABLE)
+    find_program(VPID_PYTHON_EXECUTABLE NAMES python3 python)
+  endif()
   if(VPID_PYTHON_EXECUTABLE)
     add_custom_command(TARGET vpid_viewer POST_BUILD
       COMMAND ${VPID_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/pin_timestamp.py

@@ -103,9 +103,19 @@ def build_linux_zig(cmake, zig, toolchain, bdir_name, out_name):
               "ZIG_GLOBAL_CACHE": r"C:/tools/zig-global-cache"}
     env = {**os.environ, **export}
     bdir = os.path.join(BUILD, bdir_name)
+    os.makedirs(bdir, exist_ok=True)
+    # 先生成"内嵌资源"用的 COFF 资源对象（rc.exe + cvtres.exe → 单段 .rsrc），
+    # 由 CMake 用 .incbin 嵌入 ELF。→ 单二进制自包含，无需外置 uires/。
+    coff = os.path.join(bdir, "soui_coff.obj")
+    embed_c = os.path.join(bdir, "soui_coff_embed.c")
+    r = run([sys.executable, os.path.join(REPO, "tools", "gen_linux_coff_res.py"),
+             "--out", coff, "--c-out", embed_c])
+    if r.returncode or not os.path.exists(embed_c):
+        raise RuntimeError(f"{bdir_name} COFF 资源对象生成失败")
     r = run([cmake, "-S", ".", "-B", bdir, "-G", "Ninja",
              f"-DCMAKE_TOOLCHAIN_FILE={os.path.join(REPO, 'tools', toolchain)}",
-             "-DVPID_UI_STYLE=SOUI"] + PIXMAN_EXITCODES, env=env)
+             "-DVPID_UI_STYLE=SOUI",
+             f"-DVPID_COFF_RES_C={embed_c.replace(os.sep, '/')}"] + PIXMAN_EXITCODES, env=env)
     if r.returncode:
         raise RuntimeError(f"{bdir_name} CMake configure 失败")
     r = run([cmake, "--build", bdir, "--config", "Release"], env=env)
@@ -117,59 +127,9 @@ def build_linux_zig(cmake, zig, toolchain, bdir_name, out_name):
     out = os.path.join(DIST, out_name)
     shutil.copy2(elf, out)
     os.chmod(out, 0o755)
-    # Linux 产物必须配套 UI 资源目录（ELF 无 PE 资源段，运行时从
-    # <exe_dir>/uires/ 加载）。打包成 tar.gz 保持单文件发布体验：
-    #   vpid_viewer_linux_amd64.tar.gz
-    #   ├── vpid_viewer_linux_amd64      （ELF，可执行）
-    #   └── uires/
-    #       ├── uires.idx                 （应用资源索引）
-    #       ├── uidef/ values/ xml/       （应用 XML）
-    #       └── soui-sys-resource/        （系统皮肤，含其 uires.idx）
-    pkg = package_linux_assets(out, bdir_name)
+    # Linux 产物为单文件自包含 ELF（UI 资源已内嵌），可直接运行，不再打包 uires/。
     print(f"  -> {out} ({os.path.getsize(out)} bytes)")
-    print(f"  -> {pkg} ({os.path.getsize(pkg)} bytes)")
     return out
-
-
-def package_linux_assets(elf_path, bdir_name):
-    """把 ELF + uires 资源目录打包成 tar.gz（单文件发布）。"""
-    import tarfile
-    pkg = elf_path + ".tar.gz"
-    staging = os.path.join(BUILD, bdir_name, "pkg")
-    if os.path.exists(staging):
-        shutil.rmtree(staging)
-    os.makedirs(staging, exist_ok=True)
-    # 1. ELF
-    shutil.copy2(elf_path, os.path.join(staging, os.path.basename(elf_path)))
-    # 2. 应用资源：src/ui/uires/ -> uires/
-    res_src = os.path.join(REPO, "src", "ui", "uires")
-    res_dst = os.path.join(staging, "uires")
-    shutil.copytree(res_src, res_dst)
-    # 3. 系统皮肤：官方 soui-sys-resource -> uires/soui-sys-resource
-    #    （只复制运行时需要的 uires.idx + theme_sys_res/，跳过 .rc/.cpp 等构建文件）
-    sys_src = os.path.join(REPO, "third_party", "soui", "soui-sys-resource")
-    sys_dst = os.path.join(res_dst, "soui-sys-resource")
-    if os.path.exists(sys_src):
-        os.makedirs(sys_dst, exist_ok=True)
-        shutil.copy2(os.path.join(sys_src, "uires.idx"), os.path.join(sys_dst, "uires.idx"))
-        theme_src = os.path.join(sys_src, "theme_sys_res")
-        theme_dst = os.path.join(sys_dst, "theme_sys_res")
-        shutil.copytree(theme_src, theme_dst)
-    else:
-        # 回退：项目自身的 theme_sys_res（含 uires.idx 需自建）
-        sys_src2 = os.path.join(REPO, "platform", "resources", "theme_sys_res")
-        os.makedirs(sys_dst, exist_ok=True)
-        for f in os.listdir(sys_src2):
-            shutil.copy2(os.path.join(sys_src2, f), os.path.join(sys_dst, f))
-        shutil.copy2(os.path.join(REPO, "src", "ui", "uires", "uires.idx"),
-                     os.path.join(sys_dst, "uires.idx"))
-    # 4. 打包（tar.gz，根目录含 ELF + uires/）
-    with tarfile.open(pkg, "w:gz") as tf:
-        tf.add(os.path.join(staging, os.path.basename(elf_path)),
-               arcname=os.path.basename(elf_path))
-        tf.add(res_dst, arcname="uires")
-    shutil.rmtree(staging)
-    return pkg
 
 
 def main():

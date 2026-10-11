@@ -129,22 +129,22 @@ def check_elf_linux(path, expect_arch):
         raise AssertionError(f"意外动态依赖: {extra}")
 
 
-def check_linux_pkg(path):
-    """校验 Linux tar.gz 发布包：内含 ELF + uires 资源目录（应用 uires.idx + 系统皮肤）。"""
-    import tarfile
-    assert path.endswith(".tar.gz"), "不是 .tar.gz"
-    with tarfile.open(path, "r:gz") as tf:
-        names = tf.getnames()
-    base = "vpid_viewer_linux_" + ("amd64" if "amd64" in path else "arm64")
-    elf_in = f"{base}" in names
-    uires_idx = "uires/uires.idx" in names
-    sys_ok = any(n.startswith("uires/soui-sys-resource/") for n in names)
-    app_xml = any(n.startswith("uires/xml/") or n.startswith("uires/values/")
-                  or n.startswith("uires/uidef/") for n in names)
-    print(f"  [{'OK' if elf_in else 'FAIL'}] {os.path.basename(path)}: "
-          f"ELF={elf_in} uires.idx={uires_idx} sys-res={sys_ok} app-xml={app_xml}")
-    if not (elf_in and uires_idx and sys_ok and app_xml):
-        raise AssertionError("Linux 发布包结构不完整（缺 ELF 或资源目录）")
+def check_elf_embedded_res(path):
+    """校验 Linux ELF 已"内嵌 UI 资源"（单二进制自包含）。
+
+    资源以 PE 资源目录（COFF 对象）形式编入 ELF，资源名以 UTF-16LE 存于目录中。
+    这里按资源名 UTF-16LE 字节序列搜索，确认应用资源与系统皮肤均在其中。
+    """
+    data = open(path, "rb").read()
+    want = ["DLG_MAIN", "SYS_MSGICON", "SYS_XML_SKIN", "THEME_COLOR"]
+    miss = [w for w in want if w.encode("utf-16-le") not in data]
+    # 同时应有 COFF 资源对象特征：1 个段的 .rsrc 段名
+    has_rsrc = data.find(b".rsrc\x00\x00\x00") >= 0
+    ok = not miss and has_rsrc
+    print(f"  [{'OK' if ok else 'FAIL'}] {os.path.basename(path)}: "
+          f"内嵌资源 段名.rsrc={has_rsrc} 资源名缺失={miss or '无'}")
+    if not ok:
+        raise AssertionError(f"未检出内嵌 UI 资源（缺 {miss}, .rsrc={has_rsrc}）")
 
 
 def main():
@@ -155,20 +155,24 @@ def main():
         "vpid_viewer_windows_x86.exe": check_pe,
         "vpid_viewer_linux_amd64": lambda p: check_elf_linux(p, "amd64"),
         "vpid_viewer_linux_arm64": lambda p: check_elf_linux(p, "arm64"),
-        "vpid_viewer_linux_amd64.tar.gz": check_linux_pkg,
-        "vpid_viewer_linux_arm64.tar.gz": check_linux_pkg,
+    }
+    # Linux 产物必须内嵌 UI 资源（单二进制自包含，无需外置 uires/）
+    embedded = {
+        "vpid_viewer_linux_amd64": check_elf_embedded_res,
+        "vpid_viewer_linux_arm64": check_elf_embedded_res,
     }
     ok = True
-    for name, fn in files.items():
-        path = os.path.join(dist, name)
-        if not os.path.exists(path):
-            print(f"  [SKIP] {name}: 不存在，跳过")
-            continue
-        try:
-            fn(path)
-        except AssertionError as e:
-            ok = False
-            print(f"  [FAIL] {name}: {e}")
+    for group in (files, embedded):
+        for name, fn in group.items():
+            path = os.path.join(dist, name)
+            if not os.path.exists(path):
+                print(f"  [SKIP] {name}: 不存在，跳过")
+                continue
+            try:
+                fn(path)
+            except AssertionError as e:
+                ok = False
+                print(f"  [FAIL] {name}: {e}")
     if not ok:
         sys.exit(1)
     print("=== 全部通过 ===")

@@ -14,6 +14,12 @@
 #include <cstdio>
 #include <string>
 
+#ifndef _WIN32
+// 内嵌资源符号（由生成的 soui_coff_embed.c 定义；未内嵌的构建里为 0/弱符号）
+// 注意：swinx 的 resapi.cpp 也以同样的弱符号方式引用它们。
+extern "C" const unsigned char _binary_soui_coff_o_start[] __attribute__((weak));
+#endif
+
 #include "common/constants.h"
 #include "MainDlg.h"
 
@@ -119,6 +125,28 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
     diag("start _tWinMain");
     diag(("exe dir: " + GetExeDirA()).c_str());
     diag(("uires dir: " + (GetExeDirA() + "/uires")).c_str());
+    // [诊断] 宽字符路径还原 UTF-8，与窄字符路径对比（排查中文目录乱码）
+    {
+        std::wstring wdir = GetExeDir();
+        std::string wdirUtf8;
+        // 宽→窄：用 swinx 的 tostring（CP_UTF8）——这里是简单逐字节透传演示
+        // 直接打印宽字符的 UTF-8 编码（每个 wchar_t 高字节为 0 则取低字节）
+        std::string raw;
+        for (wchar_t wc : wdir) raw += (char)(wc & 0xFF);
+        diag(("wide-dir raw: " + raw).c_str());
+        // 检查窄路径是否与宽路径逐字节一致
+        std::string adir = GetExeDirA();
+        diag(("wide==ansi: " + std::string(adir == raw ? "YES" : "NO")).c_str());
+        // 检查 uires.idx 文件是否存在（窄路径）
+        std::string sysIdx = adir + "/uires/soui-sys-resource/uires.idx";
+        FILE *fchk = fopen(sysIdx.c_str(), "rb");
+        if (fchk) { diag(("sys uires.idx EXISTS: " + sysIdx).c_str()); fclose(fchk); }
+        else diag(("sys uires.idx MISSING: " + sysIdx).c_str());
+        std::string appIdx = adir + "/uires/uires.idx";
+        fchk = fopen(appIdx.c_str(), "rb");
+        if (fchk) { diag(("app uires.idx EXISTS: " + appIdx).c_str()); fclose(fchk); }
+        else diag(("app uires.idx MISSING: " + appIdx).c_str());
+    }
 #endif
 
     // CLI 自检模式优先（不启动 GUI / SOUI）
@@ -147,24 +175,25 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
         cfg.SetSysResPeHandle(hInstance);
         cfg.SetAppResPeHandle(hInstance);
 #else
-        // Linux：ELF 无 PE 资源段（swinx 的 COFF 资源嵌入机制未启用），
-        // 改用文件资源提供者，从 exe 同目录的 uires/ 加载。
-        // 目录约定（发布脚本打包时保证）：
-        //   <exe_dir>/uires/uires.idx             —— 应用资源索引
-        //   <exe_dir>/uires/uires/...             —— 应用 XML（xml/values/uidef）
-        //   <exe_dir>/uires/soui-sys-resource/    —— 系统皮肤（含其 uires.idx）
-        {
-            std::wstring exeDir = GetExeDir();
-            std::wstring resRoot = exeDir + L"/uires";
-            // 系统资源：SOUI 内置控件皮肤/图标/系统对话框布局
+        // Linux：优先使用"内嵌进 ELF"的 PE 资源（编译期把 .rc 编成 COFF 资源
+        // 对象，作为数据嵌入 ELF；swinx resapi 通过 _binary_soui_coff_o_start/
+        // _end 符号解析，二者以弱符号静态链接）→ 单二进制自包含，无需 uires/ 目录。
+        // 若该符号不存在（未启用内嵌的构建），回退到 exe 同目录的 uires/ 文件提供者。
+        bool embedded = (&_binary_soui_coff_o_start != NULL);
+        if (embedded) {
+            diag("resource mode: embedded PE (COFF blob in ELF)");
+            cfg.SetSysResPeHandle(hInstance);
+            cfg.SetAppResPeHandle(hInstance);
+        } else {
+            diag(("resource mode: file provider " + GetExeDirA() + "/uires").c_str());
+            std::wstring resRoot = GetExeDir() + L"/uires";
             cfg.SetSysResFile((resRoot + L"/soui-sys-resource").c_str());
-            // 应用资源：本项目 UI 布局与主题
             cfg.SetAppResFile(resRoot.c_str());
         }
 #endif
 
         if (!cfg.DoConfig(&theApp)) {
-            diag("DoConfig FAILED (资源加载失败：检查 uires/ 目录与 uires.idx)");
+            diag("DoConfig FAILED (资源加载失败：内嵌资源缺失且 uires/ 目录无效)");
             nRet = -1;
         } else {
             diag("DoConfig OK");
