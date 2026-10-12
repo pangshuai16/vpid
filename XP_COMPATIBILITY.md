@@ -1,199 +1,217 @@
-# 跨平台兼容性方案与 CI/CD 部署指南
+# 跨平台兼容性方案
 
-## 1. 概述
+本文档说明 vpid_viewer 如何在**Windows XP 及以上**与**Linux（CentOS 7+ /
+Ubuntu 12.04+）**上做到统一 UI 层、单文件自包含。
 
-本项目（USB 设备管理器）是一个跨平台 USB 设备查看工具，基于 C++ 原生实现：
-- **Windows**: XP 及以上所有版本（32 位 x86 全静态链接）
-- **Linux**: glibc 2.28 及以上
+## 1. 总览
 
-### UI 框架选型
+| 维度 | Windows | Linux |
+|------|---------|-------|
+| 架构 | x86 (32 位) | x86_64 / aarch64 |
+| 运行环境 | XP ~ Windows 11 | CentOS 7 / RHEL 7 / Ubuntu 12.04+ |
+| 工具链 | VS2022 BuildTools + MSVC 19.44 | zig 0.17.0（Windows 宿主交叉） |
+| UI 层 | SOUI5.3（GDI 渲染） | SOUI5.3（swinx + Cairo） |
+| UI 资源 | 编入 PE 资源段 | 编入 ELF（`_binary_soui_coff_o_*` 弱符号） |
+| 产物形态 | 单文件 exe，1.5 MB | 单文件 ELF，7.9–8.3 MB |
+| 依赖 | 零运行时依赖（`/MT` 静态 CRT） | 仅基础系统库（libc/libm/libxcb/…） |
 
-| 对比项 | 原生 Win32 (Windows) | GTK3 (Linux) |
-|--------|---------------------|--------------|
-| 第三方依赖 | ❌ 仅系统库 | ✅ gtk3 + libusb |
-| XP 兼容 | ✅ NT 5.1 API 集 | - |
-| 产物形态 | 单文件 exe，零 DLL | ELF 动态链接 glibc |
-| 打包体积 | ~百 KB 级 | 依赖系统 GTK/libusb |
+**统一 UI 层**：Windows 与 Linux 共用 `src/ui/` 的同一份 SOUI5 源码与
+XML 布局（`src/ui/uires/`），平台差异全部收敛在 `src/core/` 的扫描器与
+设备通知实现。
 
-选择原生方案而非脚本/通用 GUI 框架：无运行时依赖，兼容性最好、体积最小。
+## 2. Windows XP 兼容性
 
----
+### 2.1 工具链与编译选项
 
-## 2. 平台兼容性方案
+- **MSVC 19.44（VS2022 BuildTools）**，x86 target
+- **静态 CRT**：`/MT`——XP 目标机无 VCRUNTIME
+- **子系统版本**：`/SUBSYSTEM:WINDOWS,5.01`
+- **XP 工具集宏**：`_USING_V110_SDK71_`（经 SOUI5 的 `SOUI_XP_TOOLSET` 宏启用），
+  抑制新 SDK 中会引入 Vista+ 依赖的默认定义
+- **Windows API 版本**：`_WIN32_WINNT=0x0501` / `WINVER=0x0501`
 
-### 2.1 Windows 平台
+### 2.2 渲染后端约束
 
-#### Windows XP 支持
+- 必须使用 SOUI5 的 `Render_Gdi` 后端（不用 Skia/D2D，避免 Vista+ API）
+- 图像解码用 `ImgDecoder_Stb`（stb_image，纯 C，零依赖）
+- 静态链接 `SOUI_ENABLE_CORE_LIB=ON` + `SOUI_ENABLE_COM_LIB=ON`
 
-- 工具链：MSYS2 MINGW32（mingw-w64-i686），产出 32 位 x86 可执行文件
-- 全静态链接：`-static -static-libgcc -static-libstdc++` + `-municode`（入口 `wWinMain`）
-- 仅链接系统库：`setupapi`（设备枚举）、`advapi32`（注册表兜底）、`comctl32`（ListView）、`user32`、`gdi32`
-- 锁定 API 集：
-  ```cmake
-  target_compile_definitions(... _WIN32_WINNT=0x0501 WINVER=0x0501 _WIN32_IE=0x0501)
-  ```
-- 图标资源 `app.ico` 含 16/24/32/48/64 多尺寸，兼容 XP
+### 2.3 导入表清理
 
-#### USB 扫描方案 (Windows)
+以下会破坏 XP 兼容的 API 已消除：
 
-SetupAPI 设备枚举 + 注册表兜底扫描：
-- SetupAPI: `SetupDiGetClassDevs` / `SetupDiEnumDeviceInfo` / `SetupDiGetDeviceRegistryProperty`
-- 注册表: `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Enum\USB`
+| 引入点 | 处理 |
+|--------|------|
+| `GetTickCount64` | SOUI5 源码内置 XP 兼容实现（< 64 位计数回退到 `QueryPerformanceCounter`） |
+| `GetNumaHighestNodeNumber` / `GetNumaProcessorNumber` | 改用原生 `CreateThread`，不链接 UCRT 并发库 concrt |
+| `GetExeDirA` 等宽/窄字符 API | v1.1.0 起全部清理为宽字符路径 |
 
-### 2.2 Linux 平台
-
-#### glibc 兼容性
-
-- 使用 Rocky Linux 8 容器构建（glibc 2.28），兼容 CentOS 8、Ubuntu 20.04、Debian 11 及以上
-- 可通过 `objdump -T` 验证所需的 GLIBC 版本
-
-#### 构建依赖
+**验证方法**：
 
 ```bash
-dnf install -y gcc-c++ make cmake libusb1-devel gtk3-devel pkgconfig
+dumpbin /imports vpid_viewer_windows_x86.exe
 ```
 
-#### USB 扫描方案 (Linux)
+确认导入 DLL 仅为 XP 自带系统库：`kernel32.dll` / `user32.dll` / `gdi32.dll` /
+`advapi32.dll` / `setupapi.dll` / `shell32.dll` / `comctl32.dll` 等。
 
-- libusb-1.0（`libusb_get_device_list` 等），系统安装 libusb 即可
-- UI 使用原生 GTK3
+### 2.4 体积与杀软
 
----
+- 编译优化：`/Os /Gy /GR- /EHsc- /OPT:REF`（`/GR-` 前提：全库无 `dynamic_cast`/`typeid`；
+  `/EHsc-` 前提：全库无 `throw`）
+- **无 packer**：`DllCharacteristics = HIGH_ENTROPY_VA | NX_COMPAT | DYNAMIC_BASE`，
+  静态链接后 strip，360 杀软实测放行
+- **UPX 禁用**：`--best` / `--lzma` / 极端压缩在 360 下实测被查杀（2026-10-09
+  中性文件名对照确认拦的是 UPX 压缩本身）
+- 版本信息嵌入：`platform/resources/app.rc` 中 `VS_VERSION_INFO`（1.1.0.0）+
+  `platform/resources/app.manifest`（`asInvoker` + DPI 感知）
 
-## 3. 项目依赖
+## 3. Linux 兼容性
 
-| 组件 | 说明 |
-|------|------|
-| C++17 | 语言标准 |
-| CMake ≥ 3.16 | 构建系统 |
-| MinGW-w64 i686 | Windows 交叉/原生工具链（MSYS2 MINGW32） |
-| gtk3-devel | Linux UI（GTK3） |
-| libusb1-devel | Linux USB 枚举 |
+### 3.1 glibc floor 2.17
 
-无脚本语言运行时、无第三方运行时。
+zig `-target x86_64-linux-gnu.2.17`（amd64）与
+`aarch64-linux-gnu.2.17`（arm64）确保 glibc 版本符号 ≤ 2.17：
 
----
-
-## 4. 构建配置
-
-### 4.1 CMake 关键配置
-
-```cmake
-if(WIN32)
-  enable_language(RC)                       # Windows 图标资源
-  add_executable(vpid_viewer WIN32 platform/win32/main.cpp platform/resources/app.rc ...)
-  target_link_options(... -municode -static -static-libgcc -static-libstdc++)
-  target_compile_definitions(... _WIN32_WINNT=0x0501 WINVER=0x0501 _WIN32_IE=0x0501)
-else()
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
-  pkg_check_modules(LIBUSB REQUIRED libusb-1.0)
-  # GTK3 + libusb 链接
-endif()
+```bash
+# 验证：提取产物中所有 GLIBC_X.Y.Z 版本符号
+python -c "import re;d=open('dist/vpid_viewer_linux_amd64','rb').read();\
+print(sorted({m.group() for m in re.finditer(rb'GLIBC_[0-9.]+' ,d)}))"
 ```
 
-### 4.2 平台特定构建要点
+实测最高版本为 `GLIBC_2.17`（amd64）与 `GLIBC_2.17`（arm64），
+兼容 CentOS 7 / RHEL 7 / Ubuntu 12.04+。
 
-**Windows XP**:
-- MINGW32 (i686) 工具链 + 全静态链接
-- NT 5.1 API 集锁定
-- 产物零 DLL 依赖，可用于裸机 XP
+### 3.2 交叉编译（Windows 宿主一次产出双架构）
 
-**Linux**:
-- Rocky Linux 8 容器中构建（glibc 2.28）
-- 动态链接系统 GTK3 / libusb
+- **zig 0.17.0**（官方直链下载，装到 `C:/tools/`）
+- 工具链文件：
+  - `tools/zig-linux-x86_64.cmake`
+  - `tools/zig-linux-aarch64.cmake`
+- **编译器内联 argv**：`zig;cc;-target;x86_64-linux-gnu.2.17`（Windows cmd 会
+  拆坏 `;` 分号列表，故工具链文件采用直接列表而非依赖变量展开）
+- **`CMAKE_AR` 用 wrapper**：`tools/zig-ar.cmd`（同上原因）
+- **禁用 PCH**：`CMAKE_DISABLE_PRECOMPILE_HEADERS ON`（SOUI5 跨平台 PCH 未适配 zig）
+- **禁用 RPATH**：`CMAKE_SKIP_BUILD_RPATH ON`（避免链接期路径污染）
+- **pixman 交叉探测预置退出码**（try_run 在交叉编译下要求预置退出码）：
+  - `-DTOOLCHAIN_SUPPORTS_ATTRIBUTE_CONSTRUCTOR_EXITCODE=0`
+  - `-DTOOLCHAIN_SUPPORTS_ATTRIBUTE_DESTRUCTOR_EXITCODE=0`
+  - `-DASM_LEADING_UNDERSCORE_EXITCODE=1`
 
----
+### 3.3 系统库 sysroot
 
-## 5. GitHub Actions CI/CD 流程
+Linux 产物的运行时依赖仅基础系统库：`libc` / `libm` / `libpthread` /
+`libdl` / `librt` / `libxcb` / `libuuid`。
 
-### 5.1 工作流架构
+链接期需要的 `.so` stub 从 `tools/linux-sysroot/{lib,lib-arm64}/` 取
+（`libxcb.so` / `libXau.so` / `libuuid.so` 等，从 Ubuntu deb 提取，
+已入库离线可复现）：
 
-```
-build.yml (非 main 分支推送触发)
-├── 构建 Windows x86 (MSYS2 MINGW32)
-├── 构建 Linux amd64 (Rocky Linux 8)
-├── 构建 Linux arm64 (Rocky Linux 8 + QEMU)
-└── Upload Artifact (7天)
+- amd64：`tools/linux-sysroot/lib/`
+- arm64：`tools/linux-sysroot/lib-arm64/`
 
-release.yml (main 分支推送触发)
-├── build-windows-x86
-├── build-linux-amd64 (Rocky Linux 8)
-├── build-linux-arm64 (Rocky Linux 8 + QEMU)
-├── 下载所有 artifacts (pattern: release-*, merge-multiple: true)
-└── 创建 GitHub Release
-```
+刷新：`python tools/fetch_linux_sysroot.py`（走 `archive.ubuntu.com` 与
+`ports.ubuntu.com` 官方源）。
 
-### 5.2 release.yml 关键配置
+### 3.4 USB 扫描与设备通知
 
-#### 权限配置
+- **扫描**：`libusb-1.0` 源码 vendored（`third_party/libusb` 1.0.27），静态链接
+- **通知**：`udev` 动态加载（`dlopen`），系统缺失时降级为 100ms 定时轮询
+  （无硬依赖）
+- **权限**：`sudo chmod 666 /dev/bus/usb/*/*` 或 udev 规则
 
-```yaml
-release:
-  needs: [...]
-  runs-on: ubuntu-latest
-  permissions:
-    contents: write  # 允许创建 Release
-```
+### 3.5 UI 资源内嵌
 
-#### Artifact 下载
+Linux 产物**不再是 tar.gz**（自 v1.0.5 起改为单文件自包含），链路：
 
-```yaml
-- uses: actions/download-artifact@v4
-  with:
-    path: artifacts
-    pattern: release-*
-    merge-multiple: true  # 关键：合并多个 artifact
-```
+1. `.rc2`（`src/ui/uires.rc2` + `platform/resources/theme_sys_res.rc2`）
+2. 转标准 `.rc`（资源名/类型全大写）
+3. `rc.exe` → `.res`，`cvtres.exe` → COFF 对象
+4. 离线应用 COFF 重定位，合并 `.rsrc$01` + `.rsrc$02` → 单 `.rsrc` 段
+5. 最小 COFF 对象 `.incbin` 内嵌进 ELF
+6. swinx `resapi.cpp` 以**弱符号**引用 `_binary_soui_coff_o_start/_end`
+   完成解析（不依赖 `--export-dynamic`，避免全量符号导出）
 
-### 5.3 Linux 容器构建配置
+工具：`tools/gen_linux_coff_res.py`（生成 + 合并）、`tools/verify_coff_res.py`
+（校验解析）。
 
-```yaml
-- name: Build in Rocky Linux 8 container (glibc 2.28)
-  uses: addnab/docker-run-action@v3
-  with:
-    image: quay.io/rockylinux/rockylinux:8
-    options: --platform ${{ matrix.platform }} -v ${{ github.workspace }}:/workspace -w /workspace
-    run: |
-      dnf install -y epel-release
-      dnf install -y gcc-c++ make cmake libusb1-devel gtk3-devel pkgconfig
-      rm -rf build && mkdir -p build
-      cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
-      cmake --build build -j"$(nproc)"
-      objdump -T build/vpid_viewer | grep -m1 GLIBC || true
-      cp build/vpid_viewer build/vpid_viewer_linux_amd64
+**体积代价**：资源对象约 +114 KB（amd64 从 ~5.2 MB 增到 ~8.3 MB），
+换来单文件发布（无外置 `uires/`）。
+
+## 4. 构建入口
+
+**一键脚本**（`tools/build_release.py`）：
+
+```bash
+python tools/build_release.py                    # 全平台
+python tools/build_release.py --only windows     # 仅 Windows
+python tools/build_release.py --only linux-x64   # 仅 Linux amd64
+python tools/build_release.py --only linux-arm64 # 仅 Linux arm64
 ```
 
----
+产物输出到 `dist/`，自动跑 `tools/verify_release.py` 校验（PE 有效、
+ELF 架构正确、glibc 符号 ≤ 2.17、动态依赖仅基础库、UI 资源内嵌完整）。
 
-## 6. 兼容性检查清单
+完整发布流程见 [RELEASE.md](RELEASE.md)。
+
+## 5. 兼容性检查清单
 
 ### Windows XP
 
-- [x] MINGW32 (i686) 32 位工具链
-- [x] 全静态链接（零 DLL 依赖）
-- [x] `_WIN32_WINNT=0x0501` / `WINVER=0x0501` / `_WIN32_IE=0x0501`
-- [x] 仅系统库（setupapi / advapi32 / comctl32 / user32 / gdi32）
-- [x] 多尺寸图标（16-64px）兼容 XP
+- [x] `/SUBSYSTEM:WINDOWS,5.01` + 静态 CRT（`/MT`）
+- [x] `_USING_V110_SDK71_`（`SOUI_XP_TOOLSET`）
+- [x] `Render_Gdi` 渲染后端（无 Skia/D2D）
+- [x] `GetTickCount64` / Numa* 等 Vista+ API 已消除
+- [x] `DllCharacteristics` 含 `HIGH_ENTROPY_VA | NX_COMPAT | DYNAMIC_BASE`
+- [x] 无 packer（UPX 禁用），360 实测放行
 
 ### Linux
 
-- [x] glibc 2.28（Rocky Linux 8 构建）
-- [x] libusb-1.0 扫描
-- [x] amd64 和 arm64 支持
+- [x] zig `-target *-linux-gnu.2.17`，glibc 版本符号 ≤ 2.17
+- [x] DT_NEEDED 仅基础系统库（libc/libm/libpthread/libdl/librt/libxcb/libuuid）
+- [x] 无 RPATH 污染（`CMAKE_SKIP_BUILD_RPATH ON`）
+- [x] libusb 源码 vendored（无系统开发包依赖）
+- [x] udev 动态加载（缺失时降级轮询）
+- [x] 单文件自包含（UI 资源内嵌 ELF）
+- [x] amd64 + arm64 双架构（zig 交叉，Windows 宿主一次产出）
 
----
+## 6. 常见问题
 
-## 7. 常见问题
+### Q: 为什么 Linux 走 zig 交叉编译而不是原生 Linux gcc？
 
-### Q: 为什么 Windows 构建是 32 位的？
-A: XP 仅有 32 位系统，i686 产物同时兼容 32/64 位 Windows，且全静态链接可在 XP 裸机运行。
+- GitHub CI runner 无法稳定访问 gitee.com（`gnutls_handshake() failed`），
+  SOUI5 曾作为 submodule 时构建必失败 → 改为 vendoring（`third_party/soui`）
+- GitHub Actions arm64 QEMU 作业 360 分钟超时未跑通
+- zig 单一工具链 + `-target gnu.2.17` 天然锁 glibc floor，一个 Windows
+  宿主即可产出双架构，无环境漂移
 
-### Q: Linux 上提示没有权限访问 USB？
-A: 参考 README.md 的「Linux 权限注意事项」章节。
+### Q: 为什么不用 UPX 压缩？
 
-### Q: 打包后的 exe 在 XP 上闪退？
-A: 检查链接标志是否包含 `-static -static-libgcc -static-libstdc++` 且 API 集已锁定 0x0501；避免调用 Vista+ API。
+UPX 任何压缩级别（含 `--best` + 去特征）在 360 下实测被查杀（2026-10-09
+中性文件名对照确认拦的是 UPX 压缩本身、与文件名无关）。当前策略：
+MSVC 体积优化（`/Os /Gy /GR- /EHsc- /OPT:REF`）+ strip 已把 Windows 产物
+从 2.32 MB 压到 1.52 MB，无 packer 特征，安全性等同。
 
-### Q: 如何验证 glibc 兼容性？
-A: 使用 `objdump -T vpid_viewer_linux_amd64 | grep GLIBC_` 查看所需的 glibc 版本，最高版本应 ≤ 2.28。
+### Q: 为什么 Windows 保持 32 位？
+
+- XP 仅有 32 位系统，i386 产物同时兼容 32/64 位 Windows，无额外打包成本
+- SOUI5 在 x86 下渲染路径与体积最优（无 x64 冗余导入）
+
+### Q: 如何验证产物兼容性？
+
+```bash
+# Windows：检查导入表无 Vista+ API
+dumpbin /imports dist/vpid_viewer_windows_x86.exe
+
+# Linux：检查 glibc 版本符号
+objdump -T dist/vpid_viewer_linux_amd64 | grep GLIBC_
+
+# Linux：检查动态依赖
+readelf -d dist/vpid_viewer_linux_amd64 | grep NEEDED
+
+# Linux：检查 UI 资源内嵌
+strings dist/vpid_viewer_linux_amd64 | grep -c '_binary_soui_coff_o'
+
+# 综合校验（构建后自动跑）
+python tools/verify_release.py
+```

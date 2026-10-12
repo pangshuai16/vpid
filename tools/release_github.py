@@ -10,7 +10,7 @@ vpid GitHub Release 发布脚本（API 直传，无 GitHub Actions）
   4. 上传 dist/ 下全部产物，校验大小
 
 用法：
-  python tools/release_github.py --tag v1.0.0 --title "v1.0.0" --notes-file RELEASE_NOTES.md [--branch main]
+  python tools/release_github.py --tag v1.1.0 --title "v1.1.0" --notes-file RELEASE_NOTES_v1.1.0.md [--branch main]
 
 凭据来源（按优先级）：
   - 环境变量 GITHUB_TOKEN
@@ -197,8 +197,8 @@ def main():
     # 4. 上传资产
     release_id = rel["id"]
     patterns = ["vpid_viewer_windows_x86.exe",
-                "vpid_viewer_linux_amd64.tar.gz",
-                "vpid_viewer_linux_arm64.tar.gz"]
+                "vpid_viewer_linux_amd64",
+                "vpid_viewer_linux_arm64"]
     ok = True
     for name in patterns:
         path = os.path.join(args.assets_dir, name)
