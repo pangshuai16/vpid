@@ -59,6 +59,7 @@ protected:
     void OnBtnManualRefresh();
     void OnBtnBaseline();
     void OnBtnCopy();
+    void OnBtnExit();
     // 列表选择变化：三列表互斥（原版 LVN_ITEMCHANGED 逻辑）
     void OnListSelChanged(IEvtArgs *pEvt);
 
@@ -137,6 +138,7 @@ protected:
         EVENT_NAME_COMMAND(L"btn_manual_refresh", OnBtnManualRefresh)
         EVENT_NAME_COMMAND(L"btn_baseline", OnBtnBaseline)
         EVENT_NAME_COMMAND(L"btn_copy", OnBtnCopy)
+        EVENT_NAME_COMMAND(L"btn_exit", OnBtnExit)
         // 列表选择变化（互斥选中：左清右 / 右清左）
         EVENT_NAME_HANDLER(L"lc_all", EVT_LC_SELCHANGED, OnListSelChanged)
         EVENT_NAME_HANDLER(L"lc_changed", EVT_LC_SELCHANGED, OnListSelChanged)

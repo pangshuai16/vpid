@@ -40,11 +40,10 @@ static int GetDpiScale() {
     return dpi * 100 / 96;
 }
 
-// RESTYPE_PE：从 exe 自身 PE 资源加载 UI（Windows Release 默认；与 demo 一致）
-// Linux：ELF 无 PE 资源段，swinx 的 FindResource 需要 _binary_soui_coff_o_* 符号
-// （windres 机制），本项目未启用 → PE 资源加载必然失败 → SOUI 静默退出。
-// 所以 Linux 改用文件资源提供者（SetSysResFile/SetAppResFile），从 exe 同目录
-// 的 uires/ 加载（与 README 承诺的"Linux 从本地资源目录加载"一致）。
+// RESTYPE_PE：从 exe 自身 PE 资源加载 UI（Windows Release 默认；与 demo 一致）。
+// Linux：ELF 无 PE 资源段，故编译期把 .rc 编成 COFF 资源对象内嵌进 ELF（见
+// tools/gen_linux_coff_res.py），运行期仍按 PE 资源路径解析；仅当内嵌符号缺失时
+// 才回退到 exe 同目录的 uires/ 文件提供者（见 _tWinMain 内的 fallback 分支）。
 #define RESTYPE_PE 1
 #define RES_TYPE RESTYPE_PE
 
@@ -58,16 +57,6 @@ static std::wstring GetExeDir() {
     std::wstring path(buf);
     size_t pos = path.find_last_of(L"/\\");
     if (pos != std::wstring::npos) path = path.substr(0, pos);
-    return path;
-}
-
-// Linux 诊断用窄字符版（stderr/日志文件输出）
-static std::string GetExeDirA() {
-    char buf[MAX_PATH + 1] = {0};
-    ::GetModuleFileNameA(NULL, buf, MAX_PATH);
-    std::string path(buf);
-    size_t pos = path.find_last_of("/\\");
-    if (pos != std::string::npos) path = path.substr(0, pos);
     return path;
 }
 
@@ -90,72 +79,26 @@ static bool TryCliScan(LPTSTR lpCmdLine) {
     }
 #endif
     auto scanner = vpid::createScanner();
+    // 只走 stdout（Windows 下已 AttachConsole 到父控制台），不落地任何文件
     auto devs = scanner->scan();
-    // GUI 子系统的 stdout 在无控制台环境不可见，写结果文件兜底（exe 同目录）
-    FILE *out = nullptr;
-#ifdef _WIN32
-    errno_t e = fopen_s(&out, "vpid_scan_result.txt", "w");
-    if (e != 0) out = nullptr;
-#else
-    out = fopen("vpid_scan_result.txt", "w");
-#endif
-    if (out) {
-        fprintf(out, "vpid scan: %zu device(s)\n", devs.size());
-        for (const auto &d : devs) {
-            fprintf(out, "  VID:%s PID:%s serial:%s name:%s\n",
-                    d.getFormattedVid().c_str(), d.getFormattedPid().c_str(),
-                    d.serial.c_str(), d.getDisplayName().c_str());
-        }
-        fclose(out);
-    }
     printf("vpid scan: %zu device(s)\n", devs.size());
+    for (const auto &d : devs) {
+        printf("  VID:%s PID:%s serial:%s name:%s\n",
+               d.getFormattedVid().c_str(), d.getFormattedPid().c_str(),
+               d.serial.c_str(), d.getDisplayName().c_str());
+    }
     fflush(stdout);
+
     return true;
 }
 
 int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine, int /*nCmdShow*/) {
-    // Linux 诊断：所有失败路径都写 stderr + vpid_linux_diag.txt（GUI 静默退出排查用）
-    auto diag = [](const char *msg) {
-        fprintf(stderr, "[vpid] %s\n", msg);
-        fflush(stderr);
-        FILE *f = fopen("vpid_linux_diag.txt", "a");
-        if (f) { fprintf(f, "[vpid] %s\n", msg); fclose(f); }
-    };
-#ifndef _WIN32
-    diag("start _tWinMain");
-    diag(("exe dir: " + GetExeDirA()).c_str());
-    diag(("uires dir: " + (GetExeDirA() + "/uires")).c_str());
-    // [诊断] 宽字符路径还原 UTF-8，与窄字符路径对比（排查中文目录乱码）
-    {
-        std::wstring wdir = GetExeDir();
-        std::string wdirUtf8;
-        // 宽→窄：用 swinx 的 tostring（CP_UTF8）——这里是简单逐字节透传演示
-        // 直接打印宽字符的 UTF-8 编码（每个 wchar_t 高字节为 0 则取低字节）
-        std::string raw;
-        for (wchar_t wc : wdir) raw += (char)(wc & 0xFF);
-        diag(("wide-dir raw: " + raw).c_str());
-        // 检查窄路径是否与宽路径逐字节一致
-        std::string adir = GetExeDirA();
-        diag(("wide==ansi: " + std::string(adir == raw ? "YES" : "NO")).c_str());
-        // 检查 uires.idx 文件是否存在（窄路径）
-        std::string sysIdx = adir + "/uires/soui-sys-resource/uires.idx";
-        FILE *fchk = fopen(sysIdx.c_str(), "rb");
-        if (fchk) { diag(("sys uires.idx EXISTS: " + sysIdx).c_str()); fclose(fchk); }
-        else diag(("sys uires.idx MISSING: " + sysIdx).c_str());
-        std::string appIdx = adir + "/uires/uires.idx";
-        fchk = fopen(appIdx.c_str(), "rb");
-        if (fchk) { diag(("app uires.idx EXISTS: " + appIdx).c_str()); fclose(fchk); }
-        else diag(("app uires.idx MISSING: " + appIdx).c_str());
-    }
-#endif
-
     // CLI 自检模式优先（不启动 GUI / SOUI）
     if (TryCliScan(lpCmdLine)) return 0;
 
     // SOUI 要求 OLE 初始化（拖放/剪贴板等）
     HRESULT hRes = OleInitialize(nullptr);
     if (FAILED(hRes)) {
-        diag("OleInitialize FAILED");
         return -1;
     }
 
@@ -167,7 +110,6 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
         // 渲染：GDI（XP 兼容，CPU 渲染，零外部依赖）；图片解码：stb（免 GDI+/WIC）
         cfg.SetRender(SOUI::Render_Gdi)
             .SetImgDecoder(SOUI::ImgDecoder_Stb)
-            .SetLog(TRUE, 2, "vpid")
             .EnableScript(FALSE);
 
 #ifdef _WIN32
@@ -181,11 +123,9 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
         // 若该符号不存在（未启用内嵌的构建），回退到 exe 同目录的 uires/ 文件提供者。
         bool embedded = (&_binary_soui_coff_o_start != NULL);
         if (embedded) {
-            diag("resource mode: embedded PE (COFF blob in ELF)");
             cfg.SetSysResPeHandle(hInstance);
             cfg.SetAppResPeHandle(hInstance);
         } else {
-            diag(("resource mode: file provider " + GetExeDirA() + "/uires").c_str());
             std::wstring resRoot = GetExeDir() + L"/uires";
             cfg.SetSysResFile((resRoot + L"/soui-sys-resource").c_str());
             cfg.SetAppResFile(resRoot.c_str());
@@ -193,10 +133,8 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
 #endif
 
         if (!cfg.DoConfig(&theApp)) {
-            diag("DoConfig FAILED (资源加载失败：内嵌资源缺失且 uires/ 目录无效)");
             nRet = -1;
         } else {
-            diag("DoConfig OK");
             vpid::MainDlg dlg;
             // 系统边框窗口：XML wndStyle 含 WS_CAPTION（系统标题栏 47120384=0x02CF0000）
             // 客户区 = 内容区 1280x720，窗口总尺寸 = 客户区 + 系统标题栏/边框（AdjustWindowRect）
@@ -210,11 +148,9 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
                 dlg.Create(GetActiveWindow(), 0, 0,
                            rcWnd.right - rcWnd.left, rcWnd.bottom - rcWnd.top);
                 if (!dlg.m_hWnd) {
-                    diag("MainDlg Create FAILED (窗口创建失败)");
                     nRet = -1;
                     return nRet;
                 }
-                diag("MainDlg Create OK");
             }
             // [高分屏清晰] 按系统 DPI 放大 SOUI 缩放（清单已声明 DPI 感知，窗口不再被位图拉伸）。
             // 不缩放时窗口在高分屏会缩成"一半大小"。scale=100（96 DPI）时跳过，保持原尺寸。
@@ -270,13 +206,11 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
             dlg.GetNative()->SendMessage(WM_INITDIALOG);
             dlg.CenterWindow();
             dlg.ShowWindow(SW_SHOWNORMAL);
-            diag("ShowWindow OK, entering message loop");
             nRet = theApp.Run(dlg.m_hWnd);
-            diag("message loop exited");
         }
     }
     OleUninitialize();
-    diag("exit _tWinMain");
+
     return nRet;
 }
 

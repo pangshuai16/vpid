@@ -105,10 +105,9 @@ STextServiceHelper::STextServiceHelper()
     }
     else
     {
-#ifndef _WIN32
-        const char *err = dlerror();
-        printf("load so failed, err=%s\n", err);
-#endif
+        // vpid vendored patch：SOUI_BUILD_RICHEDIT=OFF（未把 richedit41 编进二进制）
+        // 时，非 Windows 平台取不到 libmsftedit 是预期状态（SApplication 初始化会
+        // 无条件走到这里），正式发行版静默处理，不做任何日志输出。
     }
 #endif // INIT_RICHEDIT
 }

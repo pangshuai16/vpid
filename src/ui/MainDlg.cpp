@@ -367,6 +367,12 @@ void MainDlg::OnBtnCopy() {
     CopySelected();
 }
 
+void MainDlg::OnBtnExit() {
+    // 与标题栏 X 同一个收口：OnClose 统一做退出清理（置 closing_ 阻止在途扫描回填、
+    // 停设备通知、停自动刷新定时器、销毁窗口），避免两条路径各写一份清理逻辑漂移。
+    OnClose();
+}
+
 // ---- 三列表互斥选中（原版 LVN_ITEMCHANGED 逻辑）----
 void MainDlg::OnListSelChanged(IEvtArgs *pEvt) {
     if (!pEvt) return;

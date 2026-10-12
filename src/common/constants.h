@@ -5,7 +5,10 @@ namespace vpid {
 
 // 纯常量配置，无 UI 框架依赖
 constexpr const char* kAppName    = "USB设备ID查看";
-constexpr const char* kAppVersion = "2.0.0";
+// 当前版本。发行版版本号以 platform/resources/app.rc 的 VS_VERSION_INFO 为准
+// （资源管理器"属性→详细信息"读的就是那里），改版本时两处需同步。
+// 目前未在 UI 展示，预留给将来的"关于"对话框。
+constexpr const char* kAppVersion = "1.1.0";
 constexpr const char* kAppAuthor  = "USB Manager";
 
 constexpr int kAutoRefreshIntervalMs = 100;

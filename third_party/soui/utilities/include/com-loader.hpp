@@ -39,13 +39,8 @@ public:
             #endif
             m_hMod=LoadLibrary(szDllPath);
             if (!m_hMod) {
-#ifndef _WIN32
-                const char * err = dlerror();
-                printf("load so failed, err=%s\n", err);
-#else
-                int err = GetLastError();
-                printf("load so failed, err=%d\n",err);
-#endif
+                // vpid vendored patch：去掉"load so failed"调试输出——正式发行版
+                // 加载失败的模块应静默返回 FALSE，不把 stderr 当作诊断通道。
 #if defined(_WIN32) && (defined(__MINGW32__) || defined(__MINGW64__))
                 if(_tcsnicmp(pszDllPath,_T("lib"),3) != 0)
                 {//try to load libxxx.dll
