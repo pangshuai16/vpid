@@ -4,7 +4,7 @@
 # 用法（配合 zig 0.16.0+，zig 需在 PATH）：
 #   cmake -S . -B build-zig-x64 \
 #         -DCMAKE_TOOLCHAIN_FILE=${PWD}/tools/zig-linux-x86_64.cmake \
-#         -DVPID_UI_STYLE=SOUI -G Ninja
+#         -G Ninja
 #   cmake --build build-zig-x64 --config Release
 #
 # glibc floor：-target x86_64-linux-gnu.2.17 表示产物兼容 glibc >= 2.17

@@ -7,11 +7,7 @@ project(vpid_viewer LANGUAGES C CXX)
 #   src/core/    跨平台业务核心：设备模型 / Scanner 抽象 / 比对 / 设备通知抽象
 #                + 平台实现：windows_scanner / linux_scanner / windows_notifier / linux_notifier
 #   src/ui/      ★ 跨平台 SOUI5 UI 层（MainDlg / main / uires XML）——唯一 UI 实现
-#   src/platform/legacy/   旧的 GTK / MinGW-Win32 UI（回退保留，非默认）
 # =====================================================================
-set(VPID_UI_STYLE "SOUI" CACHE STRING "UI backend: SOUI (Windows+Linux) | GTK (Linux legacy) | WIN32 (MinGW legacy)")
-message(STATUS "VPID_UI_STYLE=${VPID_UI_STYLE}")
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -83,7 +79,7 @@ macro(VPID_ADD_SOUI_SUBDIRS)
   add_subdirectory(${SOUI_ROOT}/SOUI)                        # -> soui4 核心库
 endmacro()
 
-if(WIN32 AND VPID_UI_STYLE STREQUAL "SOUI")
+if(WIN32 AND NOT MINGW)
   # ===================== Windows: MSVC + SOUI5（静态库, 32 位, XP 兼容） =====================
   enable_language(RC)
   set(SOUI_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/third_party/soui)
@@ -181,7 +177,7 @@ if(WIN32 AND VPID_UI_STYLE STREQUAL "SOUI")
     )
   endif()
 
-elseif(UNIX AND NOT APPLE AND VPID_UI_STYLE STREQUAL "SOUI")
+elseif(UNIX AND NOT APPLE)
   # ===================== Linux: SOUI5 + swinx（xcb + Cairo） =====================
   # SOUI5 通过 swinx 在 Linux 上复现 Win32 API（官方支持的跨平台路径）。
   # 依赖：cairo / fontconfig / freetype / pixman / xcb / xkbcommon / dbus（由 swinx 提供或系统安装）
@@ -273,45 +269,8 @@ elseif(UNIX AND NOT APPLE AND VPID_UI_STYLE STREQUAL "SOUI")
     target_link_options(vpid_viewer PRIVATE -s)
   endif()
 
-elseif(WIN32 AND MINGW AND VPID_UI_STYLE STREQUAL "WIN32")
-  # ===================== Windows (MinGW) 回退：原生 Win32 UI =====================
-  enable_language(RC)
-  add_compile_options(-Os -fno-rtti -fno-exceptions -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections)
-  add_executable(vpid_viewer WIN32
-    src/platform/legacy/win32/main.cpp
-    platform/resources/app.rc
-    ${CORE_SOURCES}
-    src/core/windows_scanner.cpp
-  )
-  target_include_directories(vpid_viewer PRIVATE src platform/resources)
-  set_source_files_properties(platform/resources/app.rc PROPERTIES
-    LANGUAGE RC
-    INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/platform/resources"
-  )
-  target_link_libraries(vpid_viewer PRIVATE
-    setupapi advapi32 comctl32
-    user32 gdi32
-  )
-  target_link_options(vpid_viewer PRIVATE -municode -static -static-libgcc -static-libstdc++ -Wl,-s -Wl,--gc-sections -Wl,--strip-all -Wl,--dynamicbase -Wl,--nxcompat)
-  target_compile_definitions(vpid_viewer PRIVATE _WIN32_WINNT=0x0501 WINVER=0x0501 _WIN32_IE=0x0501)
-
-elseif(UNIX AND NOT APPLE AND VPID_UI_STYLE STREQUAL "GTK")
-  # ===================== Linux (GTK) 回退：旧 UI =====================
-  add_compile_options(-Os -fno-rtti -fno-exceptions -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections)
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
-  pkg_check_modules(LIBUSB REQUIRED libusb-1.0)
-  add_executable(vpid_viewer
-    src/platform/legacy/gtk/main.cpp
-    ${CORE_SOURCES}
-    src/core/linux_scanner.cpp
-  )
-  target_include_directories(vpid_viewer PRIVATE src ${GTK3_INCLUDE_DIRS} ${LIBUSB_INCLUDE_DIRS})
-  target_compile_options(vpid_viewer PRIVATE ${GTK3_CFLAGS_OTHER} ${LIBUSB_CFLAGS_OTHER})
-  target_link_libraries(vpid_viewer PRIVATE ${GTK3_LIBRARIES} ${LIBUSB_LIBRARIES})
-
 else()
-  message(WARNING "当前平台/选项无可用构建路径；请用 -DVPID_UI_STYLE=SOUI（默认）")
+  message(FATAL_ERROR "不支持的构建平台：本项目仅支持 Windows (MSVC, WIN32) 与 Linux (Unix, non-Apple)")
 endif()
 
 # ============================================================

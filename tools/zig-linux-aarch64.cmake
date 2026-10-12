@@ -6,7 +6,7 @@
 # 用法：
 #   cmake -S . -B build-zig-arm64 \
 #         -DCMAKE_TOOLCHAIN_FILE=${PWD}/tools/zig-linux-aarch64.cmake \
-#         -DVPID_UI_STYLE=SOUI -G Ninja
+#         -G Ninja
 #   cmake --build build-zig-arm64 --config Release
 # =====================================================================
 set(CMAKE_SYSTEM_NAME Linux)

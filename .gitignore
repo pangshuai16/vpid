@@ -33,7 +33,6 @@ build-ci-test*/
 build-zig*/
 .build-release/
 dist/
-build_msvc_soui.bat
 *.log
 *.bmp
 imports.txt

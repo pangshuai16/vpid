@@ -75,7 +75,7 @@ def build_windows_x86(cmake, ninja):
             "@echo off\r\n"
             'call "{vcvars}" x86 >nul\r\n'
             "if errorlevel 1 exit /b 1\r\n"
-            '"{cmake}" -S "{repo}" -B "{bdir}" -G "Visual Studio 17 2022" -A Win32 -DVPID_UI_STYLE=SOUI\r\n'
+            '"{cmake}" -S "{repo}" -B "{bdir}" -G "Visual Studio 17 2022" -A Win32\r\n'
             "if errorlevel 1 exit /b 1\r\n"
             '"{cmake}" --build "{bdir}" --config Release\r\n'
             "if errorlevel 1 exit /b 1\r\n".format(
@@ -114,7 +114,6 @@ def build_linux_zig(cmake, zig, toolchain, bdir_name, out_name):
         raise RuntimeError(f"{bdir_name} COFF 资源对象生成失败")
     r = run([cmake, "-S", ".", "-B", bdir, "-G", "Ninja",
              f"-DCMAKE_TOOLCHAIN_FILE={os.path.join(REPO, 'tools', toolchain)}",
-             "-DVPID_UI_STYLE=SOUI",
              f"-DVPID_COFF_RES_C={embed_c.replace(os.sep, '/')}"] + PIXMAN_EXITCODES, env=env)
     if r.returncode:
         raise RuntimeError(f"{bdir_name} CMake configure 失败")

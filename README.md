@@ -104,11 +104,11 @@ python tools/release_github.py \
 
 ```bash
 # Windows (MSVC + SOUI5，XP 兼容；在 vcvars32.bat 之后运行)
-cmake -S . -B build-msvc -G "Visual Studio 17 2022" -A Win32 -DVPID_UI_STYLE=SOUI
+cmake -S . -B build-msvc -G "Visual Studio 17 2022" -A Win32
 cmake --build build-msvc --config Release -- /m
 
 # Linux 原生 (SOUI5 + swinx；需 cairo/fontconfig/xcb 开发包，本机 Linux 环境)
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=SOUI
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 
 # Linux 交叉编译（Windows 宿主上用 zig v0.17.0，glibc floor 2.17）
@@ -118,7 +118,7 @@ cmake --build build -j$(nproc)
 #   * 3 个 EXITCODE 是 pixman 交叉探测必需（tryRun 在交叉编译下要求预置退出码）。
 cmake -S . -B build-zig -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE=$PWD/tools/zig-linux-x86_64.cmake \
-  -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=SOUI \
+  -DCMAKE_BUILD_TYPE=Release \
   -DTOOLCHAIN_SUPPORTS_ATTRIBUTE_CONSTRUCTOR_EXITCODE=0 \
   -DTOOLCHAIN_SUPPORTS_ATTRIBUTE_DESTRUCTOR_EXITCODE=0 \
   -DASM_LEADING_UNDERSCORE_EXITCODE=1
