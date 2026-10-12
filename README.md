@@ -55,13 +55,6 @@ Ubuntu 12.04+）共享同一套 SOUI5 UI 层**，平台差异只收敛在 USB �
 - **发布**: 本地固化脚本 `tools/build_release.py` 一次构建三平台 +
   `tools/release_github.py` API 直传 GitHub Release（不依赖 GitHub Actions）
 
-> **可选回退**：旧 UI 实现保留在 `src/platform/legacy/`，可通过编译选项切换
-> （非默认）：
-> - `-DVPID_UI_STYLE=WIN32`：MinGW + 原生 Win32 UI（Windows）
-> - `-DVPID_UI_STYLE=GTK`：GTK3 UI（Linux）
->
-> 当前默认 `VPID_UI_STYLE=SOUI`（跨平台统一），legacy 分支仅供极端场景参考。
-
 ## 下载与安装
 
 从 [Releases](https://github.com/pangshuai16/vpid/releases) 页面下载
@@ -132,20 +125,12 @@ cmake -S . -B build-zig -G Ninja \
 cmake --build build-zig --config Release
 # 产物：build-zig/bin/vpid_viewer（ELF x86-64，glibc <= 2.17 可运行，已 strip）
 # arm64：换用 tools/zig-linux-aarch64.cmake，产物 ELF aarch64。
-
-# 旧方案（可选回退）：MinGW 原生 Win32 UI
-cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=WIN32
-cmake --build build -j$(nproc)
-
-# 旧方案（可选回退）：Linux GTK3 UI
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVPID_UI_STYLE=GTK
-cmake --build build -j$(nproc)
 ```
 
 ## 项目结构
 
 ```
-CMakeLists.txt                # 顶层构建（core + ui 跨平台，VPID_UI_STYLE 切换 legacy）
+CMakeLists.txt                # 顶层构建（core + ui 跨平台共享）
 src/
   common/
     constants.h               # 常量配置（含自动刷新间隔、kAppVersion）
@@ -167,9 +152,6 @@ src/
       values/                 # color / skin / string / template
       xml/dlg_main.xml        # 主窗口布局
       uires.idx               # 资源索引（应用资源名 → 文件路径映射）
-  platform/legacy/            # 旧 UI 回退（可选，非默认）
-    win32/main.cpp            # MinGW 原生 Win32 UI
-    gtk/main.cpp              # Linux GTK3 UI
 platform/
   resources/                  # 平台专属资源（Windows app.rc/ico/manifest + 系统皮肤）
     app.rc / app.ico / app.manifest
