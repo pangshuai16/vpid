@@ -3,6 +3,34 @@
 本文档说明 vpid_viewer 如何在**Windows XP 及以上**与**Linux（CentOS 7+ /
 Ubuntu 12.04+）**上做到统一 UI 层、单文件自包含。
 
+> ✅ **XP 兼容性状态（2026-10-14 最终方案，零 Vista+ 导入）**：
+>
+> 采用 **VS2022 v143 + Ninja 生成器 + VC-LTL5 + YY-Thunks + MASM IAT stub**
+> 四层通用机制，导入表已实现**零 Vista+ API**，`dumpbin /imports` 验证通过。
+> 产物 `dist/vpid_viewer_windows_x86.exe`（1,618,944 字节，1.54MB）：
+>
+> - 机器类型 x86，子系统版本 5.01（XP）
+> - 导入 DLL 仅 10 个 XP 原生库：`kernel32` / `user32` / `gdi32` / `advapi32` /
+>   `setupapi` / `shell32` / `shlwapi` / `version` / `imm32` / `msimg32`
+>   （另有 `ntdll` / `ole32`，XP 原生）
+> - 无 `GetFileSizeEx` / `SetFilePointerEx` / `FlsAlloc` / `CompareStringEx` 等
+>   任何 Vista+ API
+>
+> 三层消除机制（详见 2.4 节）：
+> 1. **VC-LTL5**：CRT 重定向到 msvcrt.dll（XP 自带），规避 libcpmt/ucrt 的
+>    Vista+ 依赖
+> 2. **YY-Thunks kernel32.Lib（`_WeakAlias` 成员）+ YY-Thunks obj**：覆盖 7 个
+>    Vista+ API 的直接调用（Fls*4 / CompareStringEx / FindFirstFileExW /
+>    InitializeCriticalSectionEx），链接器解析到弱别名 thunk 而非 SDK 导入条目
+> 3. **`src/xp_iat_stubs.asm`（MASM）**：为 YY-Thunks 未提供 thunk 的 2 个 API
+>    （GetFileSizeEx / SetFilePointerEx）定义 `__imp__Xxx@N` IAT 槽数据符号，
+>    指向 `src/xp_compat_stubs.cpp` 的本地 stub（回退 XP 的
+>    GetFileSize / SetFilePointer）。.obj 优先于 .lib 处理 → 符号已定义 →
+>    kernel32.lib 导入成员不会被拉入
+>
+> 该方案完全通用（无项目定制的 PE 二进制补丁），仅依赖社区标准工具
+> VC-LTL5 + YY-Thunks + 一个 20 行 MASM 文件。
+
 ## 1. 总览
 
 | 维度 | Windows | Linux |
@@ -49,13 +77,113 @@ XML 布局（`src/ui/uires/`），平台差异全部收敛在 `src/core/` 的扫
 **验证方法**：
 
 ```bash
-dumpbin /imports vpid_viewer_windows_x86.exe
+python tools/check_imports.py dist/vpid_viewer_windows_x86.exe
 ```
 
-确认导入 DLL 仅为 XP 自带系统库：`kernel32.dll` / `user32.dll` / `gdi32.dll` /
-`advapi32.dll` / `setupapi.dll` / `shell32.dll` / `comctl32.dll` 等。
+确认零致命 Vista+ API，导入 DLL 仅为 XP 自带系统库：`kernel32.dll` /
+`user32.dll` / `gdi32.dll` / `advapi32.dll` / `setupapi.dll` / `shell32.dll` /
+`shlwapi.dll` / `version.dll` / `imm32.dll` / `msimg32.dll` 等。
 
-### 2.4 体积与杀软
+### 2.4 三层导入消除机制（2026-10-14 完整方案）
+
+构建配置：**Ninja 生成器 + VC-LTL5 + YY-Thunks + MASM IAT stub**。
+MSVC v143（VS2022）+ `/MT` 静态 CRT + `_WIN32_WINNT=0x0501`。
+
+#### 第 1 层：VC-LTL5（CRT 重定向）
+
+`VC-LTL helper for cmake.cmake` + `WindowsTargetPlatformMinVersion=5.1.2600.0`：
+UCRT/VCRuntime 静态库重定向到 XP 自带的 `msvcrt.dll`。消除 CRT 本身对
+Vista+ API 的绝大多数引用。
+
+#### 第 2 层：YY-Thunks kernel32.Lib + obj（7 个 API）
+
+```cmake
+# target_link_libraries 最前排（必须早于 CMake 标准库里的 SDK kernel32.lib）：
+"D:/DevTools/YY-Thunks/Lib/5.1.2600.0/x86/kernel32.Lib"
+# YY-Thunks thunk 实现：
+"D:/DevTools/YY-Thunks/Lib/5.1.2600.0/x86/YY_Thunks_for_5.1.2600.0.obj"
+```
+
+YY-Thunks 的 `kernel32.Lib` 内含 **`_WeakAlias` 归档成员**（每 API 一个
+.obj），把 `_FlsAlloc@4` / `_CompareStringEx@12` 等**直接调用**弱别名到 obj
+里的 thunk 实现（运行时检测真实 API 是否存在，存在则转发、不存在则回退）。
+因为符号在导入库成员里已解析为弱别名，SDK `kernel32.lib` 的 short-import
+成员不会被拉入 → 不创建致命 IAT 导入。
+
+覆盖：`FlsAlloc` / `FlsFree` / `FlsGetValue` / `FlsSetValue` /
+`CompareStringEx` / `FindFirstFileExW` / `InitializeCriticalSectionEx`。
+
+#### 第 3 层：MASM IAT stub（剩余 2 个 API）
+
+YY-Thunks 不为 `GetFileSizeEx` / `SetFilePointerEx` 提供 thunk（无
+`_WeakAlias` 成员），而 CRT 内部通过 **IAT 间接引用**
+（`call dword ptr [__imp__GetFileSizeEx@8]`）它们——weak symbol 机制覆盖不了
+IAT 引用。解法是在自己的 .obj 里**定义 IAT 槽符号**，抢在导入库之前解析：
+
+`src/xp_iat_stubs.asm`（MASM，`.model flat` 不加语言装饰，符号原样输出）：
+
+```asm
+externdef _GetFileSizeEx_stub@8:proc
+externdef _SetFilePointerEx_stub@20:proc
+
+public __imp__GetFileSizeEx@8
+public __imp__SetFilePointerEx@20
+
+.data
+__imp__GetFileSizeEx@8    dd _GetFileSizeEx_stub@8
+__imp__SetFilePointerEx@20 dd _SetFilePointerEx_stub@20
+```
+
+`src/xp_compat_stubs.cpp` 提供 stub 实现（回退 XP API）：
+
+```cpp
+extern "C" BOOL WINAPI GetFileSizeEx_stub(HANDLE hFile, PLARGE_INTEGER lpFileSize)
+{
+    DWORD hi = 0;
+    DWORD lo = GetFileSize(hFile, &hi);   // XP 有
+    if (lo == INVALID_FILE_SIZE && GetLastError() != NO_ERROR) return FALSE;
+    if (lpFileSize) { lpFileSize->LowPart = lo; lpFileSize->HighPart = hi; }
+    return TRUE;
+}
+```
+
+链接顺序原理：**同名符号先到先得**——我们自己的 .obj 在链接命令行最前面
+（CMake 目标自身源文件），`__imp__GetFileSizeEx@8` 已被定义为数据符号 →
+`kernel32.lib` 的导入库成员（同时含 `_GetFileSizeEx@8` stub 与
+`__imp__GetFileSizeEx@8` IAT）根本不会被检索 → 无致命导入。
+
+> ⚠️ C++ 侧函数名**不能带前导下划线**：`extern "C"` 的 x86 装饰会再加一个
+> `_`，`_Foo` 会变成 `__Foo@N`，与 asm 引用不匹配。用 `Foo` → `_Foo@N`。
+>
+> ⚠️ MASM 必须用 `.model flat`（**不带** `stdcall`/`C` 语言模型）：带语言模型
+> 会给所有符号加下划线装饰，`__imp__X` 会变成 `___imp__X`。
+
+#### 踩坑记录（已废弃的失败方案）
+
+| 方案 | 失败原因 |
+|------|---------|
+| `#pragma comment(linker, "/ALTERNATENAME:__imp__GetFileSizeEx@8=...")` | `__imp_` 符号在 kernel32.lib 中**有定义**，不是未解析符号，alternatename 不触发 |
+| `/NODEFAULTLIB:kernel32.lib` | CMake VS 生成器把 `kernel32.lib` 硬编码进 vcxproj `AdditionalDependencies`，NODEFAULTLIB 管不了 |
+| VS 生成器 + `link_directories(BEFORE)` | VS 生成器的 `AdditionalLibraryDirectories` 覆盖 `LIB` 环境变量，BEFORE 失效 |
+| VS 生成器 + 替换 `CMAKE_CXX_STANDARD_LIBRARIES` | VS 生成器独立硬编码默认库，无视该变量 |
+| C++ 定义 `__imp_Foo` 函数指针变量 | C 链接装饰导致符号名不匹配（`___imp_` 三下划线） |
+| PE 二进制补丁（`tools/pe_patch_xp.py`，已删） | 项目定制、非通用，且杀软风险 |
+| UPX 压缩 | 360 实测误杀（2026-10-09）；且 UPX 时代版本虽能跑 XP，但不可发布 |
+
+**Ninja 生成器是本方案的前提**：它把 `CMAKE_CXX_STANDARD_LIBRARIES` 与
+`target_link_libraries` 原样拼进 `LINK_LIBRARIES`，链接顺序完全可控；
+而 VS 生成器会独立硬编码 `AdditionalDependencies`/`AdditionalLibraryDirectories`。
+
+#### 构建命令
+
+```bash
+# 需要 VS x86 开发环境（vcvarsall x86）+ ninja
+powershell -ExecutionPolicy Bypass -File tools/build_ninja_xp.ps1
+# 或（一键，内部处理 vcvarsall）：
+python tools/build_ninja_xp.py
+```
+
+### 2.5 体积与杀软
 
 - 编译优化：`/Os /Gy /GR- /EHsc- /OPT:REF`（`/GR-` 前提：全库无 `dynamic_cast`/`typeid`；
   `/EHsc-` 前提：全库无 `throw`）

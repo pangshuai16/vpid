@@ -82,11 +82,25 @@ endmacro()
 if(WIN32 AND NOT MINGW)
   # ===================== Windows: MSVC + SOUI5（静态库, 32 位, XP 兼容） =====================
   enable_language(RC)
+  enable_language(ASM_MASM)   # XP 兼容：xp_iat_stubs.asm 定义 __imp_ IAT 槽
   set(SOUI_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/third_party/soui)
   VPID_SET_SOUI_OPTIONS()
 
   # 全局使用静态运行时（/MT）
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+  # XP 兼容：仅 Ninja 生成器可精确控制链接器命令行。
+  # 不替换 CMake 默认标准库中的 kernel32.lib（SDK 版本提供正常 API 的导入条目），
+  # 而是用 /ALTERNATENAME 把 2 个致命的 Vista+ API 的 __imp_ IAT 引用
+  # 重定向到本地 stub 函数（xp_compat_stubs.cpp 中定义）。
+  if(CMAKE_GENERATOR STREQUAL "Ninja")
+    # /ALTERNATENAME:当链接器遇到未解析的 __imp__GetFileSizeEx@8 时，
+    # 用 _GetFileSizeEx_stub@8 的地址替代。
+    # 但 __imp_ 符号在导入库中有定义，alternatename 不会触发。
+    # 所以需要先 /NODEFAULTLIB 排除含 __imp_ 定义的 lib，再用 alternatename。
+    # 这里不排除 kernel32.lib（其他 API 需要它），而是用另一种方式：
+    # 在 xp_compat_stubs.cpp 中用 MASM .asm 直接定义 __imp_ 符号。
+  endif()
 
   # UTF-8 源码（SOUI 与本项目均含中文）
   if(MSVC)
@@ -103,9 +117,14 @@ if(WIN32 AND NOT MINGW)
     add_compile_options("$<$<CONFIG:Release>:/Gy>")
     add_compile_options("$<$<CONFIG:Release>:/GR->")
     add_compile_options("$<$<CONFIG:Release>:/EHsc->")
-    # /GL 程序级优化：让编译器生成 COMDAT 节，配合 /OPT:REF 做跨 TU 去死码
-    # 注意：这只是 COMDAT 布局优化，不是 /LTCG 全链接优化（后者会做代码生成，风险更大）
-    add_compile_options("$<$<CONFIG:Release>:/GL>")
+    # ⚠️ 禁用 /GL（2026-10-13 XP 实测回归）：
+    #   /GL 生成 COMDAT + /OPT:REF 做跨 TU 死码消除，会把 MSVC STL 的
+    #   locale/collate facet（std::sort / std::set<std::wstring> 等间接引用）
+    #   拉进最终导入表。SOUI 静态库编译时未定义 _WIN32_WINNT（见下方
+    #   add_compile_definitions 之前的旧写法），STL 按"最新 Windows"选择
+    #   CompareStringEx（Vista+）路径 → XP 启动即报"无法定位程序输入点
+    #   CompareStringEx 于 KERNEL32.dll"。/GL 仅多省约 44KB，收益远小于风险。
+    #   历史：commit 941d5ba 引入 /GL 后 XP 崩溃，v1.1.0 系列全部受影响。
   endif()
 
   # 生成 SOUI 编译期配置（souistd.h 依赖 <config.h>）
@@ -114,6 +133,21 @@ if(WIN32 AND NOT MINGW)
 
   # SOUI 头文件路径（必须在 add_subdirectory 之前注入）
   VPID_ADD_SOUI_INCLUDES()
+
+  # XP 目标宏必须**全局**（directory-scope），在挂载 SOUI 子目录之前设置：
+  #   soui4 / utilities4 / render-gdi / imgdecoder-stb 四个静态库会链接进最终
+  #   exe，它们内部大量使用 MSVC STL（std::sort / std::set<std::wstring> /
+  #   std::wstring_convert 等）。这些 STL 实现里 locale/collate facet 会按
+  #   _WIN32_WINNT 选 API：>= 0x0600 走 CompareStringEx（Vista+），否则走
+  #   CompareString（XP 有）。
+  #   旧写法用 target_compile_definitions(vpid_viewer PRIVATE ...) 只作用于
+  #   主可执行目标，SOUI 静态库编译时 _WIN32_WINNT 未定义（取 MSVC 默认 =
+  #   最新 Windows）→ facet 被编成 CompareStringEx 路径，一旦有 TU 引用到
+  #   该 facet（/GL + /OPT:REF 跨 TU 死码消除会放大这种引用），XP 上启动即报
+  #   "无法定位程序输入点 CompareStringEx 于 KERNEL32.dll"。
+  #   SOUI 的 SOUI_XP_TOOLSET 只加 _USING_V110_SDK71_，不设 _WIN32_WINNT，
+  #   所以这里必须自己兜底。
+  add_compile_definitions(_WIN32_WINNT=0x0501 WINVER=0x0501 _WIN32_IE=0x0501)
 
   # 复用 SOUI 官方编译器/链接器统一设置
   include(${SOUI_ROOT}/__cmake/internal_utils.cmake)
@@ -127,6 +161,8 @@ if(WIN32 AND NOT MINGW)
     ${CORE_SOURCES}
     src/core/windows_scanner.cpp
     src/core/windows_notifier.cpp
+    src/xp_compat_stubs.cpp       # XP 兼容：ProcessPrng stub（YY-Thunks 内部依赖）
+    src/xp_iat_stubs.asm          # XP 兼容：GetFileSizeEx/SetFilePointerEx IAT 槽重定向
   )
   target_include_directories(vpid_viewer PRIVATE src platform/resources)
   # RC 编译：相对路径（uires.rc2 / theme_sys_res.rc2）以资源目录与 ui 目录为基
@@ -141,16 +177,23 @@ if(WIN32 AND NOT MINGW)
     OBJECT_DEPENDS "${VPID_UI_RES_DEPENDS}"
   )
 
-  # 系统库：SetupAPI 设备枚举 + SOUI 基础库
+  # 系统库：YY-Thunks 改造版 kernel32（必须排在最前，抢在 SDK kernel32.lib 之前解析）
+  #   + SOUI 基础库 + SetupAPI + 常用系统库
+  # YY-Thunks kernel32.Lib 含 _WeakAlias 成员：把 FlsAlloc/CompareStringEx 等
+  # 7 个 Vista+ API 的直接调用弱别名到 YY-Thunks obj 的 thunk，阻止 SDK
+  # kernel32.lib 创建致命导入。
+  # 另 2 个 API（GetFileSizeEx/SetFilePointerEx）YY-Thunks 无 thunk，由
+  # src/xp_iat_stubs.asm 定义 __imp_ IAT 槽指向本地 stub 解决。
   target_link_libraries(vpid_viewer PRIVATE
+    "D:/DevTools/YY-Thunks/Lib/5.1.2600.0/x86/kernel32.Lib"
     soui4 utilities4 render-gdi imgdecoder-stb aupng
     setupapi advapi32
     imm32 msimg32 shlwapi version
     user32 gdi32
   )
 
-  # XP 目标：子系统版本 5.1 + _USING_V110_SDK71_
-  target_compile_definitions(vpid_viewer PRIVATE _WIN32_WINNT=0x0501 WINVER=0x0501 _WIN32_IE=0x0501)
+  # XP 目标宏（_WIN32_WINNT/WINVER/_WIN32_IE）已在上方 add_compile_definitions
+  # 全局设置，覆盖 soui4 等静态库；此处只保留仅作用于主目标的组件裁剪宏。
   # 组件裁剪：只保留 render-gdi + imgdecoder-stb
   target_compile_definitions(vpid_viewer PRIVATE "SCOM_MASK=(scom_mask_render_gdi|scom_mask_imgdecoder_stb)")
   if(MSVC)
@@ -169,11 +212,22 @@ if(WIN32 AND NOT MINGW)
       "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/platform/resources/app.manifest"
       "/MANIFEST:EMBED"
     )
-    # XP 兼容：把 MSVC UCRT 对 Vista+ API（GetNumaHighestNodeNumber / GetNumaProcessorNumber）
-    # 的导入引用，重定向到 MainDlg.cpp 中定义的本地 stub
-    target_link_options(vpid_viewer PRIVATE
-      "/ALTERNATENAME:__imp__GetNumaHighestNodeNumber@4=__imp_MyGetNumaHighestNodeNumber"
-      "/ALTERNATENAME:__imp__GetNumaProcessorNumber@4=__imp_MyGetNumaProcessorNumber"
+    # XP 兼容三层机制（2026-10-14 完整方案，零 Vista+ 导入）：
+    # 1. VC-LTL5：CRT 重定向到 msvcrt.dll（XP 自带）
+    # 2. YY-Thunks kernel32.Lib（_WeakAlias 成员）+ YY-Thunks obj：
+    #    覆盖 7 个 Vista+ API 的直接调用（Fls*4 / CompareStringEx /
+    #    FindFirstFileExW / InitializeCriticalSectionEx），链接器解析到
+    #    弱别名 thunk 而非 SDK 导入条目
+    # 3. src/xp_iat_stubs.asm：为 YY-Thunks 未覆盖的 2 个 API
+    #    （GetFileSizeEx / SetFilePointerEx）定义 __imp_ IAT 槽，
+    #    指向 xp_compat_stubs.cpp 的本地 stub（回退 XP API）
+    # 关键：YY-Thunks kernel32.Lib 必须排在 SDK kernel32.lib 之前
+    # （CMake 标准库在 LINK_LIBRARIES 末尾，target_link_libraries 在前）。
+    link_directories(BEFORE "D:/DevTools/YY-Thunks/Lib/5.1.2600.0/x86")
+    set(WindowsTargetPlatformMinVersion "5.1.2600.0")
+    include("${CMAKE_CURRENT_SOURCE_DIR}/VC-LTL helper for cmake.cmake")
+    target_link_libraries(vpid_viewer PRIVATE
+      "D:/DevTools/YY-Thunks/Lib/5.1.2600.0/x86/YY_Thunks_for_5.1.2600.0.obj"
     )
   endif()
 
@@ -295,6 +349,7 @@ if(TARGET vpid_viewer)
     find_program(VPID_PYTHON_EXECUTABLE NAMES python3 python)
   endif()
   if(VPID_PYTHON_EXECUTABLE)
+    # 固定 PE 时间戳（可复现哈希）
     add_custom_command(TARGET vpid_viewer POST_BUILD
       COMMAND ${VPID_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/pin_timestamp.py
               $<TARGET_FILE:vpid_viewer>

@@ -1,6 +1,21 @@
 #include <windows.h>
 #include <helper/STls.h>
 
+// ---- [XP 兼容补丁] InitOnceExecuteOnce 前向声明 ----
+// InitOnceExecuteOnce 是 Vista+ API。XP 目标下（_WIN32_WINNT=0x0501）系统头
+// synchapi.h 用 #if (_WIN32_WINNT >= 0x0600) 隐藏它的声明，本文件直调会报
+// C3861 "找不到标识符"。但 INIT_ONCE 结构体、INIT_ONCE_STATIC_INIT 与回调
+// 类型 PINIT_ONCE_FN 都定义在该门控之外，XP 目标下仍可见，故直接复用。
+// 实现由项目提供（MainDlg.cpp 的 XP 兼容桩段），此处只需声明可见。
+// 注意：回调返回 BOOL（PINIT_ONCE_FN），不是 PVOID。
+#if defined(_WIN32) && defined(_WIN32_WINNT) && (_WIN32_WINNT < 0x0600)
+extern "C" BOOL WINAPI InitOnceExecuteOnce(
+    PINIT_ONCE InitOnce,
+    PINIT_ONCE_FN OINIT_function,
+    PVOID Parameter,
+    PVOID *lpResult);
+#endif
+
 SNSBEGIN
 
 // Number of TLS slots to allocate at once when growing the per-thread array.

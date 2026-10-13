@@ -28,9 +28,7 @@ venv/
 Thumbs.db
 
 # 本地构建 / 诊断产物（非源码）
-build-msvc*/
-build-ci-test*/
-build-zig*/
+build*/
 .build-release/
 dist/
 *.log

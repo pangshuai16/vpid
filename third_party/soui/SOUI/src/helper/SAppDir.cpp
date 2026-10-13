@@ -37,6 +37,13 @@ BOOL SOUI_EXP SSelectFolder(TCHAR szPath[MAX_PATH], LPCTSTR pszTitle, LPCTSTR in
     SStringT defPath(initPath);
     SStringT ret;
     bool bNewDialog = false;
+    // ---- [XP 兼容补丁] IFileOpenDialog / FOS_PICKFOLDERS 是 Vista+ API。
+    // XP 目标下（_WIN32_WINNT=0x0501）shobjidl.h 隐藏了 CShellFileOpenDialog 与
+    // FOS_PICKFOLDERS 的声明，编译即报 C2065。本项目的目标宏是全局的（见
+    // CMakeLists.txt 顶部 add_compile_definitions），故这里必须自己门控，
+    // XP 下让 bNewDialog 保持 false，走下方 CFolderDialog（SHBrowseForFolder）
+    // 回退分支——功能等价（都是系统"浏览文件夹"对话框），且 XP 可用。
+#if (_WIN32_WINNT >= 0x0600)
     do
     {
         CShellFileOpenDialog dlg;
@@ -75,6 +82,7 @@ BOOL SOUI_EXP SSelectFolder(TCHAR szPath[MAX_PATH], LPCTSTR pszTitle, LPCTSTR in
             ret = S_CW2T(strDir);
         }
     } while (false);
+#endif
     if (!bNewDialog)
     {
         CFolderDialog folderDialog(0, pszTitle);
