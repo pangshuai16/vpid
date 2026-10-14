@@ -197,7 +197,7 @@ python tools/build_release.py
   静态链接后 strip，360 杀软实测放行
 - **UPX 禁用**：`--best` / `--lzma` / 极端压缩在 360 下实测被查杀（2026-10-09
   中性文件名对照确认拦的是 UPX 压缩本身）
-- 版本信息嵌入：`platform/resources/app.rc` 中 `VS_VERSION_INFO`（1.1.0.0）+
+- 版本信息嵌入：`platform/resources/app.rc` 中 `VS_VERSION_INFO`（1.3.0.0）+
   `platform/resources/app.manifest`（`asInvoker` + DPI 感知）
 
 ## 3. Linux 兼容性

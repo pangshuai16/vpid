@@ -95,9 +95,9 @@ python tools/build_release.py --only linux-arm64 # 只构建 Linux arm64
 
 ```bash
 python tools/release_github.py \
-  --tag v1.1.0 \
-  --title "v1.1.0" \
-  --notes-file RELEASE_NOTES_v1.1.0.md
+  --tag v1.3.0 \
+  --title "v1.3.0" \
+  --notes-file RELEASE_NOTES_v1.3.0.md
 ```
 
 完整发布流程见 [RELEASE.md](RELEASE.md)，跨平台兼容性细节见
@@ -106,9 +106,13 @@ python tools/release_github.py \
 ### 手动构建（分平台）
 
 ```bash
-# Windows (MSVC + SOUI5，XP 兼容；在 vcvars32.bat 之后运行)
-cmake -S . -B build-msvc -G "Visual Studio 17 2022" -A Win32
-cmake --build build-msvc --config Release -- /m
+# Windows (MSVC + SOUI5，XP SP2 兼容；在 vcvarsall.bat x86 之后运行)
+#   * 必须用 Ninja 生成器：XP 三层机制依赖链接顺序可控——VS 生成器会把 SDK
+#     kernel32.lib 硬编码到 YY-Thunks 之前，_WeakAlias 失效（见 XP_COMPATIBILITY.md §2.4）。
+#   * 构建后建议跑导入审计（应为零致命 Vista+ API）：
+#       python tools/check_imports.py build/vpid_viewer.exe
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 
 # Linux 原生 (SOUI5 + swinx；需 cairo/fontconfig/xcb 开发包，本机 Linux 环境)
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
