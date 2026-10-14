@@ -200,29 +200,32 @@ python tools/build_release.py
 - 版本信息嵌入：`platform/resources/app.rc` 中 `VS_VERSION_INFO`（1.3.0.0）+
   `platform/resources/app.manifest`（`asInvoker` + DPI 感知）
 
-### 2.6 UI 字体（XP ~ Win11 统一黑体）
+### 2.6 UI 字体与按钮宽度（XP 显示适配）
 
-**问题**（2026-10-14 XP 实测）：按钮「停止刷新」「重置基准」文字换行、下一行被裁切，
-而 2 字按钮（复制/刷新/退出）正常。
+**问题**（2026-10-14 XP 实测）：按钮「停止刷新」「重置基准」文字被横向裁切
+（按钮宽度确实随文字变化，但比实际需要小约 12%）。
 
-**根因**：`src/ui/uires/uidef/init.xml` 原先 deffont 与各 class 都写死 `face:Segoe UI`。
-**XP 没有 Segoe UI**（Vista 才引入）——字体名不存在时 GDI 会创建"替代字体"，其
-**中文测宽与实际渲染宽度不一致**，于是 wrapContent 控件（按钮）按偏小的测宽算出宽度，
-文字放不下就换行、被按钮高度裁切。
-（SOUI 的 `SFontPool::_SetDefFontInfo` 本来会对 deffont 的 face 做有效性校验并回退
-内置默认「宋体」，**但 class 写死 face 会绕过这个校验**。）
+**两个叠加原因与修复**：
 
-**修复**：
-1. `deffont` 改为 **`face:SimHei`**（黑体）—— XP ~ Win11 都自带、含完整中文的
-   无衬线字体，测量与渲染在任何系统上一致；
-2. 各 class 只声明 `size`/`weight`，**face 一律继承 deffont**（不再写死）。
+1. **字体缺失** — `init.xml` 原先 deffont 与各 class 都写死 `face:Segoe UI`。
+   XP 没有 Segoe UI（Vista 引入），字体名不存在时 GDI 创建"替代字体"，
+   **中文测宽 ≠ 实际渲染宽度**。
+   → **修复**：deffont 统一为 `face:宋体`（XP ~ Win11 都自带的**最基础**中文字体；
+   黑体在部分精简版 XP 缺失，不可靠），各 class 只声明 `size`/`weight`，face 继承 deffont
+   （写死 face 会绕过 `SFontPool::_SetDefFontInfo` 的字体有效性校验）。
 
-**取舍**：放弃新系统的 Segoe UI / 微软雅黑观感，换取全 Windows 版本 UI 完全一致
-（中文字形与控件尺寸都一致）。Linux 侧 deffont 显式用 fontconfig 别名 `sans-serif`。
+2. **wrapContent 测宽偏小** — 即使字体可用，XP 上按钮 wrapContent 算出的宽度仍偏小。
+   → **修复**：按钮宽度改为**固定 px**（`92` = 4 字 / `64` = 2 字 / `72` = 主按钮；
+   扣掉 padding 后文字区 64/36/36px，足以容纳 13~16px/字的中文），不再依赖文字测量。
 
-**为何不内嵌字体**：全量中文字体体积大（黑体 9.2 MB / 宋体 17.4 MB / 微软雅黑 18.7 MB），
-内嵌会让 1.6 MB 的产物膨胀数倍；子集化又有"设备名/路径含生僻字"的缺字风险。
-系统字体方案零体积、无缺字。
+**⚠️ 与之相关的构建坑（务必牢记，曾导致多次"修复无效"）**：`app.rc` 的资源依赖曾写成
+`file(GLOB "src/ui/uires/**")` —— 该写法展开出的是**目录**，而目录 mtime 只在**增删文件**时
+变化，**修改目录内的 XML 不会触发 RC 重编** → 资源改动完全不进产物（构建却显示"成功"，
+exe 内始终是旧 XML：`face:Segoe UI` / `size="-1,34"`）。
+必须用 **`file(GLOB_RECURSE ...)`** 取**文件列表**（`CMakeLists.txt` 中 `VPID_RES_FILES`）。
+验证方法：改一个 XML 值 → 构建 → 在 exe 内搜该字符串（XML 以 **UTF-8** 存储，别按 UTF-16 搜）。
+
+Linux 侧 deffont 用 fontconfig 通用别名 `sans-serif`。
 
 ## 3. Linux 兼容性
 

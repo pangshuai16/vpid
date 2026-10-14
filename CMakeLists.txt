@@ -166,15 +166,22 @@ if(WIN32 AND NOT MINGW)
   )
   target_include_directories(vpid_viewer PRIVATE src platform/resources)
   # RC 编译：相对路径（uires.rc2 / theme_sys_res.rc2）以资源目录与 ui 目录为基
-  # OBJECT_DEPENDS：uires XML 变化时强制重编 app.rc（Ninja 不跟踪 RC 的 #include 依赖）
-  file(GLOB VPID_UI_RES_DEPENDS
+  # ⚠️ 依赖必须列**文件**，不能列目录：目录的 mtime 只在增删文件时变化，修改目录内的
+  #    XML 不会触发 RC 重编 —— 曾因此导致 init.xml / dlg_main.xml 的改动完全不进产物
+  #    （2026-10-14 实测：exe 内仍是旧的 face:Segoe UI / size="-1,34"，构建"成功"但资源是旧的）。
+  #    file(GLOB "dir/**") 展开出的是**目录**，必须用 GLOB_RECURSE 才能拿到文件列表。
+  file(GLOB_RECURSE VPID_RES_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ui/uires/*"
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/resources/theme_sys_res/*"
+  )
+  list(APPEND VPID_RES_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ui/uires.rc2"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/ui/uires/**"
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/resources/theme_sys_res.rc2"
   )
   set_source_files_properties(platform/resources/app.rc PROPERTIES
     LANGUAGE RC
     INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/platform/resources;${CMAKE_CURRENT_SOURCE_DIR}/src/ui"
-    OBJECT_DEPENDS "${VPID_UI_RES_DEPENDS}"
+    OBJECT_DEPENDS "${VPID_RES_FILES}"
   )
 
   # 系统库：YY-Thunks 改造版 kernel32（必须排在最前，抢在 SDK kernel32.lib 之前解析）

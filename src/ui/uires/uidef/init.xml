@@ -1,15 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <UIDEF>
-  <!-- 全局默认字体：黑体（SimHei）13 —— 在 Windows XP ~ 11 上完全统一。
-       选型依据（2026-10-14 XP 实测）：XP 没有 Segoe UI（Vista 引入）与微软雅黑。
-       当字体名不存在时，GDI 会创建"替代字体"，其**中文测宽与实际渲染宽度不一致**，
-       导致按钮等 wrapContent 控件文字换行/被裁切（现象：停止刷新 / 重置基准 显示不全）。
-       黑体是 XP ~ Win11 都自带、且含完整中文的无衬线字体 —— 测量与渲染在任何系统上一致，
-       从根源消除"字体缺失"这一类差异；代价是放弃新系统的雅黑/Segoe UI 观感。
+  <!-- 全局默认字体：宋体（SimSun）13 —— 在 Windows XP ~ 11 上完全统一。
+       选型依据（2026-10-14 XP 实测）：字体名不存在时 GDI 会创建"替代字体"，其
+       **中文测宽与实际渲染宽度不一致**，导致按钮等 wrapContent 控件文字被裁切。
+       曾用黑体（SimHei），但部分精简版 XP 未安装黑体，替换后问题依旧；
+       **宋体是任何 Windows 版本都自带的最基础中文字体**（XP ~ Win11 全覆盖），最稳。
        ⚠️ 各 class 只声明 size/weight，**face 一律继承此处**：写死 face 会绕过
-       SFontPool::_SetDefFontInfo 的字体有效性校验，重新引入"字体缺失→测量不一致"问题。
-       Linux 用 fontconfig 通用别名 sans-serif（系统默认无衬线）。 -->
-  <deffont value="face:SimHei,size:13">
+       SFontPool::_SetDefFontInfo 的字体有效性校验，重新引入"字体缺失"问题。
+       Linux 用 fontconfig 通用别名 sans-serif。 -->
+  <deffont value="face:宋体,size:13">
     <linux value="face:sans-serif,size:13"/>
   </deffont>
 

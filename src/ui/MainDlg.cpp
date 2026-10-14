@@ -272,6 +272,10 @@ void MainDlg::OnClose() {
     if (notifier_) notifier_->Stop();
     SNativeWnd::KillTimer(kTimerAuto);
     DestroyWindow();
+    // 必须 PostQuitMessage：SApplication::Run 内部是 pMsgLoop->Run()（GetMessage 循环），
+    // 仅 DestroyWindow 不会让 GetMessage 返回 0 —— 窗口没了但进程/消息循环仍在。
+    // 标题栏 X 与"退出"按钮都走这里，统一收口。
+    ::PostQuitMessage(0);
 }
 
 void MainDlg::OnSize(UINT nType, CSize size) {

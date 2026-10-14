@@ -57,23 +57,30 @@
       </window>
       <!-- 弹性空隙：把按钮组推到右侧 -->
       <window size="0,0" weight="1"/>
-      <!-- 右：操作组。层级——只有"刷新"是实心主按钮，其余为带描边的幽灵；
-           停止/恢复互斥（display=0 隐藏时不占位） -->
+      <!-- 操作组。层级——只有"刷新"是实心主按钮，其余为带描边的幽灵；
+           停止/恢复互斥（display=0 隐藏时不占位）
+           ⚠️ 宽度一律用**固定 px**，不用 wrapContent(-1)：XP 实测 wrapContent 算出的宽度
+           比实际渲染小约 12%（老 GDI 的中文测宽差异），4 字按钮文字被横向裁切
+           （"停止刷新"显示不全）。固定宽度不依赖任何文字测量：
+             92 = 4 字（92-14×2 = 64px 文字区，可容纳 13~16px/字 × 4）
+             64 = 2 字（64-14×2 = 36px）
+             72 = 主按钮（padding 18，72-18×2 = 36px） -->
       <button name="btn_stop_refresh"   text="停止刷新" class="cls_btn_danger"  skin="btn_danger"
-              size="-1,34" padding="14,0,14,0"/>
+              size="92,34" padding="14,0,14,0"/>
       <button name="btn_auto_refresh"   text="恢复刷新" class="cls_btn_accent"  skin="btn_accent"
-              size="-1,34" padding="14,0,14,0" visible="0" display="0"/>
+              size="92,34" padding="14,0,14,0" visible="0" display="0"/>
       <button name="btn_baseline"       text="重置基准" class="cls_btn_ghost"   skin="btn_ghost"
-              size="-1,34" padding="14,0,14,0"/>
+              size="92,34" padding="14,0,14,0"/>
       <button name="btn_copy"           text="复制"     class="cls_btn_ghost"   skin="btn_ghost"
-              size="-1,34" padding="14,0,14,0"/>
+              size="64,34" padding="14,0,14,0"/>
       <button name="btn_manual_refresh" text="刷新"     class="cls_btn_primary" skin="btn_primary"
-              size="-1,34" padding="18,0,18,0"/>
+              size="72,34" padding="18,0,18,0"/>
       <!-- 退出：应用内显式出口，放在最右。系统标题栏虽自带 X，但不少 Linux 桌面环境
            （GNOME 面板最小化、部分 WM 隐藏非客户区按钮）下点到 X 不顺手；运维也习惯
-           直接在界面里找"退出"。幽灵样式，不与实心主按钮抢视觉重量 -->
-      <button name="btn_exit" text="退出" class="cls_btn_ghost" skin="btn_ghost"
-              size="-1,34" padding="14,0,14,0"/>
+           直接在界面里找"退出"。语义上是"结束会话"——用危险色（红边红字）与
+           其余操作区分（2026-10-14 用户要求）。 -->
+      <button name="btn_exit" text="退出" class="cls_btn_danger" skin="btn_danger"
+              size="64,34" padding="14,0,14,0"/>
     </window>
     <!-- 应用栏底部分隔线 -->
     <window size="-2,1" colorBkgnd="@color/hairline"/>
