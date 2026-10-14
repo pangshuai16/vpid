@@ -177,11 +177,17 @@ extern "C" BOOL WINAPI GetFileSizeEx_stub(HANDLE hFile, PLARGE_INTEGER lpFileSiz
 #### 构建命令
 
 ```bash
-# 需要 VS x86 开发环境（vcvarsall x86）+ ninja
-powershell -ExecutionPolicy Bypass -File tools/build_ninja_xp.ps1
-# 或（一键，内部处理 vcvarsall）：
-python tools/build_ninja_xp.py
+# Windows x86 单平台（内部处理 vcvarsall x86 + Ninja，构建后自动跑 XP 导入硬门禁）
+python tools/build_release.py --only windows
+
+# 三平台统一（发布用）
+python tools/build_release.py
 ```
+
+> 探索期脚本 `tools/build_ninja_xp.py`、`tools/build_ninja_xp.ps1`、`tools/verify_pe.bat`
+> 已删除：Ninja 构建逻辑并入 `tools/build_release.py`，导入审计并入 `tools/check_imports.py`
+> （并作为硬门禁被 `tools/build_release.py` 与 `tools/verify_release.py` 调用——
+> 发现致命 Vista+ API 时退出码非 0，直接卡住发布）。
 
 ### 2.5 体积与杀软
 

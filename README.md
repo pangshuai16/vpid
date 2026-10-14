@@ -38,12 +38,15 @@ Ubuntu 12.04+）共享同一套 SOUI5 UI 层**，平台差异只收敛在 USB �
 ## 技术栈
 
 - **语言**: C++17
-- **构建**: CMake ≥ 3.16 + Ninja / Visual Studio 生成器
+- **构建**: CMake ≥ 3.16 + **Ninja**（Windows 产物必须用 Ninja——
+  XP 兼容三层机制依赖链接顺序完全可控，VS 生成器不满足）
 - **UI 层（跨平台）**: **SOUI5.3** DirectUI 框架（vendored 于 `third_party/soui`，
   版本 5.3.1.2）
   - Windows 渲染：`Render_Gdi` + `ImgDecoder_Stb`（XP 兼容，零外部依赖）
   - Linux 渲染：swinx（xcb + Cairo，SOUI5 官方跨平台方案）
-  - Windows：`/MT` 静态 CRT，子系统版本 5.01，导入表无 Vista+ API
+  - Windows：**VC-LTL5 msvcrt 模式**（CRT 重定向到 XP 自带 `msvcrt.dll`）
+    + YY-Thunks + MASM IAT stub 三层机制，子系统版本 5.01，
+    **导入表零致命 Vista+ API**（见 `XP_COMPATIBILITY.md`）
   - **UI 资源内嵌**：Windows 编入 PE 资源段；Linux 编入 ELF
     （`_binary_soui_coff_o_*` 弱符号引用）——三平台均单文件自包含
 - **USB 扫描**:

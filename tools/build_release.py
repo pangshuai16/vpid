@@ -64,22 +64,29 @@ def build_windows_x86(cmake, ninja):
     if not os.path.exists(vcvars):
         raise RuntimeError(f"找不到 vcvarsall.bat: {vcvars}")
     bdir = os.path.join(BUILD, "win-x86")
+    # 不主动清空构建目录：CMake 增量重配即可（app.rc/源码变化会触发重编译）。
+    # 若曾用 VS 生成器构建过同一目录，需手动删除 .build-release/win-x86 后再跑
+    # （生成器缓存不兼容；脚本内不做 rmtree，避免与安全删除策略冲突）。
     os.makedirs(bdir, exist_ok=True)
-    # 用 Visual Studio 生成器（CMake vs_link_exe wrapper 对 Ninja 生成器与
-    # /MANIFEST:EMBED 不兼容——mt.exe 报"No manifest inputs"；VS 生成器原生支持）。
-    # vcvarsall x86 注入 MSVC 环境后跑 cmake + msbuild。
+    # XP 兼容三层机制以 Ninja 生成器为前提：VS 生成器把 SDK kernel32.lib 硬编码进
+    # AdditionalDependencies 末尾，YY-Thunks kernel32.Lib 无法排到它前面，_WeakAlias
+    # 弱别名失效；Ninja 生成器的 LINK_LIBRARIES 顺序完全可控（见 XP_COMPATIBILITY.md 2.4）。
+    # /MANIFEST:EMBED 在当前 CMake + Ninja 下已验证正常（RT_MANIFEST 正确嵌入）。
     # 注意：批处理必须纯 ASCII（无中文注释，避免 GBK 乱码被当成命令执行）。
+    ninja_dir = os.path.dirname(os.path.abspath(ninja))
     bat = os.path.join(bdir, "build_win.bat")
     with open(bat, "w", encoding="ascii") as f:
         f.write(
             "@echo off\r\n"
             'call "{vcvars}" x86 >nul\r\n'
             "if errorlevel 1 exit /b 1\r\n"
-            '"{cmake}" -S "{repo}" -B "{bdir}" -G "Visual Studio 17 2022" -A Win32\r\n'
+            'set "PATH={ninja_dir};%PATH%"\r\n'
+            '"{cmake}" -S "{repo}" -B "{bdir}" -G Ninja -DCMAKE_BUILD_TYPE=Release\r\n'
             "if errorlevel 1 exit /b 1\r\n"
-            '"{cmake}" --build "{bdir}" --config Release\r\n'
+            '"{cmake}" --build "{bdir}"\r\n'
             "if errorlevel 1 exit /b 1\r\n".format(
                 vcvars=vcvars,
+                ninja_dir=ninja_dir.replace("/", "\\"),
                 cmake=cmake.replace("/", "\\"),
                 repo=REPO.replace("/", "\\"),
                 bdir=bdir.replace("/", "\\"),
@@ -88,9 +95,15 @@ def build_windows_x86(cmake, ninja):
     r = run(["cmd", "/c", bat])
     if r.returncode:
         raise RuntimeError("Windows MSVC 构建失败")
-    exe = os.path.join(bdir, "Release", "vpid_viewer.exe")
+    exe = os.path.join(bdir, "vpid_viewer.exe")
     if not os.path.exists(exe):
         raise RuntimeError(f"Windows 产物缺失: {exe}")
+    # XP 兼容硬门禁：零致命 Vista+ 导入（check_imports.py 发现致命 API 时退出码非 0）
+    chk = os.path.join(REPO, "tools", "check_imports.py")
+    if os.path.exists(chk):
+        r = run([sys.executable, chk, exe])
+        if r.returncode:
+            raise RuntimeError("XP 导入检查失败：产物含致命 Vista+ API，拒绝发布")
     out = os.path.join(DIST, "vpid_viewer_windows_x86.exe")
     shutil.copy2(exe, out)
     print(f"  -> {out} ({os.path.getsize(out)} bytes)")

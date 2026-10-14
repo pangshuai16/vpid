@@ -262,6 +262,8 @@ def main():
     print(f"Fatal Vista+ APIs: {len(fatal_found)}")
     if fatal_found:
         print(f"  -> {', '.join(fatal_found)}")
+        # 门禁：发现致命 Vista+ API → 非 0 退出（供 build_release.py 卡住发布）
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()

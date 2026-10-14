@@ -13,6 +13,7 @@ vpid Release 产物验证脚本
 import os
 import re
 import struct
+import subprocess
 import sys
 import zlib  # noqa: F401 (占位, 保持一致性)
 
@@ -28,6 +29,21 @@ def check_pe(path):
     assert machine == 0x14C, f"不是 x86 架构 (machine=0x{machine:x})"
     size = os.path.getsize(path)
     print(f"  [OK] {os.path.basename(path)}: PE x86, {size} bytes")
+
+
+def check_pe_xp(path):
+    """Windows 产物 XP 致命导入门禁（调 check_imports.py；退出码 0 = 零致命 Vista+ API）。"""
+    chk = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_imports.py")
+    if not os.path.exists(chk):
+        print(f"  [SKIP] {os.path.basename(path)}: 缺 check_imports.py，跳过 XP 门禁")
+        return
+    r = subprocess.run([sys.executable, chk, path], capture_output=True)
+    out = r.stdout.decode("utf-8", errors="replace")
+    line = next((ln.strip() for ln in out.splitlines() if ln.startswith("Fatal Vista+ APIs:")), "")
+    status = "OK" if r.returncode == 0 else "FAIL"
+    print(f"  [{status}] {os.path.basename(path)}: XP 导入门禁 {line or '(无输出)'}")
+    if r.returncode:
+        raise AssertionError("含致命 Vista+ API（XP 不兼容）")
 
 
 def parse_elf_sections(data):
@@ -156,13 +172,17 @@ def main():
         "vpid_viewer_linux_amd64": lambda p: check_elf_linux(p, "amd64"),
         "vpid_viewer_linux_arm64": lambda p: check_elf_linux(p, "arm64"),
     }
+    # Windows 产物：XP 致命导入门禁（零 Vista+ API）
+    xp_checks = {
+        "vpid_viewer_windows_x86.exe": check_pe_xp,
+    }
     # Linux 产物必须内嵌 UI 资源（单二进制自包含，无需外置 uires/）
     embedded = {
         "vpid_viewer_linux_amd64": check_elf_embedded_res,
         "vpid_viewer_linux_arm64": check_elf_embedded_res,
     }
     ok = True
-    for group in (files, embedded):
+    for group in (files, xp_checks, embedded):
         for name, fn in group.items():
             path = os.path.join(dist, name)
             if not os.path.exists(path):

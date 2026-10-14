@@ -10,6 +10,8 @@ Makefile
 *.lib
 *.so
 *.exe
+__pycache__/
+*.pyc
 
 # 环境与密钥
 .env

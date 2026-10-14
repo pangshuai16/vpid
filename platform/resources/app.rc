@@ -12,8 +12,8 @@
 #include <winver.h>
 
 VS_VERSION_INFO VERSIONINFO
-  FILEVERSION     1,1,0,0
-  PRODUCTVERSION  1,1,0,0
+  FILEVERSION     1,3,0,0
+  PRODUCTVERSION  1,3,0,0
   FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
   FILEFLAGS       0x0L
   FILEOS          VOS__WINDOWS32
@@ -26,12 +26,12 @@ BEGIN
     BEGIN
       VALUE "CompanyName",      "Tu\0"
       VALUE "FileDescription",  "VPid Viewer\0"
-      VALUE "FileVersion",      "1.1.0.0\0"
+      VALUE "FileVersion",      "1.3.0.0\0"
       VALUE "InternalName",     "vpid_viewer\0"
       VALUE "LegalCopyright",   "Copyright (c) 2026 Tu\0"
       VALUE "OriginalFilename", "vpid_viewer.exe\0"
       VALUE "ProductName",      "VPid Viewer\0"
-      VALUE "ProductVersion",   "1.1.0.0\0"
+      VALUE "ProductVersion",   "1.3.0.0\0"
     END
   END
   BLOCK "VarFileInfo"

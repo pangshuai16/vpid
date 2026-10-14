@@ -46,9 +46,9 @@ python tools/build_release.py --dist out/           # 指定输出目录
 
 ```bash
 python tools/release_github.py \
-  --tag v1.1.0 \
-  --title "v1.1.0" \
-  --notes-file RELEASE_NOTES_v1.1.0.md
+  --tag v1.3.0 \
+  --title "v1.3.0" \
+  --notes-file RELEASE_NOTES_v1.3.0.md
 ```
 
 脚本会：
@@ -58,7 +58,10 @@ python tools/release_github.py \
 4. 上传 `dist/` 下三个单文件产物，校验大小
 
 Release 说明按版本归档为 `RELEASE_NOTES_vX.Y.Z.md`（`RELEASE_NOTES_v1.0.0.md`
-~ `RELEASE_NOTES_v1.1.0.md`）。`--notes-file` 传对应版本的文件。
+~ `RELEASE_NOTES_v1.3.0.md`）。`--notes-file` 传对应版本的文件。
+
+> 注意：仓库里历史 tag `v1.2.0` 属于**旧 Python/Fyne 版项目**（2026-05 发布，
+> 资产 8.9 MB，Changelog 指向 `vpid_fyne` 仓库），当前 C++ 项目已跳过该版本号。
 
 ### 版本号约定（语义化版本）
 
@@ -67,16 +70,21 @@ Release 说明按版本归档为 `RELEASE_NOTES_vX.Y.Z.md`（`RELEASE_NOTES_v1.0
 
 ### 发布前检查清单
 
-1. `python tools/build_release.py` 全绿（无 FAIL）
-2. `python tools/verify_release.py` 全部通过
+1. `python tools/build_release.py` 全绿（无 FAIL；Windows 分支内置 XP 导入硬门禁）
+2. `python tools/verify_release.py` 全部通过（含 Windows XP 致命导入检查）
 3. `git status` 干净（或已提交）
-4. Windows 目标机注意：`/MT` 静态 CRT，XP 裸机可运行；Linux 目标机注意：需 USB 访问权限
+4. Windows 目标机注意：VC-LTL5 msvcrt 模式（CRT 走系统自带 `msvcrt.dll`），
+   XP SP2 裸机可运行；Linux 目标机注意：需 USB 访问权限
 
 ## 三、构建细节
 
-- **Windows**：MSVC `/Os /Gy /GR- /EHsc- /OPT:REF` + `/MT` 静态 CRT +
-  `/SUBSYSTEM:WINDOWS,5.01`（XP 兼容），`tools/pin_timestamp.py` 固定 PE
-  时间戳实现可复现构建。
+- **Windows**：**Ninja 生成器**（XP 三层机制的前置条件，见 `XP_COMPATIBILITY.md` §2.4）
+  + MSVC `/Os /Gy /GR- /EHsc- /OPT:REF` + `/SUBSYSTEM:WINDOWS,5.01`。
+  CRT 走 **VC-LTL5 msvcrt 模式**（`WindowsTargetPlatformMinVersion=5.1.2600.0`，
+  重定向到 XP 自带 `msvcrt.dll`）+ YY-Thunks（Vista+ Win32 API 弱别名）+
+  `src/xp_iat_stubs.asm`（`__imp_` IAT 槽兜底）→ **零致命 Vista+ 导入**。
+  构建后自动跑 `tools/check_imports.py` 硬门禁（有致命 API 即失败）；
+  `tools/pin_timestamp.py` 固定 PE 时间戳实现可复现构建。
 - **Linux**：zig 0.17.0 `-target x86_64-linux-gnu.2.17` / `aarch64-linux-gnu.2.17`，
   glibc floor 2.17 → CentOS 7 / RHEL 7 / Ubuntu 12.04+ 可运行。
   系统库 `libxcb` / `libXau` / `libuuid` 从 `tools/linux-sysroot/{lib,lib-arm64}/`
