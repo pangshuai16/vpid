@@ -200,6 +200,30 @@ python tools/build_release.py
 - 版本信息嵌入：`platform/resources/app.rc` 中 `VS_VERSION_INFO`（1.3.0.0）+
   `platform/resources/app.manifest`（`asInvoker` + DPI 感知）
 
+### 2.6 UI 字体（XP ~ Win11 统一黑体）
+
+**问题**（2026-10-14 XP 实测）：按钮「停止刷新」「重置基准」文字换行、下一行被裁切，
+而 2 字按钮（复制/刷新/退出）正常。
+
+**根因**：`src/ui/uires/uidef/init.xml` 原先 deffont 与各 class 都写死 `face:Segoe UI`。
+**XP 没有 Segoe UI**（Vista 才引入）——字体名不存在时 GDI 会创建"替代字体"，其
+**中文测宽与实际渲染宽度不一致**，于是 wrapContent 控件（按钮）按偏小的测宽算出宽度，
+文字放不下就换行、被按钮高度裁切。
+（SOUI 的 `SFontPool::_SetDefFontInfo` 本来会对 deffont 的 face 做有效性校验并回退
+内置默认「宋体」，**但 class 写死 face 会绕过这个校验**。）
+
+**修复**：
+1. `deffont` 改为 **`face:SimHei`**（黑体）—— XP ~ Win11 都自带、含完整中文的
+   无衬线字体，测量与渲染在任何系统上一致；
+2. 各 class 只声明 `size`/`weight`，**face 一律继承 deffont**（不再写死）。
+
+**取舍**：放弃新系统的 Segoe UI / 微软雅黑观感，换取全 Windows 版本 UI 完全一致
+（中文字形与控件尺寸都一致）。Linux 侧 deffont 显式用 fontconfig 别名 `sans-serif`。
+
+**为何不内嵌字体**：全量中文字体体积大（黑体 9.2 MB / 宋体 17.4 MB / 微软雅黑 18.7 MB），
+内嵌会让 1.6 MB 的产物膨胀数倍；子集化又有"设备名/路径含生僻字"的缺字风险。
+系统字体方案零体积、无缺字。
+
 ## 3. Linux 兼容性
 
 ### 3.1 glibc floor 2.17

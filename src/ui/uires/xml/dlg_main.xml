@@ -113,7 +113,7 @@
                   hotTrack="1" multiSelection="0">
           <headerStyle align="left" itemSwapEnable="0" fixWidth="0" sortHeader="1" text-x="8"
                        itemSkin="head_item" colorBkgnd="@color/surface2"
-                       colorText="@color/textSecondary" font="face:Segoe UI,size:13,weight:600">
+                       colorText="@color/textSecondary" font="size:13,weight:600">
             <items>
               <item width="56" align="left">VID</item>
               <item width="56" align="left">PID</item>
@@ -151,7 +151,7 @@
                   hotTrack="1" multiSelection="0">
           <headerStyle align="left" itemSwapEnable="0" fixWidth="0" sortHeader="1" text-x="8"
                        itemSkin="head_item" colorBkgnd="@color/surface2"
-                       colorText="@color/textSecondary" font="face:Segoe UI,size:13,weight:600">
+                       colorText="@color/textSecondary" font="size:13,weight:600">
             <items>
               <item width="52" align="left">状态</item>
               <item width="56" align="left">VID</item>

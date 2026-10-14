@@ -1,7 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <UIDEF>
-  <!-- 全局默认字体：Segoe UI 13（XP 无则回退 Tahoma，Linux 回退系统 UI 字体） -->
-  <deffont value="face:Segoe UI,size:13"/>
+  <!-- 全局默认字体：黑体（SimHei）13 —— 在 Windows XP ~ 11 上完全统一。
+       选型依据（2026-10-14 XP 实测）：XP 没有 Segoe UI（Vista 引入）与微软雅黑。
+       当字体名不存在时，GDI 会创建"替代字体"，其**中文测宽与实际渲染宽度不一致**，
+       导致按钮等 wrapContent 控件文字换行/被裁切（现象：停止刷新 / 重置基准 显示不全）。
+       黑体是 XP ~ Win11 都自带、且含完整中文的无衬线字体 —— 测量与渲染在任何系统上一致，
+       从根源消除"字体缺失"这一类差异；代价是放弃新系统的雅黑/Segoe UI 观感。
+       ⚠️ 各 class 只声明 size/weight，**face 一律继承此处**：写死 face 会绕过
+       SFontPool::_SetDefFontInfo 的字体有效性校验，重新引入"字体缺失→测量不一致"问题。
+       Linux 用 fontconfig 通用别名 sans-serif（系统默认无衬线）。 -->
+  <deffont value="face:SimHei,size:13">
+    <linux value="face:sans-serif,size:13"/>
+  </deffont>
 
   <!-- 尺寸单位：逻辑像素（与原版一致） -->
   <unit defUnit="dp"/>
@@ -35,27 +45,27 @@
     <class name="cls_dlg_frame" colorBkgnd="@color/canvas"/>
 
     <!-- 应用栏监控状态胶囊文案（live=主文字色 / idle=次文字色，底色与圆点已编码状态） -->
-    <class name="cls_pill_text"      font="face:Segoe UI,size:12,weight:600" colorText="@color/textPrimary"/>
-    <class name="cls_pill_text_idle" font="face:Segoe UI,size:12,weight:600" colorText="@color/textSecondary"/>
+    <class name="cls_pill_text"      font="size:12,weight:600" colorText="@color/textPrimary"/>
+    <class name="cls_pill_text_idle" font="size:12,weight:600" colorText="@color/textSecondary"/>
 
     <!-- 按钮：统一 13/600，差异只由"底/描边/字色"承担 -->
-    <class name="cls_btn_primary" font="face:Segoe UI,size:13,weight:600" colorText="@color/textOnAccent"/>
-    <class name="cls_btn_ghost"   font="face:Segoe UI,size:13,weight:600" colorText="@color/textPrimary"/>
-    <class name="cls_btn_danger"  font="face:Segoe UI,size:13,weight:600" colorText="@color/danger"/>
-    <class name="cls_btn_accent"  font="face:Segoe UI,size:13,weight:600" colorText="@color/accentText"/>
+    <class name="cls_btn_primary" font="size:13,weight:600" colorText="@color/textOnAccent"/>
+    <class name="cls_btn_ghost"   font="size:13,weight:600" colorText="@color/textPrimary"/>
+    <class name="cls_btn_danger"  font="size:13,weight:600" colorText="@color/danger"/>
+    <class name="cls_btn_accent"  font="size:13,weight:600" colorText="@color/accentText"/>
 
     <!-- 分组条：标签用主文字色 700（浅底上不需要"减重补偿"，那是深色底才需要的技巧） -->
-    <class name="cls_section_label" font="face:Segoe UI,size:13,weight:700" colorText="@color/textPrimary"/>
+    <class name="cls_section_label" font="size:13,weight:700" colorText="@color/textPrimary"/>
     <!-- 计数徽标：中性=次文字色，新增=蓝，移除=红（文字自带"新增/移除"，颜色只是第二通道） -->
-    <class name="cls_count_neutral" font="face:Segoe UI,size:12,weight:700" colorText="@color/textSecondary"/>
-    <class name="cls_count_add"     font="face:Segoe UI,size:12,weight:700" colorText="@color/accentText"/>
-    <class name="cls_count_del"     font="face:Segoe UI,size:12,weight:700" colorText="@color/danger"/>
+    <class name="cls_count_neutral" font="size:12,weight:700" colorText="@color/textSecondary"/>
+    <class name="cls_count_add"     font="size:12,weight:700" colorText="@color/accentText"/>
+    <class name="cls_count_del"     font="size:12,weight:700" colorText="@color/danger"/>
 
     <!-- 数据行：正文字重 400 -->
-    <class name="cls_row" font="face:Segoe UI,size:13" colorText="@color/textPrimary"/>
+    <class name="cls_row" font="size:13" colorText="@color/textPrimary"/>
 
     <!-- 状态栏 -->
-    <class name="cls_status"       font="face:Segoe UI,size:12" colorText="@color/textSecondary"/>
-    <class name="cls_status_muted" font="face:Segoe UI,size:12" colorText="@color/textMuted"/>
+    <class name="cls_status"       font="size:12" colorText="@color/textSecondary"/>
+    <class name="cls_status_muted" font="size:12" colorText="@color/textMuted"/>
   </style>
 </UIDEF>
