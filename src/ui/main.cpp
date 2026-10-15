@@ -21,7 +21,6 @@ extern "C" const unsigned char _binary_soui_coff_o_start[] __attribute__((weak))
 #endif
 
 #include "common/constants.h"
-#include "common/trace.h"
 #include "MainDlg.h"
 
 // 高分屏清晰度：清单已声明 DPI 感知（避免 Windows 把整窗位图拉伸放虚），
@@ -96,17 +95,6 @@ static bool TryCliScan(LPTSTR lpCmdLine) {
 int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine, int /*nCmdShow*/) {
     // CLI 自检模式优先（不启动 GUI / SOUI）
     if (TryCliScan(lpCmdLine)) return 0;
-
-#ifdef _WIN32
-    // 退出诊断日志（XP 退出残留定位）：记录 OS 版本便于区分环境。
-    // 打原始值十六进制，避免 HIWORD/LOWORD 解码在不同 SDK 下出现歧义：
-    // 0x00050003=XP SP3, 0x000601xx=Win7, 0x000a00xx=Win10/11
-    {
-        DWORD v = ::GetVersion();
-        vpidtrace::Trace(L"app start: GetVersion=" + vpidtrace::Hex(v)
-                         + L" (5.1=XP 6.1=Win7 10.0=Win10/11)");
-    }
-#endif
 
     // SOUI 要求 OLE 初始化（拖放/剪贴板等）
     HRESULT hRes = OleInitialize(nullptr);
@@ -219,8 +207,6 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
             dlg.CenterWindow();
             dlg.ShowWindow(SW_SHOWNORMAL);
             nRet = theApp.Run(dlg.m_hWnd);
-            vpidtrace::Trace(L"SApplication::Run returned (" + std::to_wstring(nRet)
-                             + L") -- 消息循环已退出");
 
 #ifdef _WIN32
             // [XP 退出残留 · 最终解] 直接 ExitProcess，跳过剩下的一切析构与 CRT 退出清理。
@@ -244,34 +230,16 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPTSTR lpCmdLine,
             // ExitProcess 仍会执行各模块的 DLL_PROCESS_DETACH(fDllUnloading=TRUE)，
             //   那是所有从不调用 OleUninitialize 的 Win32 程序走的正常安全路径。
             // ExitProcess 自 NT 3.1 起就在 kernel32，XP 原生导出，非 Vista+ API。
-            vpidtrace::Trace(L"calling ExitProcess(" + std::to_wstring(nRet)
-                             + L") -- 跳过 ~MainDlg/~SAppCfg/~SApplication 与 CRT 退出清理");
             ::ExitProcess((UINT)nRet);
 #endif
         }
     }
-    vpidtrace::Trace(L"app objects destroyed (~MainDlg/~SAppCfg/~SApplication done)");
 
-    // [XP 退出残留根因] 这里**故意不**调用 OleUninitialize()。
-    //
-    // XP 实测日志显示进程卡在 "SApplication::Run returned" 与 "_tWinMain returning"
-    // 之间——那之间原本只有 OleUninitialize()。机制：
-    //   CopySelected 走过 EmptyClipboard + SetClipboardData，本进程因此成为
-    //   **剪贴板所有者**。OleUninitialize 收尾时会调用 ReleaseThreadClipboard
-    //   释放本线程的剪贴板锁；而本线程拥有剪贴板，于是它要给剪贴板所有者窗口
-    //   投递/发送 WM_DESTROYCLIPBOARD，并**等待该消息被处理**。
-    //   但此刻消息循环早已退出（SApplication::Run 已返回）、窗口也已销毁，
-    //   永远没人处理这条消息 → 死锁，表现为"窗口关了、进程残留、内存逐渐变小"。
-    //   Win10/11 的 OLE/剪贴板实现不走这条等待路径，所以只在 XP 复现。
-    //
-    // 正解：进程马上就退出了，OLE 初始化引用计数无需平衡；OLE 状态与本线程的
-    //   剪贴板所有权都会在进程终止时由操作系统直接回收，**不需要**本线程收尾。
-    //   绝大多数 Win32 程序本来就不调用 OleUninitialize。
-    //   （想"正确"地调用，它必须放在消息循环仍活着、窗口仍存在之时，即
-    //   MainDlg::OnClose 里 DestroyWindow 之前——但那会引入"自投递消息自等待"
-    //   的风险，收益为 0，故直接不调。）
-    vpidtrace::Trace(L"_tWinMain returning rc=" + std::to_wstring(nRet)
-                     + L" -- 此后若进程不消失，则是 CRT/static 析构或 DLL_PROCESS_DETACH 阶段");
+    // 这里**故意不**调用 OleUninitialize()：OLE 状态与本线程的剪贴板所有权会在
+    // 进程终止时由操作系统直接回收，无需本线程收尾。绝大多数 Win32 程序本来
+    // 就不调用它。（想"正确"地调用，它必须放在消息循环仍活着、窗口仍存在之时，
+    // 即 MainDlg::OnClose 里 DestroyWindow 之前——但那会引入"自投递消息自等待"
+    // 的风险，收益为 0，故直接不调。）
 
     return nRet;
 }

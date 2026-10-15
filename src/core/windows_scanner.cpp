@@ -1,7 +1,6 @@
 #include "core/windows_scanner.h"
 
 #include "common/constants.h"
-#include "common/trace.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -83,20 +82,12 @@ std::string w2utf8(const std::wstring& w) {
 } // namespace
 
 std::vector<USBDevice> WindowsScanner::scan() {
-    const DWORD64 t0 = vpidtrace::NowMs();
     std::wstring via = L"setupApiGuid";
     std::vector<USBDevice> result = scanViaSetupApi(&via);
     if (result.empty() && !ScanCancelRequested()) {
         via = L"registry";
         result = scanViaRegistry();
     }
-    // 诊断日志：XP 上退出残留的定位关键。若这里 ms 动辄上千，说明扫描本身很慢
-    // （XP 的老 PnP 管理器往往不注册 GUID_DEVINTERFACE_USB_DEVICE，会落到
-    // ALLCLASSES 全枚举 + 每个设备 5 次 SetupDiGetDeviceRegistryPropertyW），
-    // 于是"点退出时恰有慢扫描在途"变成常态，退出路径的 join 就会等到超时。
-    vpidtrace::Trace(L"scan: via=" + via + L" n=" + std::to_wstring(result.size())
-                     + L" ms=" + std::to_wstring(vpidtrace::NowMs() - t0)
-                     + (ScanCancelRequested() ? L" CANCELLED" : L""));
     return result;
 }
 

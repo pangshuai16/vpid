@@ -4,8 +4,6 @@
 #include <windows.h>
 #include <algorithm>
 
-#include "common/trace.h"   // 退出诊断日志（XP 退出残留定位）
-
 #include <SApp.h>
 #include <res.mgr/SUiDef.h>   // GETCOLOR：行级语义色从 color.xml 取，避免 C++ 与 XML 两处硬编码
 #include <helper/SColor.h>    // CR_INVALID
@@ -274,7 +272,6 @@ BOOL MainDlg::OnHeaderClickChanged(EventHeaderClick *pEvt) {
 
 void MainDlg::OnClose() {
     closing_ = true;
-    vpidtrace::Trace(L"WM_CLOSE");
     if (notifier_) notifier_->Stop();
     SNativeWnd::KillTimer(kTimerAuto);
     // 1) 先请求取消在途扫描，让扫描线程尽快自行返回。
@@ -292,7 +289,6 @@ void MainDlg::OnClose() {
     // 仅 DestroyWindow 不会让 GetMessage 返回 0 —— 窗口没了但进程/消息循环仍在。
     // 标题栏 X 与"退出"按钮都走这里，统一收口。
     ::PostQuitMessage(0);
-    vpidtrace::Trace(L"PostQuitMessage done");
 }
 
 void MainDlg::OnSize(UINT nType, CSize size) {
@@ -555,10 +551,6 @@ void MainDlg::CopySelected() {
             if (hg) GlobalFree(hg);
         }
         CloseClipboard();
-        // 诊断：EmptyClipboard/SetClipboardData 会让**本进程**成为剪贴板所有者。
-        // 这是 XP 退出残留的关键前提（见 main.cpp 里关于 OleUninitialize 的注释）——
-        // 若 XP 日志里出现这行，就说明退出时进程确实持有剪贴板所有权。
-        vpidtrace::Trace(L"clipboard: copied (this process now OWNS the clipboard)");
     }
     SetStatusA(L"已复制: " + UTF8ToW(d->getDisplayName()));
 }
@@ -642,14 +634,11 @@ void MainDlg::StartScan() {
     HANDLE h = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
         std::unique_ptr<ScanCtx> c((ScanCtx *)p);
         HWND hwnd = c->hwnd;
-        vpidtrace::Trace(L"scan thread: start");
         auto *devs = new std::vector<USBDevice>(scanUsbDevices());
         // 入队成功 → devs 归 OnScanDone 释放；
         // 返回 FALSE → 窗口已销毁/句柄失效，由本线程释放，避免泄漏。
         const BOOL posted = ::PostMessageW(hwnd, kMessageScanDone, 0, (LPARAM)devs);
         if (!posted) delete devs;
-        vpidtrace::Trace(L"scan thread: post=" + std::to_wstring((int)posted)
-                         + (posted ? std::wstring(L" (-> MainDlg)") : std::wstring(L" (hWnd dead, freed here)")));
         return 0;
     }, ctx, 0, nullptr);
     if (h) {
@@ -671,23 +660,15 @@ void MainDlg::StartScan() {
 // WaitForSingleObject 自 NT 3.1 起就在 kernel32，XP 原生导出，非 Vista+ API。
 void MainDlg::ShutdownScanThread() {
     HANDLE h = scanThread_.exchange(nullptr);
-    if (!h) {
-        vpidtrace::Trace(L"join: no scan thread handle");
-        return;
-    }
+    if (!h) return;
     // 取消已在 OnClose 里发出；这里再发一次兜底（~MainDlg 也会走这条路径）。
     RequestScanCancel();
-    const vpidtrace::VpidQword t0 = vpidtrace::NowMs();
     // 限时 15s：有取消标志后，线程通常在一次 SetupDiEnumDeviceInfo 往返内返回
     // （毫秒级）。15s 只用于兜底"某个 USB 驱动的 SetupAPI 调用卡死"这种极端情况——
     // 那种情况下线程无法被安全打断（TerminateThread 会留下被持有的堆锁，
     // 反而让 CRT 退出清理挂死，是 XP 残留的典型成因），只能接受极小概率残留。
     const DWORD r = ::WaitForSingleObject(h, 15000);
     ::CloseHandle(h);
-    vpidtrace::Trace(L"join: result=" + std::to_wstring(r)
-                     + L" (" + (r == WAIT_OBJECT_0 ? std::wstring(L"thread exited")
-                              : std::wstring(L"TIMEOUT - thread still alive")) + L")"
-                     + L" ms=" + std::to_wstring(vpidtrace::NowMs() - t0));
 }
 
 void MainDlg::SetupDeviceNotifier() {
