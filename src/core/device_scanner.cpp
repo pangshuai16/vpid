@@ -1,10 +1,20 @@
 #include "core/device_scanner.h"
 #include "common/constants.h"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <regex>
 
 namespace vpid {
+
+namespace {
+// 全局扫描取消标志。同一时刻至多一个扫描线程（MainDlg::scanning_ 互斥），
+// 故用全局量即可；静态存储期 → 生命周期长于任何 MainDlg 实例，无线程持它导致的 UAF。
+std::atomic<bool> g_scanCancel(false);
+}  // namespace
+
+void RequestScanCancel() { g_scanCancel = true; }
+bool ScanCancelRequested() { return g_scanCancel; }
 
 void Scanner::extractVidPid(const std::string& device_id, std::string& vid, std::string& pid) {
     static const std::regex vidRe(kVidPattern, std::regex::icase);
@@ -36,6 +46,7 @@ std::string Scanner::extractSerialFromDeviceId(const std::string& device_id) {
 }
 
 std::vector<USBDevice> scanUsbDevices() {
+    g_scanCancel = false;  // 新一轮扫描，复位取消标志
     auto s = createScanner();
     return s->scan();
 }

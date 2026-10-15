@@ -76,6 +76,10 @@ protected:
     void SetStatusA(const std::wstring &m);
     void SetStatusB(const std::wstring &m);
     void StartScan();
+    // 阻塞到在途扫描线程返回。必须在 DestroyWindow 之后、PostQuitMessage 之前调用：
+    // 线程上下文只装 HWND 所以不怕窗口先销毁；而 ExitProcess 会等所有线程结束，
+    // 所以这里必须真的等到线程返回，超时"甩掉"线程只会让进程残留。
+    void ShutdownScanThread();
     void SetBaseline();
     void CopySelected();
     const USBDevice *SelectedFromList(SListCtrl *list,
@@ -123,6 +127,19 @@ protected:
     std::atomic<bool> closing_{false};
     bool auto_refresh_ = true;
     std::unique_ptr<DeviceNotifier> notifier_; // 跨平台设备插拔通知
+
+    // 在途扫描线程句柄（scanning_ 互斥 → 同一时刻至多一个）。
+    // [XP 退出残留根因] 扫描线程原先是 fire-and-forget 且持有 this：
+    //   OnClose 里 DestroyWindow 之后，MainDlg 要等消息循环退出、_tWinMain 栈展开
+    //   才析构。若线程此刻仍在跑并读写 this->closing_/this->scanning_，就是 UAF。
+    //   Win10/11 的堆实现容忍这种越界写，XP 的 msvcrt 会破坏堆元数据 →
+    //   _tWinMain 返回后 CRT 退出清理（static 析构 / 堆锁）挂死，
+    //   表现为"窗口关了、进程还挂在任务管理器"。
+    //   修法三重保险：① 线程上下文只装 HWND（不装 this）；② 退出前先请求取消扫描
+    //   （RequestScanCancel，让扫描在一个 SetupAPI 往返内自行返回）；
+    //   ③ DestroyWindow 之后 join 线程——Windows 的 ExitProcess 会等所有线程结束，
+    //   线程还在跑 → 进程永远退不出，这才是"窗口关了但进程残留"的直接原因。
+    std::atomic<HANDLE> scanThread_{nullptr};
 
     // 表头点击排序状态（-1 = 未启用，沿用 SortByVidPidName 的 VID→PID→名称 默认序）。
     // 两栏各自独立：列号即 headerStyle 里 <item> 的顺序（本项目已关闭拖拽换列，列号稳定）。

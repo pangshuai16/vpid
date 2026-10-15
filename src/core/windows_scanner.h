@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 #include "core/device_scanner.h"
 
 namespace vpid {
@@ -8,7 +9,7 @@ class WindowsScanner : public Scanner {
 public:
     std::vector<USBDevice> scan() override;
 private:
-    std::vector<USBDevice> scanViaSetupApi();
+    std::vector<USBDevice> scanViaSetupApi(std::wstring* via);
     std::vector<USBDevice> scanViaRegistry();
 };
 

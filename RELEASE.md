@@ -46,9 +46,9 @@ python tools/build_release.py --dist out/           # 指定输出目录
 
 ```bash
 python tools/release_github.py \
-  --tag v1.3.0 \
-  --title "v1.3.0" \
-  --notes-file RELEASE_NOTES_v1.3.0.md
+  --tag v1.3.1 \
+  --title "v1.3.1" \
+  --notes-file RELEASE_NOTES_v1.3.1.md
 ```
 
 脚本会：

@@ -1,6 +1,7 @@
 #include "core/windows_scanner.h"
 
 #include "common/constants.h"
+#include "common/trace.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -82,11 +83,21 @@ std::string w2utf8(const std::wstring& w) {
 } // namespace
 
 std::vector<USBDevice> WindowsScanner::scan() {
-    auto setup = scanViaSetupApi();
-    if (!setup.empty()) return setup;
-    auto reg = scanViaRegistry();
-    if (!reg.empty()) return reg;
-    return {};
+    const DWORD64 t0 = vpidtrace::NowMs();
+    std::wstring via = L"setupApiGuid";
+    std::vector<USBDevice> result = scanViaSetupApi(&via);
+    if (result.empty() && !ScanCancelRequested()) {
+        via = L"registry";
+        result = scanViaRegistry();
+    }
+    // 诊断日志：XP 上退出残留的定位关键。若这里 ms 动辄上千，说明扫描本身很慢
+    // （XP 的老 PnP 管理器往往不注册 GUID_DEVINTERFACE_USB_DEVICE，会落到
+    // ALLCLASSES 全枚举 + 每个设备 5 次 SetupDiGetDeviceRegistryPropertyW），
+    // 于是"点退出时恰有慢扫描在途"变成常态，退出路径的 join 就会等到超时。
+    vpidtrace::Trace(L"scan: via=" + via + L" n=" + std::to_wstring(result.size())
+                     + L" ms=" + std::to_wstring(vpidtrace::NowMs() - t0)
+                     + (ScanCancelRequested() ? L" CANCELLED" : L""));
+    return result;
 }
 
 // ---------------- SetupAPI ----------------
@@ -103,12 +114,19 @@ static const GUID kGuidUsbDeviceInterface = {
 
 // [perf] 从 HDEVINFO 枚举 USB 设备。用一次遍历 + 前缀过滤，
 // 把 CPU 消耗集中在真正是 USB 的设备上（几十~几百个），而不是全系统设备（几百~上千个）。
-static std::vector<USBDevice> scanFromDevInfo(HDEVINFO devs) {
+static std::vector<USBDevice> scanFromDevInfo(HDEVINFO devs, bool* cancelled) {
     std::vector<USBDevice> devices;
     if (devs == INVALID_HANDLE_VALUE) return devices;
 
     std::set<DeviceKey> seen;
     for (DWORD idx = 0;; ++idx) {
+        // 取消检查：退出时 MainDlg 置标志，这里尽快带着已拿到的结果返回。
+        // 放在循环顶部（而非设备内部），保证无论设备多少都能在"一次
+        // SetupDiEnumDeviceInfo 往返"内响应，而不会被单个设备的多次属性查询拖住。
+        if (ScanCancelRequested()) {
+            if (cancelled) *cancelled = true;
+            break;
+        }
         SP_DEVINFO_DATA di{};
         di.cbSize = sizeof(SP_DEVINFO_DATA);
         if (!SetupDiEnumDeviceInfo(devs, idx, &di)) break;
@@ -153,7 +171,7 @@ static std::vector<USBDevice> scanFromDevInfo(HDEVINFO devs) {
     return dedup(devices);
 }
 
-std::vector<USBDevice> WindowsScanner::scanViaSetupApi() {
+std::vector<USBDevice> WindowsScanner::scanViaSetupApi(std::wstring* via) {
     // [perf] 主路径：只枚举 USB Device Interface 类。相比 DIGCF_ALLCLASSES 遍历全系统设备，
     // 枚举数量从"几百~上千"降到"几十~几百"，SetupAPI 调用次数降约 5-10×。
     // 100ms 定时器下，这是每帧 CPU 占用的最大头，优化后界面卡顿显著缓解。
@@ -161,14 +179,29 @@ std::vector<USBDevice> WindowsScanner::scanViaSetupApi() {
         HDEVINFO devs = SetupDiGetClassDevsW(&kGuidUsbDeviceInterface, nullptr, nullptr,
                                               DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
         if (devs != INVALID_HANDLE_VALUE) {
-            std::vector<USBDevice> found = scanFromDevInfo(devs);
-            if (!found.empty()) return found;
+            bool cancelled = false;
+            std::vector<USBDevice> found = scanFromDevInfo(devs, &cancelled);
+            if (!found.empty()) {
+                if (via) *via = L"setupApiGuid";
+                return found;
+            }
+            // 主路径因取消而中止 → 不要再跑昂贵的 ALLCLASSES 兜底，立即返回
+            if (cancelled) {
+                if (via) *via = L"cancelled";
+                return {};
+            }
         }
+    }
+    if (ScanCancelRequested()) {
+        if (via) *via = L"cancelled";
+        return {};
     }
     // [fallback] 某些老系统/特殊驱动可能没注册 USB device interface
     // （比如 USBSTOR 类设备在复合设备下），走 ALLCLASSES 全枚举兜底。
+    if (via) *via = L"setupApiAllClasses";
     return scanFromDevInfo(SetupDiGetClassDevsW(nullptr, nullptr, nullptr,
-                                                 DIGCF_PRESENT | DIGCF_ALLCLASSES));
+                                                 DIGCF_PRESENT | DIGCF_ALLCLASSES),
+                           nullptr);
 }
 
 // ---------------- 注册表兜底 ----------------
@@ -180,6 +213,7 @@ std::vector<USBDevice> WindowsScanner::scanViaRegistry() {
         return devices;
 
     for (DWORD i = 0;; ++i) {
+        if (ScanCancelRequested()) break;  // 退出中：尽快返回
         wchar_t name[256];
         DWORD nameLen = 256;
         if (RegEnumKeyExW(base, i, name, &nameLen, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
@@ -197,6 +231,7 @@ std::vector<USBDevice> WindowsScanner::scanViaRegistry() {
             continue;
 
         for (DWORD j = 0;; ++j) {
+            if (ScanCancelRequested()) break;  // 退出中：尽快返回
             wchar_t instName[256];
             DWORD instLen = 256;
             if (RegEnumKeyExW(vpKey, j, instName, &instLen, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)

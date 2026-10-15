@@ -95,9 +95,9 @@ python tools/build_release.py --only linux-arm64 # 只构建 Linux arm64
 
 ```bash
 python tools/release_github.py \
-  --tag v1.3.0 \
-  --title "v1.3.0" \
-  --notes-file RELEASE_NOTES_v1.3.0.md
+  --tag v1.3.1 \
+  --title "v1.3.1" \
+  --notes-file RELEASE_NOTES_v1.3.1.md
 ```
 
 完整发布流程见 [RELEASE.md](RELEASE.md)，跨平台兼容性细节见

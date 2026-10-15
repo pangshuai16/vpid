@@ -4,6 +4,8 @@
 #include <windows.h>
 #include <algorithm>
 
+#include "common/trace.h"   // 退出诊断日志（XP 退出残留定位）
+
 #include <SApp.h>
 #include <res.mgr/SUiDef.h>   // GETCOLOR：行级语义色从 color.xml 取，避免 C++ 与 XML 两处硬编码
 #include <helper/SColor.h>    // CR_INVALID
@@ -142,6 +144,9 @@ MainDlg::MainDlg() : SHostWnd(L"layout:dlg_main") {
 
 MainDlg::~MainDlg() {
     closing_ = true;
+    // 兜底：理论上 OnClose 已 join 过。若窗口被外部销毁而没走 OnClose，
+    // 这里再等一次，保证不带着活扫描线程进入 CRT 退出清理。
+    ShutdownScanThread();
     if (notifier_) {
         notifier_->Stop();
         notifier_.reset();
@@ -269,13 +274,25 @@ BOOL MainDlg::OnHeaderClickChanged(EventHeaderClick *pEvt) {
 
 void MainDlg::OnClose() {
     closing_ = true;
+    vpidtrace::Trace(L"WM_CLOSE");
     if (notifier_) notifier_->Stop();
     SNativeWnd::KillTimer(kTimerAuto);
+    // 1) 先请求取消在途扫描，让扫描线程尽快自行返回。
+    RequestScanCancel();
+    // 2) 立刻销毁窗口：UI 马上消失，不必为等扫描而卡在"关闭中"。
+    //    线程上下文只装 HWND、不装 this，所以窗口先销毁对它没有任何影响——
+    //    PostMessageW 对已销毁句柄返回 FALSE，线程自行释放结果后退出。
     DestroyWindow();
-    // 必须 PostQuitMessage：SApplication::Run 内部是 pMsgLoop->Run()（GetMessage 循环），
+    // 3) 再 join 扫描线程，且必须真的等到它返回。
+    //    Windows 的 ExitProcess 会等**所有线程**结束：线程还在跑 → 进程永远退不出
+    //    （窗口已关、内存逐渐变小、但任务管理器里进程残留）。所以"等不到就放弃"
+    //    的超时甩不掉线程，只是把残留从"关闭时卡顿"变成"关不掉"。
+    ShutdownScanThread();
+    // 4) 必须 PostQuitMessage：SApplication::Run 内部是 pMsgLoop->Run()（GetMessage 循环），
     // 仅 DestroyWindow 不会让 GetMessage 返回 0 —— 窗口没了但进程/消息循环仍在。
     // 标题栏 X 与"退出"按钮都走这里，统一收口。
     ::PostQuitMessage(0);
+    vpidtrace::Trace(L"PostQuitMessage done");
 }
 
 void MainDlg::OnSize(UINT nType, CSize size) {
@@ -538,6 +555,10 @@ void MainDlg::CopySelected() {
             if (hg) GlobalFree(hg);
         }
         CloseClipboard();
+        // 诊断：EmptyClipboard/SetClipboardData 会让**本进程**成为剪贴板所有者。
+        // 这是 XP 退出残留的关键前提（见 main.cpp 里关于 OleUninitialize 的注释）——
+        // 若 XP 日志里出现这行，就说明退出时进程确实持有剪贴板所有权。
+        vpidtrace::Trace(L"clipboard: copied (this process now OWNS the clipboard)");
     }
     SetStatusA(L"已复制: " + UTF8ToW(d->getDisplayName()));
 }
@@ -604,24 +625,69 @@ void MainDlg::StartScan() {
     }
     // 用原生线程而非 std::thread（std::thread 经 libcpmt 拉入 libconcrt，
     // 而 concrt 引用 GetNumaHighestNodeNumber 等 Vista+ API，XP 上无法加载）
-    struct ScanCtx { MainDlg *self; };
-    auto *ctx = new ScanCtx{this};
+    //
+    // [XP 退出残留根因修复] 线程上下文只装 HWND，**绝不装 this**：
+    //   OnClose 里 DestroyWindow 之后，MainDlg 要等消息循环退出、_tWinMain 栈展开
+    //   才析构。旧实现线程持有 self 并读写 self->closing_/self->scanning_，一旦
+    //   用户点退出时恰有扫描在途，就是在读写一块已 free 的内存（UAF）。
+    //   Win10/11 的堆实现容忍这种越界写（读到旧值继续走正常路径），XP 的 msvcrt
+    //   会破坏堆元数据 → _tWinMain 返回后 CRT 退出清理挂死，
+    //   现象就是"窗口关了、进程还挂在任务管理器"。
+    //   只持 HWND 后：窗口已销毁时 PostMessageW 对无效句柄返回 FALSE，
+    //   线程自行释放 devs 后退出，全程不碰 MainDlg 任何成员，UAF 根除。
+    //   （PostMessageW 失败仅发生在 hWnd 失效，即窗口已销毁 = 正在退出；
+    //   窗口存活期间不会失败，故 scanning_ 不会因丢弃结果而永久卡在 true。）
+    struct ScanCtx { HWND hwnd; };
+    auto *ctx = new ScanCtx{m_hWnd};
     HANDLE h = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
         std::unique_ptr<ScanCtx> c((ScanCtx *)p);
-        MainDlg *self = c->self;
+        HWND hwnd = c->hwnd;
+        vpidtrace::Trace(L"scan thread: start");
         auto *devs = new std::vector<USBDevice>(scanUsbDevices());
-        if (!self->closing_) self->PostMessage(kMessageScanDone, 0, (LPARAM)devs);
-        else {
-            delete devs;
-            self->scanning_ = false;
-        }
+        // 入队成功 → devs 归 OnScanDone 释放；
+        // 返回 FALSE → 窗口已销毁/句柄失效，由本线程释放，避免泄漏。
+        const BOOL posted = ::PostMessageW(hwnd, kMessageScanDone, 0, (LPARAM)devs);
+        if (!posted) delete devs;
+        vpidtrace::Trace(L"scan thread: post=" + std::to_wstring((int)posted)
+                         + (posted ? std::wstring(L" (-> MainDlg)") : std::wstring(L" (hWnd dead, freed here)")));
         return 0;
     }, ctx, 0, nullptr);
-    if (h) CloseHandle(h);
-    else {
+    if (h) {
+        // scanning_ 互斥 → 同一时刻至多一个扫描线程，旧句柄对应已完成线程
+        HANDLE old = scanThread_.exchange(h);
+        if (old) ::CloseHandle(old);
+    } else {
         delete ctx;
         scanning_ = false;
     }
+}
+
+// 阻塞到在途扫描线程返回。这是"XP 退出残留"的第二道保险——第一道是线程上下文
+// 只装 HWND、不装 this（见 StartScan 注释），第三道是 core 里的取消标志（见
+// RequestScanCancel）。三者缺一不可：
+//   - 只改 HWND 不 join  → 线程可能比进程活得久，ExitProcess 等它 → 残留
+//   - 只 join 不加取消   → XP 上慢扫描会让"点退出"卡住好几秒
+//   - 只取消不 join      → 取消只让线程"尽快"返回，不是同步点
+// WaitForSingleObject 自 NT 3.1 起就在 kernel32，XP 原生导出，非 Vista+ API。
+void MainDlg::ShutdownScanThread() {
+    HANDLE h = scanThread_.exchange(nullptr);
+    if (!h) {
+        vpidtrace::Trace(L"join: no scan thread handle");
+        return;
+    }
+    // 取消已在 OnClose 里发出；这里再发一次兜底（~MainDlg 也会走这条路径）。
+    RequestScanCancel();
+    const vpidtrace::VpidQword t0 = vpidtrace::NowMs();
+    // 限时 15s：有取消标志后，线程通常在一次 SetupDiEnumDeviceInfo 往返内返回
+    // （毫秒级）。15s 只用于兜底"某个 USB 驱动的 SetupAPI 调用卡死"这种极端情况——
+    // 那种情况下线程无法被安全打断（TerminateThread 会留下被持有的堆锁，
+    // 反而让 CRT 退出清理挂死，是 XP 残留的典型成因），只能接受极小概率残留。
+    const DWORD r = ::WaitForSingleObject(h, 15000);
+    ::CloseHandle(h);
+    vpidtrace::Trace(L"join: result=" + std::to_wstring(r)
+                     + L" (" + (r == WAIT_OBJECT_0 ? std::wstring(L"thread exited")
+                              : std::wstring(L"TIMEOUT - thread still alive")) + L")"
+                     + L" ms=" + std::to_wstring(vpidtrace::NowMs() - t0));
 }
 
 void MainDlg::SetupDeviceNotifier() {
