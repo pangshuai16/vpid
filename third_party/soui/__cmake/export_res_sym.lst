@@ -1,6 +1,0 @@
-{
-    global:
-        _binary_soui_coff_*;
-    local:
-        *;
-};

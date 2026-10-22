@@ -52,7 +52,7 @@ set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON)
 # 否则 soui4 编译报 unknown type name 'SNSBEGIN'。
 # 注意：不加到 CMAKE_*_FLAGS（会波及第三方 C 库——souistd.h 是 C++ 头），
 # 在 SOUI target 上用 COMPILE_OPTIONS 单独加（见主 CMakeLists 的补丁）。
-set(SOUI_FORCE_INCLUDE "D:/code/vpid/third_party/soui/SOUI/include/souistd.h" CACHE STRING
+set(SOUI_FORCE_INCLUDE "D:/DevTools/SOUI/SOUI/include/souistd.h" CACHE STRING
     "souistd.h path for forced -include (SOUI PCH replacement)")
 
 # 交叉编译：绝不找 host 系统的包

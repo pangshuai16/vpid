@@ -1,1 +1,0 @@
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/stdint.h" DESTINATION third-part/stdint)

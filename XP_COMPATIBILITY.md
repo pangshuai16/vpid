@@ -341,7 +341,7 @@ ELF 架构正确、glibc 符号 ≤ 2.17、动态依赖仅基础库、UI 资源�
 ### Q: 为什么 Linux 走 zig 交叉编译而不是原生 Linux gcc？
 
 - GitHub CI runner 无法稳定访问 gitee.com（`gnutls_handshake() failed`），
-  SOUI5 曾作为 submodule 时构建必失败 → 改为 vendoring（`third_party/soui`）
+  SOUI5 曾作为 submodule 时构建必失败 → 改为全局环境 vendoring（`D:/DevTools/SOUI`，原 `third_party/soui` 已上提）
 - GitHub Actions arm64 QEMU 作业 360 分钟超时未跑通
 - zig 单一工具链 + `-target gnu.2.17` 天然锁 glibc floor，一个 Windows
   宿主即可产出双架构，无环境漂移

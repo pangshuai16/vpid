@@ -83,7 +83,7 @@ if(WIN32 AND NOT MINGW)
   # ===================== Windows: MSVC + SOUI5（静态库, 32 位, XP 兼容） =====================
   enable_language(RC)
   enable_language(ASM_MASM)   # XP 兼容：xp_iat_stubs.asm 定义 __imp_ IAT 槽
-  set(SOUI_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/third_party/soui)
+  set(SOUI_ROOT "D:/DevTools/SOUI" CACHE PATH "SOUI5 源码根目录（全局环境，与 Qt/YY-Thunks 同层）")
   VPID_SET_SOUI_OPTIONS()
 
   # 全局使用静态运行时（/MT）
@@ -242,7 +242,7 @@ elseif(UNIX AND NOT APPLE)
   # ===================== Linux: SOUI5 + swinx（xcb + Cairo） =====================
   # SOUI5 通过 swinx 在 Linux 上复现 Win32 API（官方支持的跨平台路径）。
   # 依赖：cairo / fontconfig / freetype / pixman / xcb / xkbcommon / dbus（由 swinx 提供或系统安装）
-  set(SOUI_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/third_party/soui)
+  set(SOUI_ROOT "D:/DevTools/SOUI" CACHE PATH "SOUI5 源码根目录（全局环境，与 Qt/YY-Thunks 同层）")
   VPID_SET_SOUI_OPTIONS()
 
   configure_file(${SOUI_ROOT}/config/config.h.in ${CMAKE_BINARY_DIR}/config/config.h @ONLY)

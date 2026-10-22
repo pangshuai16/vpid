@@ -1,1 +1,0 @@
-hellocharts移植自https://github.com/lecho/hellocharts-android
