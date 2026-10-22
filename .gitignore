@@ -42,10 +42,8 @@ shot_app.bmp
 # WorkBuddy 本地数据（含记忆/技能，不入库）
 .workbuddy/
 
-# SOUI 已 vendoring 进仓库（去除 gitee submodule，因 GitHub CI 无法稳定拉取 gitee），
-# 需完整纳入，覆盖上方对 *.lib/*.a/*.so/*.exe 等二进制的忽略规则
-!third_party/soui/
-!third_party/soui/**
+# SOUI5 已迁移为全局环境 D:/DevTools/SOUI（2026-10-22，与 Qt/YY-Thunks/VC-LTL5 同层），
+# 仓库内不再 vendored；见 README「UI 层」节。
 
 # zig 交叉编译 sysroot：库文件必须入库（离线可复现构建 + CI 无需联网下载），
 # 覆盖上方 *.so 忽略规则。tools/linux-sysroot/lib/ 下的 .so 是从 Ubuntu deb
