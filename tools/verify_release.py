@@ -15,6 +15,8 @@ import re
 import struct
 import subprocess
 import sys
+
+from check_imports import read_pe_imports
 import zlib  # noqa: F401 (占位, 保持一致性)
 
 
@@ -27,8 +29,19 @@ def check_pe(path):
     assert data[pe_off:pe_off + 4] == b"PE\x00\x00", "PE 签名无效"
     machine = struct.unpack_from("<H", data, pe_off + 4)[0]
     assert machine == 0x14C, f"不是 x86 架构 (machine=0x{machine:x})"
+    magic = struct.unpack_from("<H", data, pe_off + 24)[0]
+    assert magic == 0x10B, f"不是 PE32 格式 (magic=0x{magic:x})"
+    timestamp = struct.unpack_from("<I", data, pe_off + 8)[0]
+    assert timestamp == 0x64B0D000, f"时间戳未固定 (timestamp=0x{timestamp:x})"
+    checksum = struct.unpack_from("<I", data, pe_off + 88)[0]
+    assert checksum != 0, "PE CheckSum 为 0"
+    subsystem = struct.unpack_from("<H", data, pe_off + 92)[0]
+    assert subsystem == 2, f"不是 GUI Windows 子系统 (subsystem={subsystem})"
+    dll_chars = struct.unpack_from("<H", data, pe_off + 94)[0]
+    assert not (dll_chars & 0x20), "含 HIGH_ENTROPY_VA，扩大 XP/旧系统兼容风险"
+    assert dll_chars & 0x40, "未启用 DYNAMIC_BASE"
     size = os.path.getsize(path)
-    print(f"  [OK] {os.path.basename(path)}: PE x86, {size} bytes")
+    print(f"  [OK] {os.path.basename(path)}: PE32 x86, ts=0x{timestamp:x}, ck=0x{checksum:x}, subsystem={subsystem}, dllchars=0x{dll_chars:x}, {size} bytes")
 
 
 def check_pe_xp(path):
@@ -45,6 +58,39 @@ def check_pe_xp(path):
     if r.returncode:
         raise AssertionError("含致命 Vista+ API（XP 不兼容）")
 
+
+
+
+def check_windows_compat(path):
+    """Windows 发布物兼容/杀软友好门禁：避免常见误报和旧系统敏感特征。"""
+    data = open(path, "rb").read()
+    assert b"ucrtbase.dll" not in data, "导入/清单含 ucrtbase.dll，XP 兼容风险"
+    assert b"vcruntime" not in data, "导入/清单含 vcruntime 依赖"
+    assert b"Microsoft.VC" not in data, "含 Microsoft.VC*.CRT side-by-side 依赖"
+    pe_off = struct.unpack_from("<I", data, 0x3C)[0]
+    opt = pe_off + 24
+    magic = struct.unpack_from("<H", data, opt)[0]
+    if magic != 0x10B:
+        return  # check_pe 已覆盖格式；兼容门禁仅针对本项目 PE32 发布物
+    cert_rva, cert_size = struct.unpack_from("<II", data, opt + 112 + 4 * 4)
+    assert cert_size == 0, "含 Authenticode 证书目录但当前发布无签名证书"
+    sections = []
+    sec = opt + struct.unpack_from("<H", data, pe_off + 20)[0]
+    for _ in range(struct.unpack_from("<H", data, pe_off + 6)[0]):
+        name = data[sec:sec + 8].rstrip(b"\x00").decode("ascii", "replace")
+        chars = struct.unpack_from("<I", data, sec + 36)[0]
+        sections.append((name, chars))
+        sec += 40
+    names = [name for name, _ in sections]
+    assert names == [".text", ".rdata", ".data", ".fptable", ".rsrc", ".reloc"], f"section 列表异常: {names}"
+    write_flags = {name: bool(chars & 0x80000000) for name, chars in sections}
+    assert not write_flags[".text"], ".text 不应可写"
+    imports = read_pe_imports(path)
+    bad = [d for d in imports if d.lower() in {"ucrtbase.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "vccorlib140.dll"}]
+    assert not bad, f"导入敏感运行时 DLL: {bad}"
+    manifest_ok = all(k in data for k in [b"asm.v1", b"requestedExecutionLevel", b"dpiAware", b"supportedOS"])
+    assert manifest_ok, "清单缺少关键兼容性声明 (asm.v1/requestedExecutionLevel/dpiAware/supportedOS)"
+    print(f"  [OK] {os.path.basename(path)}: 无 VC SxS/ucrt 依赖，无证书目录，section 正常，manifest ok={manifest_ok}")
 
 def parse_elf_sections(data):
     """返回 {name: (offset,size)}。"""
@@ -176,13 +222,16 @@ def main():
     xp_checks = {
         "vpid_viewer_windows_x86.exe": check_pe_xp,
     }
+    compat_checks = {
+        "vpid_viewer_windows_x86.exe": check_windows_compat,
+    }
     # Linux 产物必须内嵌 UI 资源（单二进制自包含，无需外置 uires/）
     embedded = {
         "vpid_viewer_linux_amd64": check_elf_embedded_res,
         "vpid_viewer_linux_arm64": check_elf_embedded_res,
     }
     ok = True
-    for group in (files, xp_checks, embedded):
+    for group in (files, xp_checks, compat_checks, embedded):
         for name, fn in group.items():
             path = os.path.join(dist, name)
             if not os.path.exists(path):

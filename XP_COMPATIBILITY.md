@@ -193,7 +193,7 @@ python tools/build_release.py
 
 - 编译优化：`/Os /Gy /GR- /EHsc- /OPT:REF`（`/GR-` 前提：全库无 `dynamic_cast`/`typeid`；
   `/EHsc-` 前提：全库无 `throw`）
-- **无 packer**：`DllCharacteristics = HIGH_ENTROPY_VA | NX_COMPAT | DYNAMIC_BASE`，
+- **无 packer**：`DllCharacteristics = NX_COMPAT | DYNAMIC_BASE`（**不含 HIGH_ENTROPY_VA**，`pin_timestamp.py` 发布前强制清除并校验），
   静态链接后 strip，360 杀软实测放行
 - **UPX 禁用**：`--best` / `--lzma` / 极端压缩在 360 下实测被查杀（2026-10-09
   中性文件名对照确认拦的是 UPX 压缩本身）

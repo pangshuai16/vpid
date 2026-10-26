@@ -72,11 +72,11 @@ endmacro()
 macro(VPID_ADD_SOUI_SUBDIRS)
   set(SOUI_COM_DIR ${SOUI_ROOT}/components)
   set(SOUI_ROOT_DIR ${SOUI_ROOT})
-  add_subdirectory(${SOUI_ROOT}/utilities)              # -> utilities4
-  add_subdirectory(${SOUI_ROOT}/third-part/pbl_aupng)   # -> aupng
-  add_subdirectory(${SOUI_ROOT}/components/render-gdi)        # -> render-gdi
-  add_subdirectory(${SOUI_ROOT}/components/imgdecoder-stb)    # -> imgdecoder-stb
-  add_subdirectory(${SOUI_ROOT}/SOUI)                        # -> soui4 核心库
+  add_subdirectory(${SOUI_ROOT}/utilities ${CMAKE_BINARY_DIR}/soui/utilities)              # -> utilities4
+  add_subdirectory(${SOUI_ROOT}/third-part/pbl_aupng ${CMAKE_BINARY_DIR}/soui/upng)   # -> aupng
+  add_subdirectory(${SOUI_ROOT}/components/render-gdi ${CMAKE_BINARY_DIR}/soui/render-gdi)        # -> render-gdi
+  add_subdirectory(${SOUI_ROOT}/components/imgdecoder-stb ${CMAKE_BINARY_DIR}/soui/imgdecoder-stb)    # -> imgdecoder-stb
+  add_subdirectory(${SOUI_ROOT}/SOUI ${CMAKE_BINARY_DIR}/soui/soui)                        # -> soui4 核心库
 endmacro()
 
 if(WIN32 AND NOT MINGW)
@@ -207,12 +207,12 @@ if(WIN32 AND NOT MINGW)
     # /OPT:REF 死代码消除（配合 /Gy 函数级链接）：未引用的 SOUI 控件/函数整个删掉
     target_link_options(vpid_viewer PRIVATE
       "/SUBSYSTEM:WINDOWS,5.01"
+      "/INCREMENTAL:NO"
       "$<$<CONFIG:Release>:/OPT:REF>"
     )
     # 高分屏清晰度（避免 Windows 把整窗位图拉伸放虚）：
     # 用 /MANIFESTINPUT 把我们的 DPI 感知清单"合并"进链接器自动生成的主清单，
-    # 主清单里含 VC 运行库 side-by-side 依赖（Microsoft.VC*.CRT），必须保留，
-    # 否则缺 CRT 依赖会 14001 启动失败。
+    # 静态 /MT + VC-LTL5 后不再依赖 VC SxS CRT；此处只合并 DPI/兼容/权限清单。
     # 注意：不能在 app.rc 里用 RT_MANIFEST 内嵌（RC 未 include winuser.h 会把
     # RT_MANIFEST 当字符串类型名，加载器不识别）；也不可 /MANIFEST:NO 关掉主清单。
     target_link_options(vpid_viewer PRIVATE
@@ -259,7 +259,7 @@ elseif(UNIX AND NOT APPLE)
   #   必须在 SOUI 之前 add，否则 SOUI/CMakeLists 的 add_dependencies(soui4 swinx) 找不到 target。
   #   swinx 由 SOUI 顶层 CMakeLists 本应自动 add_subdirectory(swinx)，但本项目为精简依赖
   #   手动挂载 SOUI 子目录，故此处显式补齐。
-  add_subdirectory(${SOUI_ROOT}/swinx)
+  add_subdirectory(${SOUI_ROOT}/swinx ${CMAKE_BINARY_DIR}/soui/swinx)
 
   VPID_ADD_SOUI_SUBDIRS()
 

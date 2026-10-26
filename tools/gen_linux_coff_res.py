@@ -40,7 +40,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 资源来源（.rc2 里 DEFINE_UIRES 是权威清单，随之自动同步）
 APP_RC2 = os.path.join(REPO, "src", "ui", "uires.rc2")
-SYS_RC2 = os.path.join(REPO, "third_party", "soui", "soui-sys-resource", "theme_sys_res.rc2")
+SYS_RC2 = os.path.join(REPO, "platform", "resources", "theme_sys_res.rc2")
 # 窗口图标（rc ICON 关键字 -> RT_GROUP_ICON 数字类型，名字 APP_ICON）
 APP_ICON = os.path.join(REPO, "assets", "app-icon.ico")
 

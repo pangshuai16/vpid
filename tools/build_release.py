@@ -106,6 +106,12 @@ def build_windows_x86(cmake, ninja):
             raise RuntimeError("XP 导入检查失败：产物含致命 Vista+ API，拒绝发布")
     out = os.path.join(DIST, "vpid_viewer_windows_x86.exe")
     shutil.copy2(exe, out)
+    # 兜底：Ninja 增量构建可能不重跑 POST_BUILD；发布前强制重算 TimeDateStamp/CheckSum。
+    pin = os.path.join(REPO, "tools", "pin_timestamp.py")
+    if os.path.exists(pin):
+        r = run([sys.executable, pin, out])
+        if r.returncode:
+            raise RuntimeError("固定 PE 时间戳/CheckSum 失败")
     print(f"  -> {out} ({os.path.getsize(out)} bytes)")
     return out
 

@@ -37,7 +37,7 @@ python tools/build_release.py --dist out/           # 指定输出目录
 ```
 
 构建完成后自动跑 `tools/verify_release.py` 校验每个产物：
-- Windows：PE 有效、x86 架构、PE 时间戳已钉（构建可复现）
+- Windows：PE32 x86、GUI 子系统、DYNAMIC_BASE、无 HIGH_ENTROPY_VA、PE 时间戳固定并重算 CheckSum（构建可复现）
 - Linux ELF：架构正确、glibc 版本符号 ≤ 2.17、动态依赖仅基础系统库
   （libc / libm / libpthread / libdl / librt / libxcb / libuuid）
 - Linux ELF：内嵌 UI 资源段（`_binary_soui_coff_o_start/_end` 弱符号引用）
@@ -46,9 +46,9 @@ python tools/build_release.py --dist out/           # 指定输出目录
 
 ```bash
 python tools/release_github.py \
-  --tag v1.3.2 \
-  --title "v1.3.2" \
-  --notes-file RELEASE_NOTES_v1.3.2.md
+  --tag v1.3.3 \
+  --title "v1.3.3" \
+  --notes-file RELEASE_NOTES_v1.3.3.md
 ```
 
 脚本会：
@@ -84,7 +84,7 @@ Release 说明按版本归档为 `RELEASE_NOTES_vX.Y.Z.md`（`RELEASE_NOTES_v1.0
   重定向到 XP 自带 `msvcrt.dll`）+ YY-Thunks（Vista+ Win32 API 弱别名）+
   `src/xp_iat_stubs.asm`（`__imp_` IAT 槽兜底）→ **零致命 Vista+ 导入**。
   构建后自动跑 `tools/check_imports.py` 硬门禁（有致命 API 即失败）；
-  `tools/pin_timestamp.py` 固定 PE 时间戳实现可复现构建。
+  `tools/pin_timestamp.py` 固定 PE 时间戳并重算 PE CheckSum 实现可复现构建。
 - **Linux**：zig 0.17.0 `-target x86_64-linux-gnu.2.17` / `aarch64-linux-gnu.2.17`，
   glibc floor 2.17 → CentOS 7 / RHEL 7 / Ubuntu 12.04+ 可运行。
   系统库 `libxcb` / `libXau` / `libuuid` 从 `tools/linux-sysroot/{lib,lib-arm64}/`
