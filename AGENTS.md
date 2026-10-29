@@ -1,4 +1,4 @@
-﻿# Repository Guidelines
+# Repository Guidelines
 
 ## 项目结构与模块组织
 
@@ -6,6 +6,7 @@
 - `rust/crates/vpid-core/`：设备模型、SetupAPI/注册表扫描、diff 与插拔通知。
 - `rust/crates/vpid-ui-core/`：平台无关的状态机、视图模型、主题及 `Platform`/`DeviceProvider` 抽象。
 - `rust/crates/vpid-ui-win32/`：Win32 消息循环、窗口、GDI 绘制和控件，生成 `vpid-viewer.exe`。
+- `rust/crates/vpid-ui-linux/`：GTK3 Linux 后端（`Platform`/`DeviceProvider` 实现），生成 `vpid-viewer-linux`；Windows 上编译为空占位，不改 `vpid-ui-core` 状态机。
 - `rust/docs/PLATFORM_EXTENSION.md`：新增 Linux/macOS 等平台后端的扩展指南。
 - `rust/scripts/`：发布构建、PE 硬化与验证脚本；`assets/`：图标等静态资源；`dist/`：发布产物（已忽略）。
 - 测试位于 `rust/crates/*/tests/` 及源码内的 `#[cfg(test)]` 模块。
@@ -18,6 +19,14 @@ cargo build --release          # 产物：rust/target/release/vpid-viewer.exe
 cargo test --workspace         # 运行全部行为等价性测试
 cargo run --release -- --demo  # 演示数据，验证渲染与交互
 cargo run --release -- --scan  # CLI 扫描自检
+```
+
+Linux 后端在 Windows 主机上无法编译（GTK3 是 C 绑定，需完整 Linux sysroot），用 wslc 管理的 Docker 容器构建（单例，一次准备永久复用，不反复创建/删除）：
+
+```powershell
+# 容器 rust:1.85 + libgtk-3-dev + xvfb；源码先 tar 同步到容器原生盘再编（禁在 bind-mount 上编）
+wslc exec vpid-linux-build bash -lc 'cd /build/rust && CARGO_TARGET_DIR=/build/target cargo build -p vpid-ui-linux && cargo test -p vpid-core -p vpid-ui-linux'
+wslc exec vpid-linux-build bash -lc 'cd /build/rust && CARGO_TARGET_DIR=/build/target xvfb-run -a /build/target/debug/vpid-viewer-linux --demo'
 ```
 
 发布构建从仓库根目录运行 `python rust/scripts/build_release.py`，自动执行 PE 硬化与 `verify_release.py` 的 8 项审计。需要 Rust 1.85+、Windows MSVC 工具链、Python 3；发布审计依赖 `pefile` 和 VS2022 的 `editbin`。
@@ -51,6 +60,8 @@ cargo run --release -- --scan  # CLI 扫描自检
 - 目标为 Windows 7+；不要承诺 XP 支持（历史 v1.x C++ 版本承担该能力）。
 - 发布配置保持 `panic = "abort"`、体积优化与 PE 硬化；禁止使用 UPX。
 - 清单必须保持纯 ASCII，避免系统代码页导致图标、DPI 或 `asInvoker` 声明失效。
+- 任何 GUI 产物必须处理高 DPI（硬门槛，不可遗漏）：Win32 清单 `PerMonitorV2` + 代码侧 `GetProcAddress` 动态解析，scale 取 `GetDpiForWindow/96`、跨屏 `WM_DPICHANGED` 重建字体；Linux GTK 验 `GDK_SCALE=2`；禁止写死 1.5/2.0。
+- Rust 输出目录统一 workspace 级 `target/`；跨容器/交叉构建固定 `CARGO_TARGET_DIR=<项目相对路径>`，禁止各 crate 各编各的 target。
 
 ## 安全与配置提示
 
