@@ -69,6 +69,8 @@ struct Ctx {
     cols_changed: Vec<TreeViewColumn>,
     status_all: Option<Label>,
     status_mode: Option<Label>,
+    badge_add: Option<Label>,
+    badge_del: Option<Label>,
 }
 
 /// 平台后端（Linux GTK3 实现 `Platform` trait）。
@@ -98,6 +100,8 @@ impl Platform for LinuxApp {
             cols_changed: Vec::new(),
             status_all: None,
             status_mode: None,
+            badge_add: None,
+            badge_del: None,
         }));
 
         let source = build_ui(&ctx);
@@ -119,6 +123,7 @@ fn build_ui(ctx: &Rc<RefCell<Ctx>>) -> glib::SourceId {
     window.set_title(K_APP_NAME);
     window.set_default_size(K_DEFAULT_WINDOW_WIDTH, K_DEFAULT_WINDOW_HEIGHT);
     window.set_border_width(0);
+    window.style_context().add_class("k-canvas");
 
     let root = GtkBox::new(Orientation::Vertical, 0);
 
@@ -160,8 +165,8 @@ fn build_ui(ctx: &Rc<RefCell<Ctx>>) -> glib::SourceId {
     main_row.set_margin_bottom(K_PAD_OUTER);
     main_row.set_vexpand(true);
 
-    let (left, view_all, model_all, cols_all) = make_panel("全部设备", &COLS_ALL, ctx.clone(), true);
-    let (right, view_changed, model_changed, cols_changed) =
+    let (left, view_all, model_all, cols_all, _, _) = make_panel("全部设备", &COLS_ALL, ctx.clone(), true);
+    let (right, view_changed, model_changed, cols_changed, badge_add, badge_del) =
         make_panel("变更记录", &COLS_CHANGED, ctx.clone(), false);
     main_row.pack_start(&left, true, true, 0);
     main_row.pack_start(&right, true, true, 0);
@@ -172,10 +177,13 @@ fn build_ui(ctx: &Rc<RefCell<Ctx>>) -> glib::SourceId {
     status.set_margin_start(K_PAD_OUTER);
     status.set_margin_end(K_PAD_OUTER);
     status.set_margin_bottom(K_PAD_OUTER);
+    status.set_margin_top(6);
+    status.style_context().add_class("k-statusbar");
     let status_all = Label::new(None);
     status_all.set_xalign(0.0);
     let status_mode = Label::new(None);
     status_mode.set_xalign(1.0);
+    status_mode.style_context().add_class("k-pill");
     status.pack_start(&status_all, true, true, 0);
     status.pack_start(&status_mode, false, false, 0);
     root.pack_start(&status, false, false, 0);
@@ -227,6 +235,8 @@ fn build_ui(ctx: &Rc<RefCell<Ctx>>) -> glib::SourceId {
         c.window = Some(window);
         c.status_all = Some(status_all);
         c.status_mode = Some(status_mode);
+        c.badge_add = badge_add;
+        c.badge_del = badge_del;
     }
 
     // 100ms 轮询：排空扫描结果 + 按需触发下一次扫描
@@ -252,22 +262,47 @@ fn build_ui(ctx: &Rc<RefCell<Ctx>>) -> glib::SourceId {
     )
 }
 
-/// 构建一个带标题面板：标题 + 可滚动 TreeView，返回 (panel, view, store, cols)。
+/// 构建一个带标题面板：标题栏（标题 + 计数徽标）+ 可滚动 TreeView。
+/// 返回 (panel, view, store, cols, badge_add, badge_del)。变更表（`is_all=false`）store 用
+/// 5 列（4 文本 + 1 背景色 gchararray），行底色经 CellRenderer background 绑定。
 fn make_panel(
     title: &str,
     cols: &[(&str, i32)],
     ctx: Rc<RefCell<Ctx>>,
     is_all: bool,
-) -> (GtkBox, TreeView, ListStore, Vec<TreeViewColumn>) {
-    let panel = GtkBox::new(Orientation::Vertical, K_PAD_SECTION);
+) -> (GtkBox, TreeView, ListStore, Vec<TreeViewColumn>, Option<Label>, Option<Label>) {
+    let panel = GtkBox::new(Orientation::Vertical, 0);
+
+    // 分区标题栏（K_SECTION_H=32，灰窗底，发丝线）
+    let head = GtkBox::new(Orientation::Horizontal, K_PAD_SECTION);
+    head.style_context().add_class("k-sectionbar");
     let lbl = Label::new(Some(title));
     lbl.set_xalign(0.0);
-    lbl.set_margin_top(K_PAD_SECTION);
-    lbl.set_margin_bottom(4);
     lbl.style_context().add_class("k-section");
-    panel.pack_start(&lbl, false, false, 0);
+    head.pack_start(&lbl, false, false, 0);
 
-    let store = ListStore::new(&[glib::Type::STRING; 4]);
+    // 计数徽标（仅变更表）
+    let mut badge_add = None;
+    let mut badge_del = None;
+    if !is_all {
+        let ba = Label::new(Some("新增 0"));
+        ba.style_context().add_class("k-badge-add");
+        let bd = Label::new(Some("移除 0"));
+        bd.style_context().add_class("k-badge-del");
+        head.pack_start(&ba, false, false, 0);
+        head.pack_start(&bd, false, false, 0);
+        badge_add = Some(ba);
+        badge_del = Some(bd);
+    }
+    panel.pack_start(&head, false, false, 0);
+
+    // store 列数 = 文本列 +（变更表 1 背景列）
+    let n_cols = cols.len() + if is_all { 0 } else { 1 };
+    let mut types = Vec::with_capacity(n_cols);
+    for _ in 0..n_cols {
+        types.push(glib::Type::STRING);
+    }
+    let store = ListStore::new(&types);
     let view = TreeView::new();
     view.set_model(Some(&store));
     let mut gcols = Vec::new();
@@ -276,9 +311,26 @@ fn make_panel(
         let renderer = gtk::CellRendererText::new();
         gtk::prelude::CellLayoutExt::pack_start(&col, &renderer, true);
         gtk::prelude::TreeViewColumnExt::add_attribute(&col, &renderer, "text", i as i32);
+        if !is_all {
+            gtk::prelude::TreeViewColumnExt::add_attribute(
+                &col,
+                &renderer,
+                "background",
+                (n_cols - 1) as i32,
+            );
+        }
         col.set_title(t);
         view.append_column(&col);
         gcols.push(col);
+    }
+    // 隐藏背景列（仅变更表，占位以保持列索引对齐）
+    if !is_all {
+        let bgcol = TreeViewColumn::new();
+        let r = gtk::CellRendererText::new();
+        gtk::prelude::CellLayoutExt::pack_start(&bgcol, &r, false);
+        gtk::prelude::TreeViewColumnExt::add_attribute(&bgcol, &r, "text", (n_cols - 1) as i32);
+        bgcol.set_visible(false);
+        view.append_column(&bgcol);
     }
     let scroll = ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
     scroll.add(&view);
@@ -288,7 +340,7 @@ fn make_panel(
 
     // 选中变化在 build_ui 末尾统一连接（需要 view 引用），此处仅返回组件。
     let _ = (ctx, is_all);
-    (panel, view, store, gcols)
+    (panel, view, store, gcols, badge_add, badge_del)
 }
 
 fn on_selected(ctx: &Rc<RefCell<Ctx>>, sel: &gtk::TreeSelection, is_all: bool) {
@@ -424,7 +476,14 @@ impl Ctx {
                 let v1 = d.formatted_vid().to_value();
                 let v2 = d.formatted_pid().to_value();
                 let v3 = d.display_name().to_value();
-                model.set(&it, &[(0, &v0), (1, &v1), (2, &v2), (3, &v3)]);
+                // 行底色：新增蓝 tint / 移除红 tint（对齐 K_ROW_ADD_BG / K_ROW_DEL_BG）
+                let bg = match kind {
+                    vpid_ui_core::model::RowKind::Add => "#e9f0fa",
+                    vpid_ui_core::model::RowKind::Del => "#fbeaeb",
+                    _ => "#ffffff",
+                };
+                let v4 = bg.to_value();
+                model.set(&it, &[(0, &v0), (1, &v1), (2, &v2), (3, &v3), (4, &v4)]);
             }
             if let (Some(view), Some(row)) = (self.view_changed.as_ref(), self.state.sel_changed) {
                 if let Some(iter) = model.iter_nth_child(None, row as i32) {
@@ -471,22 +530,76 @@ impl Ctx {
             } else {
                 "监控已暂停"
             });
+            l.style_context().remove_class("k-pill-live");
+            l.style_context().remove_class("k-pill-idle");
+            l.style_context().add_class(if self.state.auto_refresh {
+                "k-pill-live"
+            } else {
+                "k-pill-idle"
+            });
+        }
+        if let (Some(ba), Some(bd)) = (self.badge_add.as_ref(), self.badge_del.as_ref()) {
+            ba.set_text(&format!("新增 {}", self.state.added.len()));
+            bd.set_text(&format!("移除 {}", self.state.removed.len()));
         }
     }
 }
 
-/// 近似 win32 四类按钮配色（浅色主题，近似而非逐像素）。
+/// 对齐 win32 自绘视觉（灰窗底 / 3px 圆角按钮四类三态 / 分区标题栏 / 26px 行高 / 选中深海蓝 / 变更行底色 / 状态栏发丝线 + 胶囊）。
 fn install_css() {
     let css = r#"
+        /* 窗底：K_CANVAS 灰 */
+        window.k-canvas { background-color: #e4e7ed; }
+        window.k-canvas box { background-color: #e4e7ed; }
+
+        /* 按钮：34px 高 + 3px 圆角 + 四类三态（hover/press/disabled） */
+        button.k-primary, button.k-accent, button.k-danger, button.k-ghost {
+            min-height: 34px;
+            padding: 0 14px;
+            border-radius: 3px;
+            font-weight: 600;
+            font-size: 13px;
+        }
         button.k-primary { background: #1e5094; color: #ffffff; border: none; }
         button.k-primary:hover { background: #16427c; }
+        button.k-primary:active { background: #103363; }
         button.k-accent { background: #e9f0fa; color: #1a4a8a; border: 1px solid #a3bee1; }
         button.k-accent:hover { background: #d8e6f6; }
+        button.k-accent:active { background: #c8daf2; }
         button.k-danger { background: #fbeaeb; color: #b02a30; border: 1px solid #e4afb2; }
         button.k-danger:hover { background: #f7dbdc; }
+        button.k-danger:active { background: #f2ccce; }
         button.k-ghost { background: #f2f4f9; color: #181b21; border: 1px solid #868d9b; }
         button.k-ghost:hover { background: #e6e9f0; }
-        label.k-section { font-weight: bold; color: #181b21; }
+        button.k-ghost:active { background: #d8dce5; }
+        button:disabled { background: #f2f4f9; color: #a4abb6; border: none; }
+
+        /* 分区标题栏：K_SECTION_H=32 + 发丝线底 */
+        .k-sectionbar { background-color: #e4e7ed; border-bottom: 1px solid #cbd0da; }
+        label.k-section { font-weight: 700; color: #181b21; padding: 6px 4px; }
+
+        /* 计数徽标：3px 圆角 + tint 底 + 描边 */
+        label.k-badge-add, label.k-badge-del {
+            font-size: 12px; font-weight: 700;
+            padding: 2px 8px; margin-left: 6px; border-radius: 3px;
+        }
+        label.k-badge-add { background: #e9f0fa; color: #1a4a8a; border: 1px solid #a3bee1; }
+        label.k-badge-del { background: #fbeaeb; color: #b02a30; border: 1px solid #e4afb2; }
+
+        /* 表头：K_HEADER_H=28 + surface2 */
+        treeview header button { min-height: 28px; background: #f2f4f9; font-weight: 600; }
+
+        /* 数据行：K_ROW_H=26 + 选中深海蓝 */
+        treeview { border: 1px solid #cbd0da; background: #ffffff; }
+        treeview.view { background-color: #ffffff; }
+        treeview.view:selected { background-color: #1e5094; color: #ffffff; }
+        treeview.view:selected:focus { background-color: #1e5094; color: #ffffff; }
+
+        /* 状态栏：发丝线 + 监控胶囊 */
+        .k-statusbar { border-top: 1px solid #cbd0da; background-color: #e4e7ed; }
+        label.k-pill { font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 13px; }
+        label.k-pill-live { background: #e6f3ec; color: #166548; border: 1px solid #9dc7b5; }
+        label.k-pill-idle { background: #eef1f5; color: #636b77; border: 1px solid #c6cdd6; }
     "#;
     let provider = gtk::CssProvider::new();
     let _ = provider.load_from_data(css.as_bytes());
