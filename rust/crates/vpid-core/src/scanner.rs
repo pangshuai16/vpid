@@ -1,7 +1,7 @@
 //! 扫描器抽象 + VID/PID/序列号提取 + 取消标志。
 //!
 //! 忠实移植自 `src/core/device_scanner.h` / `device_scanner.cpp`。
-//! 取消标志为全局原子量（与 C++ `std::atomic<bool> g_scanCancel` 语义一致）：
+//! 取消标志为全局原子量（同 C++ `std::atomic<bool> g_scanCancel` 语义一致）；
 //! 同一时刻至多一个扫描线程（UI 层 `scanning` 互斥），故全局量即可；
 //! 静态存储期 → 生命周期长于任何窗口实例，无线程持它导致的 UAF（这正是
 //! Rust 移植想根治的旧版"跨线程悬垂"风险类别）。
@@ -27,7 +27,7 @@ pub fn reset_scan_cancel() {
     G_SCAN_CANCEL.store(false, Ordering::Relaxed);
 }
 
-/// 从设备 ID 提取 VID/PID："USB\VID_8087&PID_0024\.." -> ("0x8087", "0x0024")。
+/// 从设备 ID 提取 VID/PID，`USB\VID_8087&PID_0024\..` -> ("0x8087", "0x0024")。
 /// 对齐 C++ `Scanner::extractVidPid`（正则 `VID_([0-9A-Fa-f]{4})` icase，取第一个匹配）。
 pub fn extract_vid_pid(device_id: &str) -> (String, String) {
     (extract_hex(device_id, "VID_"), extract_hex(device_id, "PID_"))
@@ -71,28 +71,32 @@ pub fn extract_serial(device_id: &str) -> String {
 
 /// 扫描器抽象基类（对齐 C++ `Scanner`）。
 /// 未来 Linux/macOS 各自提供实现（`scanner_linux` / `scanner_macos`），
-/// 通过 `new_scanner()` 按平台分派 —— 多平台扫描插槽。
+/// 通过 `new_scanner()` 按平台分发 —— 多平台扫描插槽。
 pub trait Scanner {
     fn scan(&self) -> Vec<UsbDevice>;
 }
 
-/// 平台工厂：当前 Windows（`WindowsScanner`）。
+/// 平台工厂：按目标 OS 选择扫描器。
 pub fn new_scanner() -> Box<dyn Scanner> {
     #[cfg(target_os = "windows")]
     {
         Box::new(crate::scanner_win::WindowsScanner::default())
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     {
-        // 非 Windows：平台扫描未实现（预留插槽）
+        Box::new(crate::scanner_linux::LinuxScanner)
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        // 其他平台：扫描未实现（预留插槽）
         Box::new(UnsupportedScanner)
     }
 }
 
-/// 非 Windows 占位扫描器（预留插槽，返回空）。
-#[cfg(not(target_os = "windows"))]
+/// 其他平台占位扫描器（预留插槽，返回空）。
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 struct UnsupportedScanner;
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 impl Scanner for UnsupportedScanner {
     fn scan(&self) -> Vec<UsbDevice> {
         Vec::new()

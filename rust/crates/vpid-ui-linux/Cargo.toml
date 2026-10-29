@@ -1,0 +1,16 @@
+[package]
+name = "vpid-ui-linux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "vpid Linux GTK3 原生 UI 后端（vpid-viewer-linux）"
+
+[[bin]]
+name = "vpid-viewer-linux"
+path = "src/main.rs"
+
+# 全部依赖仅 Linux 目标需要；非 Linux 目标编译为空占位（保证 Windows `cargo build` 不失败）。
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+vpid-core = { path = "../vpid-core" }
+vpid-ui-core = { path = "../vpid-ui-core" }

@@ -17,13 +17,14 @@
 
 ```
 rust/
-├── Cargo.toml                # workspace：3 个 crate + 统一 windows-sys 特性 + release profile
+├── Cargo.toml                # workspace：4 个 crate + 统一 windows-sys 特性 + release profile
 ├── docs/PLATFORM_EXTENSION.md    # ★ 多平台 UI 插槽扩展指南（新增 Linux/macOS 后端）
 ├── crates/
 │   ├── vpid-core/            # 业务核心：设备模型 / 扫描器(SetupAPI+注册表) / 比对器 / 通知器
 │   ├── vpid-ui-core/         # 平台无关 UI 核心：状态机 / 视图模型 / 主题 / Platform trait
-│   └── vpid-ui-win32/        # Windows 原生 UI：消息循环 / 窗口 / GDI 自绘 / 控件
-└── target/                   # 构建产物（release: vpid-viewer.exe）
+│   ├── vpid-ui-win32/        # Windows 原生 UI：消息循环 / 窗口 / GDI 自绘 / 控件
+│   └── vpid-ui-linux/        # Linux 原生 UI：GTK3 窗口 / 按钮 / 列表 / 状态栏
+└── target/                   # 构建产物（release: vpid-viewer.exe / vpid-viewer-linux）
 ```
 
 | crate | 职责 | 平台 |
@@ -31,6 +32,7 @@ rust/
 | `vpid-core` | 设备模型、扫描（SetupAPI 主路径 + 注册表兜底）、diff 比对、设备插拔通知 | Windows |
 | `vpid-ui-core` | UI 状态机（扫描→视图更新/排序/选中/基准/复制）、主题常量、`Platform`/`DeviceProvider` trait | 平台无关 |
 | `vpid-ui-win32` | Win32 消息循环、`WndProc`、GDI 双缓冲自绘、按钮/列表控件、扫描线程模型 | Windows |
+| `vpid-ui-linux` | GTK3 窗口/按钮/列表/状态栏、sysfs 枚举扫描、100ms 轮询线程模型 | Linux |
 
 ## 构建与运行
 
@@ -41,6 +43,19 @@ target/release/vpid-viewer.exe     # 启动 UI（真实 USB 扫描）
 target/release/vpid-viewer.exe --demo   # 演示桩数据（验证渲染/交互）
 target/release/vpid-viewer.exe --scan   # CLI 自检：打印设备列表后退出
 cargo test                         # 行为等价性单元测试
+```
+
+### Linux GTK3 构建与运行（容器 / WSL）
+
+GTK3 是 C 绑定，需在 Linux 环境编译（Windows 主机无法编 GTK）。推荐用 Docker / WSL 容器（`wslc`）构建：
+
+```bash
+# 容器内（挂载仓库后）
+cd /vpid/rust
+cargo build -p vpid-ui-linux            # 产物 target/debug/vpid-viewer-linux
+target/debug/vpid-viewer-linux --demo   # 演示桩数据（验证渲染/交互）
+target/debug/vpid-viewer-linux --scan   # CLI 自检：打印设备列表后退出
+cargo test -p vpid-core -p vpid-ui-linux
 ```
 
 ## 发布（v2.0.0 起）
@@ -57,7 +72,7 @@ python rust/scripts/release_github.py --tag v2.0.0 --title "v2.0.0" --notes-file
 ## 多平台扩展
 
 新增 Linux / macOS 后端只需实现 `vpid-ui-core::platform::Platform` + `DeviceProvider`，
-零改动核心。Linux GTK3 后端开发中。见 `rust/docs/PLATFORM_EXTENSION.md`。
+零改动核心。Linux GTK3 后端已实现（`vpid-ui-linux`）。见 `rust/docs/PLATFORM_EXTENSION.md`。
 
 ## 关键约束
 

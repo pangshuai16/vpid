@@ -9,8 +9,8 @@
 # 分层：
 #   vpid-core     平台业务核心（设备模型 / 扫描器 / 比对器 / 通知器）—— 从 src/core 忠实移植
 #   vpid-ui-core  平台无关 UI 状态机 / 视图模型 / 主题 / Platform trait（多平台插槽）
-#   vpid-ui-win32 Windows 原生 UI（消息循环 / 窗口 / GDI 自绘 / 控件）—— 当前唯一后端
-#   （未来 vpid-ui-linux / vpid-ui-macos 各自实现 Platform trait，见 rust/docs/PLATFORM_EXTENSION.md）
+#   vpid-ui-win32 Windows 原生 UI（消息循环 / 窗口 / GDI 自绘 / 控件）
+#   vpid-ui-linux Linux GTK3 原生 UI（vpid-viewer-linux，仅 Linux 目标编译；非 Linux 为空占位）
 # =====================================================================
 [workspace]
 resolver = "2"
@@ -18,6 +18,7 @@ members = [
     "crates/vpid-core",
     "crates/vpid-ui-core",
     "crates/vpid-ui-win32",
+    "crates/vpid-ui-linux",
 ]
 
 [workspace.package]
