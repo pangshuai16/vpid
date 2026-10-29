@@ -1,0 +1,53 @@
+# =====================================================================
+# vpid —— 纯 Rust 项目（新分支 refactor/rust-win32-ui 的目标形态）
+#
+# 目标：把 C++/SOUI（现 FLTK 半成品）整个项目重写为 100% Rust，
+#       UI/UX 完全沿用主线（布局/主题/交互 1:1 复刻），
+#       核心收益 = Rust 所有权模型（杜绝跨线程 UAF/悬垂指针）+ 原生 Win32
+#       直绘（零框架开销）带来的运行效率与稳定性。
+#
+# 分层：
+#   vpid-core     平台业务核心（设备模型 / 扫描器 / 比对器 / 通知器）—— 从 src/core 忠实移植
+#   vpid-ui-core  平台无关 UI 状态机 / 视图模型 / 主题 / Platform trait（多平台插槽）
+#   vpid-ui-win32 Windows 原生 UI（消息循环 / 窗口 / GDI 自绘 / 控件）—— 当前唯一后端
+#   （未来 vpid-ui-linux / vpid-ui-macos 各自实现 Platform trait，见 rust/docs/PLATFORM_EXTENSION.md）
+# =====================================================================
+[workspace]
+resolver = "2"
+members = [
+    "crates/vpid-core",
+    "crates/vpid-ui-core",
+    "crates/vpid-ui-win32",
+]
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.85"
+
+# 统一依赖 + 特性（features 为各 crate 并集）
+[workspace.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_Globalization",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+] }
+
+# 发布构建取向：体积 + 速度 + 确定性退出
+#   opt-level=s  对齐主线 /Os 体积取向（UI 工具，代码量小，s 与 3 差异可忽略）
+#   panic=abort   任何 panic 直接终止（不 unwind 跨 extern "system" 边界——那是 UB；
+#                 同时对齐旧版 ExitProcess 的"快速确定性收尾"哲学，杜绝部分状态泄漏）
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

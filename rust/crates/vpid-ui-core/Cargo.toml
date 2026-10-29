@@ -1,0 +1,9 @@
+[package]
+name = "vpid-ui-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "vpid 平台无关 UI 状态机 / 视图模型 / 主题 / Platform trait（多平台兼容插槽）"
+
+[dependencies]
+vpid-core = { path = "../vpid-core" }

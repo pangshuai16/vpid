@@ -1,17 +1,21 @@
 # 构建产物
-build/
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-Makefile
 *.o
 *.obj
 *.a
 *.lib
 *.so
 *.exe
+target/
 __pycache__/
 *.pyc
+
+# 发布产物（dist/ 不入库；发布经 rust/scripts/build_release.py + release_github.py）
+dist/
+
+# Rust：构建产物与截屏证据不入库
+rust/target/
+rust/shot_*.png
+rust/*.log
 
 # 环境与密钥
 .env
@@ -29,24 +33,9 @@ venv/
 .DS_Store
 Thumbs.db
 
-# 本地构建 / 诊断产物（非源码）
-build*/
-.build-release/
-dist/
+# 本地诊断产物
 *.log
 *.bmp
-imports.txt
-docs_ui_screenshot.png
-shot_app.bmp
 
 # WorkBuddy 本地数据（含记忆/技能，不入库）
 .workbuddy/
-
-# SOUI5 已迁移为全局环境 D:/DevTools/SOUI（2026-10-22，与 Qt/YY-Thunks/VC-LTL5 同层），
-# 仓库内不再 vendored；见 README「UI 层」节。
-
-# zig 交叉编译 sysroot：库文件必须入库（离线可复现构建 + CI 无需联网下载），
-# 覆盖上方 *.so 忽略规则。tools/linux-sysroot/lib/ 下的 .so 是从 Ubuntu deb
-# 提取的系统库（libxcb/libXau/libuuid），产物运行时依赖目标机自己的系统库。
-!tools/linux-sysroot/
-!tools/linux-sysroot/**

@@ -1,0 +1,9 @@
+[package]
+name = "vpid-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "vpid 平台业务核心：设备模型 / 扫描器 / 比对器 / 通知器（自 C++ src/core 忠实移植）"
+
+[dependencies]
+windows-sys = { workspace = true }
